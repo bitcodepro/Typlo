@@ -12,7 +12,8 @@ availability or bound GitHub's queue time, including macOS ARM capacity shortage
 
 - Restore, Release build and the unit tests run on Windows 2025, Ubuntu 24.04 and macOS 15.
 - The existing Linux end-to-end selftest runs inside a disposable Ubuntu/Xvfb/Openbox
-  Docker container, with a read-only application mount and no network. It checks
+  Docker container, with a read-only application mount, isolated writable XDG data/config
+  directories and no network. It checks
   clipboard text/images, capture, hotkeys, layout conversion and encrypted storage.
   The report is uploaded even on failure; the test has a 180-second process timeout.
 - Packaging runs natively for `win-x64`, `linux-x64`, `linux-arm64`, `osx-arm64`,
