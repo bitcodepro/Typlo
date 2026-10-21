@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Typlo.App/Typlo.App.csproj" />
+    <Project Path="src/Typlo.Core/Typlo.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Typlo.Tests/Typlo.Tests.csproj" />
+  </Folder>
+</Solution>

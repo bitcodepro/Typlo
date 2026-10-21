@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>Typlo</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.3" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.3" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.3" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.3" />
+    <PackageReference Include="SharpHook" Version="8.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Typlo.Core\Typlo.Core.csproj" />
+  </ItemGroup>
+</Project>

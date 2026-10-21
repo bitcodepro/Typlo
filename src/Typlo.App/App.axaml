@@ -1,0 +1,32 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Typlo.App.App"
+             RequestedThemeVariant="Default">
+  <Application.Styles>
+    <FluentTheme />
+  </Application.Styles>
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="PanelBrush" Color="#F2FAFAFC" />
+          <SolidColorBrush x:Key="PanelBorderBrush" Color="#22000000" />
+          <SolidColorBrush x:Key="ItemHoverBrush" Color="#0F000000" />
+          <SolidColorBrush x:Key="ItemSelectedBrush" Color="#2A3B82F6" />
+          <SolidColorBrush x:Key="MutedTextBrush" Color="#8A000000" />
+          <SolidColorBrush x:Key="BadgeBrush" Color="#14000000" />
+          <SolidColorBrush x:Key="AccentTextBrush" Color="#2563EB" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+          <SolidColorBrush x:Key="PanelBrush" Color="#EE1E1F24" />
+          <SolidColorBrush x:Key="PanelBorderBrush" Color="#33FFFFFF" />
+          <SolidColorBrush x:Key="ItemHoverBrush" Color="#14FFFFFF" />
+          <SolidColorBrush x:Key="ItemSelectedBrush" Color="#403B82F6" />
+          <SolidColorBrush x:Key="MutedTextBrush" Color="#8CFFFFFF" />
+          <SolidColorBrush x:Key="BadgeBrush" Color="#1FFFFFFF" />
+          <SolidColorBrush x:Key="AccentTextBrush" Color="#7DA8FF" />
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+    </ResourceDictionary>
+  </Application.Resources>
+</Application>

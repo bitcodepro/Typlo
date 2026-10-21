@@ -1,0 +1,80 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:v="using:Typlo.App.Views"
+        xmlns:l="using:Typlo.App.Services"
+        x:Class="Typlo.App.Views.ClipboardWindow"
+        x:DataType="v:ClipboardWindow"
+        Title="{l:Tr history.title}"
+        Width="460" Height="560"
+        CanResize="False"
+        ShowInTaskbar="False"
+        Topmost="True"
+        WindowStartupLocation="Manual"
+        WindowDecorations="None"
+        Background="Transparent"
+        TransparencyLevelHint="AcrylicBlur, Transparent">
+  <Border Background="{DynamicResource PanelBrush}"
+          BorderBrush="{DynamicResource PanelBorderBrush}"
+          BorderThickness="1" CornerRadius="12" ClipToBounds="True">
+    <DockPanel>
+      <!-- Search -->
+      <Grid DockPanel.Dock="Top" Margin="12,12,12,6" ColumnDefinitions="*,Auto">
+        <TextBox x:Name="SearchBox" PlaceholderText="{l:Tr history.search}" Classes="search"
+                 Padding="10,7" CornerRadius="8" />
+        <TextBlock Grid.Column="1" x:Name="CountText" VerticalAlignment="Center" Margin="10,0,2,0"
+                   FontSize="12" Foreground="{DynamicResource MutedTextBrush}" />
+      </Grid>
+
+      <!-- Footer hints -->
+      <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="0,1,0,0"
+              Padding="12,7">
+        <TextBlock FontSize="11.5" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap"
+                   Text="{l:Tr history.hints}" />
+      </Border>
+
+      <Grid>
+        <TextBlock x:Name="EmptyText" Text="{l:Tr history.empty}" IsVisible="False"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                   Foreground="{DynamicResource MutedTextBrush}" />
+        <ListBox x:Name="List" Background="Transparent" Padding="6,0,6,6"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+          <ListBox.Styles>
+            <Style Selector="ListBoxItem">
+              <Setter Property="Padding" Value="0" />
+              <Setter Property="Margin" Value="0,1" />
+              <Setter Property="CornerRadius" Value="8" />
+            </Style>
+            <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+              <Setter Property="Background" Value="{DynamicResource ItemHoverBrush}" />
+            </Style>
+            <Style Selector="ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+              <Setter Property="Background" Value="{DynamicResource ItemSelectedBrush}" />
+            </Style>
+          </ListBox.Styles>
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="v:ClipItemViewModel">
+              <Grid ColumnDefinitions="28,*,Auto" Margin="8,7">
+                <Border Width="20" Height="20" CornerRadius="5" VerticalAlignment="Top" Margin="0,1,0,0"
+                        Background="{DynamicResource BadgeBrush}" IsVisible="{Binding Badge, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                  <TextBlock Text="{Binding Badge}" FontSize="11" FontWeight="SemiBold"
+                             HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Border>
+                <StackPanel Grid.Column="1" Spacing="3">
+                  <TextBlock Text="{Binding Title}" IsVisible="{Binding IsText}" TextWrapping="Wrap"
+                             MaxLines="4" TextTrimming="CharacterEllipsis" FontSize="13.5" />
+                  <Border IsVisible="{Binding IsImage}" HorizontalAlignment="Left" CornerRadius="6" ClipToBounds="True"
+                          BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1">
+                    <Image Source="{Binding Thumbnail}" MaxHeight="110" MaxWidth="360" Stretch="Uniform" />
+                  </Border>
+                  <TextBlock Text="{Binding Meta}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
+                </StackPanel>
+                <TextBlock Grid.Column="2" Text="📌" IsVisible="{Binding Pinned}" VerticalAlignment="Top"
+                           Margin="6,0,0,0" FontSize="13" />
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
+    </DockPanel>
+  </Border>
+</Window>
