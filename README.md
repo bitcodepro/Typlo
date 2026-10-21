@@ -47,6 +47,9 @@ Data folder: `data/` next to the executable; if not writable (or inside a `.app`
 
 ## Layout
 
+CI, release versioning, verified packages and first-release instructions:
+[docs/ci-release.md](docs/ci-release.md).
+
 - `src/Typlo.Core` – layout converter, hotkey model, settings, encrypted SQLite store (no UI, no OS calls)
 - `src/Typlo.App/Platform` – `IPlatform`; `Windows/`, `Mac/`, `Linux/`; `Shared/HookPlatformBase` (SharpHook)
 - `src/Typlo.App/Views` – tray, history popup, settings
