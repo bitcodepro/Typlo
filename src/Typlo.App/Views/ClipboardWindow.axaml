@@ -18,12 +18,71 @@
           BorderThickness="1" CornerRadius="12" ClipToBounds="True">
     <DockPanel>
       <!-- Search -->
-      <Grid DockPanel.Dock="Top" Margin="12,12,12,6" ColumnDefinitions="*,Auto">
-        <TextBox x:Name="SearchBox" PlaceholderText="{l:Tr history.search}" Classes="search"
-                 Padding="10,7" CornerRadius="8" />
-        <TextBlock Grid.Column="1" x:Name="CountText" VerticalAlignment="Center" Margin="10,0,2,0"
-                   FontSize="12" Foreground="{DynamicResource MutedTextBrush}" />
-      </Grid>
+      <Border DockPanel.Dock="Top" Classes="searchShell" Margin="12,12,12,8">
+        <Border.Styles>
+          <Style Selector="Border.searchShell">
+            <Setter Property="Background" Value="{DynamicResource SearchBrush}" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1.5" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Height" Value="40" />
+            <Setter Property="Transitions">
+              <Transitions>
+                <BrushTransition Property="BorderBrush" Duration="0:0:0.15" />
+                <BrushTransition Property="Background" Duration="0:0:0.15" />
+              </Transitions>
+            </Setter>
+          </Style>
+          <Style Selector="Border.searchShell:pointerover">
+            <Setter Property="Background" Value="{DynamicResource SearchHoverBrush}" />
+          </Style>
+          <Style Selector="Border.searchShell:focus-within">
+            <Setter Property="Background" Value="{DynamicResource SearchFocusBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentTextBrush}" />
+          </Style>
+          <!-- The text box itself is chrome-less: the shell above draws background and focus ring. -->
+          <Style Selector="TextBox#SearchBox, TextBox#SearchBox:pointerover, TextBox#SearchBox:focus">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="FontSize" Value="14" />
+          </Style>
+          <Style Selector="TextBox#SearchBox /template/ Border#PART_BorderElement,
+                           TextBox#SearchBox:pointerover /template/ Border#PART_BorderElement,
+                           TextBox#SearchBox:focus /template/ Border#PART_BorderElement">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+          </Style>
+          <Style Selector="TextBox#SearchBox /template/ TextBlock#PART_Placeholder">
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+          </Style>
+        </Border.Styles>
+        <Grid ColumnDefinitions="Auto,*,Auto" Margin="12,0,10,0">
+          <!-- Magnifier -->
+          <Path Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"
+                Stroke="{DynamicResource MutedTextBrush}" StrokeThickness="2" StrokeLineCap="Round"
+                Data="M 10,10 m -7,0 a 7,7 0 1,0 14,0 a 7,7 0 1,0 -14,0 M 15,15 L 20,20" />
+          <TextBox Grid.Column="1" x:Name="SearchBox" PlaceholderText="{l:Tr history.search}" Margin="10,0,8,0">
+            <TextBox.Resources>
+              <SolidColorBrush x:Key="TextControlBackground" Color="Transparent" />
+              <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent" />
+              <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent" />
+              <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent" />
+              <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent" />
+              <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent" />
+              <Thickness x:Key="TextControlBorderThemeThickness">0</Thickness>
+              <Thickness x:Key="TextControlBorderThemeThicknessFocused">0</Thickness>
+            </TextBox.Resources>
+          </TextBox>
+          <Border Grid.Column="2" CornerRadius="6" Padding="7,2" VerticalAlignment="Center"
+                  Background="{DynamicResource BadgeBrush}">
+            <TextBlock x:Name="CountText" FontSize="11.5" FontWeight="SemiBold"
+                       Foreground="{DynamicResource MutedTextBrush}" />
+          </Border>
+        </Grid>
+      </Border>
 
       <!-- Footer hints -->
       <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="0,1,0,0"

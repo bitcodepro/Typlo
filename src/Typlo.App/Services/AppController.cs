@@ -71,9 +71,21 @@ public sealed class AppController : IDisposable
     /// <summary>Raised when settings change (e.g. to refresh the tray menu); may be on any thread.</summary>
     public event Action? SettingsChanged;
 
+    private Timer? _activityTimer;
+
     private void ApplyKeepAwake()
     {
-        if (!_platform.SetKeepAwake(Settings.PreventScreenLock)) Log.Error("SetThreadExecutionState failed");
+        if (!_platform.SetKeepAwake(Settings.PreventScreenLock)) Log.Error("Keep-awake request failed");
+        // Keeping the display on does not stop Teams and similar apps from showing "Away":
+        // they look at the input idle time, so report activity while the user is idle.
+        _activityTimer?.Dispose();
+        _activityTimer = Settings.PreventScreenLock
+            ? new Timer(_ =>
+            {
+                try { _platform.SignalUserActivity(); }
+                catch (Exception e) { Log.Error("Activity signal failed", e); }
+            }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30))
+            : null;
         SettingsChanged?.Invoke();
     }
 
@@ -236,6 +248,7 @@ public sealed class AppController : IDisposable
     {
         _platform.HotkeyPressed -= OnHotkey;
         _platform.ClipboardCaptured -= OnClipboardCaptured;
+        _activityTimer?.Dispose();
         _platform.SetKeepAwake(false);
         Store.Dispose();
     }

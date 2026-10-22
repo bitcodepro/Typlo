@@ -246,6 +246,12 @@ public abstract class HookPlatformBase : IPlatform
     // ---------------------------------------------------------------- system
 
     public abstract bool SetKeepAwake(bool enabled);
+
+    public virtual void SignalUserActivity()
+    {
+        try { Simulator.SimulateMouseMovementRelative(0, 0); }
+        catch (Exception e) { Log.Error("Activity signal failed", e); }
+    }
     public abstract bool AutostartEnabled { get; set; }
 
     public virtual void Dispose()

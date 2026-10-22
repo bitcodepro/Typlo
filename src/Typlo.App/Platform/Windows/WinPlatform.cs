@@ -407,6 +407,25 @@ public sealed class WinPlatform : IPlatform
     public bool SetKeepAwake(bool enabled) => Invoke(() =>
         SetThreadExecutionState(enabled ? ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED : ES_CONTINUOUS) != 0);
 
+    public static readonly TimeSpan ActivityIdleThreshold = TimeSpan.FromSeconds(45);
+
+    public unsafe void SignalUserActivity()
+    {
+        var info = new LASTINPUTINFO { cbSize = (uint)sizeof(LASTINPUTINFO) };
+        if (!GetLastInputInfo(ref info)) return;
+        var idleMs = (uint)GetTickCount64() - info.dwTime;
+        if (idleMs < ActivityIdleThreshold.TotalMilliseconds) return; // the user is active: do not interfere
+        SendZeroMouseMove();
+    }
+
+    /// <summary>A relative move of 0,0 resets the system idle timer (what Teams reads) without moving the cursor.</summary>
+    internal static unsafe void SendZeroMouseMove()
+    {
+        var input = new INPUT { type = INPUT_MOUSE };
+        input.mi.dwFlags = MOUSEEVENTF_MOVE;
+        SendInput(1, &input, sizeof(INPUT));
+    }
+
     // ---------------------------------------------------------------- autostart
 
     public bool AutostartEnabled

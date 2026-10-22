@@ -152,6 +152,18 @@ internal static class SelfTest
             await Check("keep-awake request is accepted by the OS", () =>
                 Task.FromResult(platform.SetKeepAwake(true) && platform.SetKeepAwake(false) ? null : "keep-awake failed"));
 
+            await Check("activity signal resets the system idle timer (Teams presence)", async () =>
+            {
+                if (!OperatingSystem.IsWindows()) { platform.SignalUserActivity(); return null; }
+                await Task.Delay(1500);
+                var before = IdleMs();
+                if (before < 1000) return null; // the user is typing; nothing to measure
+                Platform.Windows.WinPlatform.SendZeroMouseMove();
+                await Task.Delay(100);
+                var after = IdleMs();
+                return after < before ? null : $"idle {before} ms -> {after} ms";
+            });
+
             await Check("history file does not contain plaintext", () =>
             {
                 var all = string.Concat(Directory.GetFiles(dir).Where(f => f.Contains("history.db")).Select(f =>
@@ -177,6 +189,14 @@ internal static class SelfTest
         lines.Add(failures == 0 ? "ALL PASSED" : $"{failures} FAILED");
         await File.WriteAllLinesAsync(reportPath, lines);
         return failures == 0 ? 0 : 1;
+    }
+
+    private static uint IdleMs()
+    {
+        if (!OperatingSystem.IsWindows()) return 0;
+        var info = new Platform.Windows.Native.LASTINPUTINFO { cbSize = 8 };
+        Platform.Windows.Native.GetLastInputInfo(ref info);
+        return (uint)Platform.Windows.Native.GetTickCount64() - info.dwTime;
     }
 
     private static Core.Settings.AppSettings Tweak(Core.Settings.AppSettings s)

@@ -172,6 +172,9 @@ public sealed class MacPlatform : HookPlatformBase
         return _caffeinate is not null;
     }
 
+    // "caffeinate -u" declares the user active, resetting the HID idle time that presence apps read.
+    public override void SignalUserActivity() => Proc.Start("/usr/bin/caffeinate", "-u", "-t", "2")?.Dispose();
+
     private static string AgentPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "LaunchAgents", AgentLabel + ".plist");
 
