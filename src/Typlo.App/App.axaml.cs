@@ -69,9 +69,14 @@ public partial class App : Application
             desktop.Shutdown(1);
             return;
         }
-        Log.Info($"Started on {_platform.Name}, data in {paths.DataDir}");
+        Log.Info($"Started v{UpdateService.CurrentVersion} on {_platform.Name}, data in {paths.DataDir}");
         if (_platform.Capabilities.Notes is { } notes) Log.Info(notes);
         _ipc = new IpcServer(OnCommand);
+
+        UpdateService.CleanupAfterUpdate();
+        _updates = new UpdateService(paths.DataDir);
+        _updates.Changed += () => Dispatcher.UIThread.Post(RefreshTray);
+        _updates.Start();
 
         _controller.ShowHistoryRequested += prev => Dispatcher.UIThread.Post(() => ShowHistory(prev));
         CreateTray();
@@ -86,6 +91,7 @@ public partial class App : Application
     }
 
     private IpcServer? _ipc;
+    private UpdateService? _updates;
 
     /// <summary>Commands from a second instance (e.g. a desktop shortcut running "Typlo --history").</summary>
     private void OnCommand(string[] args)
@@ -93,6 +99,12 @@ public partial class App : Application
         if (_controller is null) return;
         if (args.Contains("--history"))
             Dispatcher.UIThread.Post(() => ShowHistory(_platform!.ForegroundWindow));
+        else if (args.Contains("--install-update"))
+            _ = Task.Run(async () =>
+            {
+                if (_updates is null || await _updates.CheckAsync() is null) return;
+                await InstallUpdateAsync();
+            });
         else if (args.Contains("--settings"))
             Dispatcher.UIThread.Post(ShowSettings);
         else if (Array.IndexOf(args, "--convert") is var i and >= 0)
@@ -124,13 +136,42 @@ public partial class App : Application
                 _historyWindow?.Close();
                 _historyWindow = null;
             }
-            if (_tray is not null) _tray.Menu = BuildTrayMenu();
+            RefreshTray();
         });
+    }
+
+    private void RefreshTray()
+    {
+        if (_tray is null) return;
+        _tray.Menu = BuildTrayMenu();
+        _tray.ToolTipText = _updates?.Available is { } u ? Loc.T("update.tooltip", "v" + u.Version) : "Typlo";
+    }
+
+    private async Task InstallUpdateAsync()
+    {
+        if (_updates is null) return;
+        if (await _updates.InstallAsync())
+            Dispatcher.UIThread.Post(() => (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown());
     }
 
     private NativeMenu BuildTrayMenu()
     {
         var menu = new NativeMenu();
+        if (_updates?.Available is { } update)
+        {
+            // Shown only in the menu: no pop-ups for updates.
+            var text = _updates.Progress is { } p ? Loc.T("update.downloading", p)
+                : _updates.LastError is not null ? Loc.T("update.failed")
+                : Loc.T("update.install", update.Version);
+            var item = new NativeMenuItem(text) { IsEnabled = _updates.Progress is null };
+            item.Click += (_, _) =>
+            {
+                if (_updates.LastError is not null) _updates.OpenReleasePage();
+                else _ = Task.Run(InstallUpdateAsync);
+            };
+            menu.Items.Add(item);
+            menu.Items.Add(new NativeMenuItemSeparator());
+        }
         var history = new NativeMenuItem(Loc.T("tray.history"));
         history.Click += (_, _) => ShowHistory(_platform!.ForegroundWindow);
         var settings = new NativeMenuItem(Loc.T("tray.settings"));
@@ -176,6 +217,7 @@ public partial class App : Application
     private void Cleanup()
     {
         _ipc?.Dispose();
+        _updates?.Dispose();
         _tray?.Dispose();
         _controller?.Dispose();
         _platform?.Dispose();

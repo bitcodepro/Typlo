@@ -63,6 +63,7 @@ public partial class SettingsWindow : Window
         CancelButton.Click += (_, _) => Close();
         ClearButton.Click += async (_, _) => await ClearHistory();
         Validate();
+        SaveStatus.Text = Loc.T("settings.version", Services.UpdateService.CurrentVersion);
 
         if (controller.FailedHotkeys.Count > 0)
             SaveStatus.Text = Loc.T("settings.failed", string.Join("; ", controller.FailedHotkeys));

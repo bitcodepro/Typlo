@@ -103,6 +103,13 @@ public static class Loc
         ["layout.ru"] = ("Russian", "русский", "російську"),
         ["layout.uk"] = ("Ukrainian", "украинский", "українську"),
 
+        ["update.install"] = ("⬆ Update to v{0}", "⬆ Обновить до v{0}", "⬆ Оновити до v{0}"),
+        ["update.downloading"] = ("Downloading update… {0}%", "Загрузка обновления… {0}%", "Завантаження оновлення… {0}%"),
+        ["update.failed"] = ("Update failed — open the download page", "Не удалось обновить — открыть страницу загрузки",
+            "Не вдалося оновити — відкрити сторінку завантаження"),
+        ["update.tooltip"] = ("Typlo — update {0} available", "Typlo — доступно обновление {0}", "Typlo — доступне оновлення {0}"),
+        ["settings.version"] = ("Typlo v{0}", "Typlo v{0}", "Typlo v{0}"),
+
         // Controller hotkey labels
         ["hk.toggle"] = ("Toggle layout", "Переключить раскладку", "Перемкнути розкладку"),
         ["hk.history"] = ("Clipboard history", "История буфера", "Історія буфера"),
