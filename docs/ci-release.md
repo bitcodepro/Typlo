@@ -20,11 +20,14 @@ availability or bound GitHub's queue time, including macOS ARM capacity shortage
   and `osx-x64`. Linux archives are `.tar.gz`; Windows and macOS archives are `.zip`.
   macOS archives contain `Typlo.app` and retain the existing ad-hoc signature.
   No signing identity or notarization is introduced.
-- Every archive includes README, MIT LICENSE, dependency notices and available
-  dependency license texts, plus `build-info.json` (version, RID and source commit).
+- Every archive contains only the executable (or `Typlo.app`), README, MIT LICENSE,
+  `THIRD-PARTY-NOTICES.txt` and `build-info.json` (version, RID and source commit) - no folders.
+  The notices file lists the packages actually shipped for that RID and their license/notice
+  texts, each identical text once.
   The verifier checks all five archive/checksum pairs, required contents, embedded
   source/version/RID, native executable architecture and Unix execute permissions.
-  It rejects traversal, links, missing platforms, extra assets and local data files.
+  It rejects traversal, links, unexpected top-level entries, incomplete notices,
+  missing platforms, extra assets and local data files.
 - Test reports and PR preview packages are kept as Actions artifacts for seven days.
 
 macOS Accessibility/Keychain, Windows desktop input and Linux Wayland behavior
