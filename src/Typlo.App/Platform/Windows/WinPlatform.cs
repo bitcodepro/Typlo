@@ -407,7 +407,13 @@ public sealed class WinPlatform : IPlatform
     public bool SetKeepAwake(bool enabled) => Invoke(() =>
         SetThreadExecutionState(enabled ? ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED : ES_CONTINUOUS) != 0);
 
-    public static readonly TimeSpan ActivityIdleThreshold = TimeSpan.FromSeconds(45);
+    /// <summary>
+    /// Teams shows "Away" after about 5 minutes without input, so only act after 3 idle minutes:
+    /// while the user is working nothing is ever sent.
+    /// </summary>
+    public static readonly TimeSpan ActivityIdleThreshold = TimeSpan.FromMinutes(3);
+
+    private const ushort VK_F15 = 0x7E;
 
     public unsafe void SignalUserActivity()
     {
@@ -415,16 +421,15 @@ public sealed class WinPlatform : IPlatform
         if (!GetLastInputInfo(ref info)) return;
         var idleMs = (uint)GetTickCount64() - info.dwTime;
         if (idleMs < ActivityIdleThreshold.TotalMilliseconds) return; // the user is active: do not interfere
-        SendZeroMouseMove();
+        SendActivityKey();
+        Log.Info($"Activity signal sent (idle {idleMs / 1000} s)");
     }
 
-    /// <summary>A relative move of 0,0 resets the system idle timer (what Teams reads) without moving the cursor.</summary>
-    internal static unsafe void SendZeroMouseMove()
-    {
-        var input = new INPUT { type = INPUT_MOUSE };
-        input.mi.dwFlags = MOUSEEVENTF_MOVE;
-        SendInput(1, &input, sizeof(INPUT));
-    }
+    /// <summary>
+    /// Presses F15, a key that standard keyboards do not have and applications ignore. It resets the
+    /// system idle timer that Teams reads, without touching the mouse.
+    /// </summary>
+    internal static void SendActivityKey() => Send([(VK_F15, false), (VK_F15, true)]);
 
     // ---------------------------------------------------------------- autostart
 

@@ -76,8 +76,8 @@ public sealed class AppController : IDisposable
     private void ApplyKeepAwake()
     {
         if (!_platform.SetKeepAwake(Settings.PreventScreenLock)) Log.Error("Keep-awake request failed");
-        // Keeping the display on does not stop Teams and similar apps from showing "Away":
-        // they look at the input idle time, so report activity while the user is idle.
+        // Keeping the display on does not stop Teams and similar apps from showing "Away": they look at the
+        // input idle time, so the platform reports activity once the user has been idle for a few minutes.
         _activityTimer?.Dispose();
         _activityTimer = Settings.PreventScreenLock
             ? new Timer(_ =>

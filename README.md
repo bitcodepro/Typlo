@@ -9,7 +9,9 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
 2. **Clipboard history** – `Ctrl+Shift+V` opens a popup near the cursor with text and image previews.
    Arrows/Enter, `Ctrl+1…9`, mouse; `Ctrl+P` pin, `Del` delete, type to search.
    Encrypted (AES-256-GCM). Limits on count, total size, image size; excluded apps.
-3. **System** – add to autostart; keep the screen from locking (like video playback).
+3. **System** – add to autostart; keep the screen from locking (like video playback). After 3 idle minutes
+   it also presses F15 (a key standard keyboards do not have) so Teams does not switch to "Away";
+   it never touches the mouse and sends nothing while you work.
 
 All hotkeys are configurable in Settings (tray icon → right click).
 

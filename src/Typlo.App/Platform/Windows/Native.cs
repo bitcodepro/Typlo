@@ -76,7 +76,6 @@ internal static partial class Native
     {
         [FieldOffset(0)] public uint type;
         [FieldOffset(8)] public KEYBDINPUT ki;
-        [FieldOffset(8)] public MOUSEINPUT mi;
         [FieldOffset(8)] private unsafe fixed byte _pad[32];
     }
 
@@ -139,9 +138,6 @@ internal static partial class Native
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool GetLastInputInfo(ref LASTINPUTINFO info);
     [LibraryImport("kernel32.dll")] public static partial ulong GetTickCount64();
 
-    [StructLayout(LayoutKind.Sequential)]
-    public struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public nint dwExtraInfo; }
-    public const uint INPUT_MOUSE = 0, MOUSEEVENTF_MOVE = 0x1;
 
     [LibraryImport("user32.dll")] public static partial int GetKeyboardLayoutList(int count, [Out] nint[]? list);
 }
