@@ -205,6 +205,23 @@ class PublicationTests(unittest.TestCase):
                 self.assertEqual(runner.call_count, 1)
                 self.assertIn("--draft", runner.call_args.args[0])
 
+    def test_draft_missing_from_list_at_first_is_retried(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            file = directory / "asset.zip"
+            file.write_bytes(b"asset")
+            draft = {"tag_name": "v0.1.0", "assets": [{"name": file.name, "size": file.stat().st_size}]}
+            responses = [{"object": {"sha": COMMIT}}, [], [], {}, [], [], [draft]]
+            with patch.object(release, "verify_packages", return_value=[file]), patch.object(release, "gh_api", side_effect=responses), patch.object(release, "run") as runner, patch.object(release.time, "sleep") as sleep:
+                release.publish(directory, VERSION, self.env)
+                self.assertEqual(sleep.call_count, 2)
+                self.assertIn("--draft=false", runner.call_args.args[0])
+
+    def test_draft_that_never_appears_fails_without_publishing(self):
+        with patch.object(release, "releases", return_value=[]), patch.object(release.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "did not appear"):
+                release.find_draft("v0.1.0", attempts=3)
+
     def test_success_pins_tag_to_tested_sha_and_publishes_after_upload(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

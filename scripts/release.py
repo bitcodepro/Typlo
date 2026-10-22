@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -354,6 +355,18 @@ def releases():
         page += 1
 
 
+def find_draft(tag, attempts=10, delay=3.0):
+    """The release list is eventually consistent: a just-created draft can be missing for a few seconds.
+    (The tag endpoint only promises published releases, so the list is the only way to see our draft.)"""
+    for attempt in range(attempts):
+        release = next((item for item in releases() if item["tag_name"] == tag), None)
+        if release is not None:
+            return release
+        if attempt < attempts - 1:
+            time.sleep(delay)
+    raise ValueError(f"Draft for {tag} did not appear in the release list; draft retained for inspection")
+
+
 def publish(directory, version, env):
     commit = env.get("GITHUB_SHA", "")
     if (env.get("GITHUB_ACTIONS") != "true" or env.get("GITHUB_REPOSITORY") != "bitcodepro/Typlo" or env.get("GITHUB_REF") != "refs/heads/main" or env.get("GITHUB_EVENT_NAME") not in ("push", "workflow_dispatch") or env.get("GITHUB_WORKFLOW_REF") != "bitcodepro/Typlo/.github/workflows/ci.yml@refs/heads/main" or not re.fullmatch(r"[0-9a-f]{40}", commit)):
@@ -372,8 +385,7 @@ def publish(directory, version, env):
     if "-" in version:
         args.append("--prerelease")
     run(args + [str(file) for file in files])
-    # The tag endpoint only promises published releases. List releases to include our draft.
-    release = next(item for item in releases() if item["tag_name"] == tag)
+    release = find_draft(tag)
     actual = {asset["name"]: asset["size"] for asset in release["assets"]}
     if actual != {file.name: file.stat().st_size for file in files}:
         raise ValueError("Release asset upload is incomplete; draft retained for inspection")
