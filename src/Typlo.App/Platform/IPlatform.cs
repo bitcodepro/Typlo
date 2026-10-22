@@ -70,5 +70,10 @@ public interface IPlatform : IDisposable
     // System
     /// <summary>Tells the OS the display is in use (like video playback): no idle screen-off, sleep or lock.</summary>
     bool SetKeepAwake(bool enabled);
+    /// <summary>
+    /// Makes the OS see user activity without visible effect (zero-distance mouse move), so presence-based
+    /// apps such as Teams do not switch to "Away". Only acts when the user has been idle for a while.
+    /// </summary>
+    void SignalUserActivity();
     bool AutostartEnabled { get; set; }
 }

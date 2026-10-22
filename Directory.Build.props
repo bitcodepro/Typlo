@@ -4,5 +4,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
+    <!-- Local builds; CI passes -p:Version=X.Y.Z. "-dev" builds never update themselves. -->
+    <Version>0.0.0-dev</Version>
   </PropertyGroup>
 </Project>

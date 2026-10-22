@@ -59,9 +59,9 @@ public static class Loc
         ["settings.autostart"] = ("Add to autostart", "Добавить в автозапуск", "Додати до автозапуску"),
         ["settings.keepAwake"] = ("Prevent screen lock (keep the display on, no sleep)",
             "Не блокировать экран (не гасить и не засыпать)", "Не блокувати екран (не гасити й не засинати)"),
-        ["settings.keepAwakeHint"] = ("Typlo tells the system the screen is in use, like during video playback. Manual locking (Win+L, ⌃⌘Q) still works.",
-            "Программа сообщает системе, что экран используется, как при просмотре видео. Ручная блокировка (Win+L, ⌃⌘Q) по-прежнему работает.",
-            "Програма повідомляє системі, що екран використовується, як під час перегляду відео. Ручне блокування (Win+L, ⌃⌘Q) працює як і раніше."),
+        ["settings.keepAwakeHint"] = ("Typlo tells the system the screen is in use, like during video playback, and keeps your status active in Teams and similar apps while you are away from the keyboard. Manual locking (Win+L, ⌃⌘Q) still works.",
+            "Программа сообщает системе, что экран используется, как при просмотре видео, и сохраняет статус «В сети» в Teams и похожих программах, пока вы не трогаете клавиатуру. Ручная блокировка (Win+L, ⌃⌘Q) по-прежнему работает.",
+            "Програма повідомляє системі, що екран використовується, як під час перегляду відео, і зберігає статус «У мережі» в Teams та схожих програмах, поки ви не торкаєтеся клавіатури. Ручне блокування (Win+L, ⌃⌘Q) працює як і раніше."),
         ["settings.layoutHeader"] = ("Fix the layout of selected text", "Смена раскладки выделенного текста", "Зміна розкладки виділеного тексту"),
         ["settings.layoutHint"] = ("Select text typed in the wrong layout and press a shortcut: “ghbdtn” → “привет”. Click a field and press a new shortcut; Backspace disables it.",
             "Выделите текст, набранный не в той раскладке, и нажмите сочетание: «ghbdtn» → «привет». Кликните в поле и нажмите новое сочетание; Backspace — отключить.",
@@ -102,6 +102,13 @@ public static class Loc
         ["layout.en"] = ("English", "английский", "англійську"),
         ["layout.ru"] = ("Russian", "русский", "російську"),
         ["layout.uk"] = ("Ukrainian", "украинский", "українську"),
+
+        ["update.install"] = ("⬆ Update to v{0}", "⬆ Обновить до v{0}", "⬆ Оновити до v{0}"),
+        ["update.downloading"] = ("Downloading update… {0}%", "Загрузка обновления… {0}%", "Завантаження оновлення… {0}%"),
+        ["update.failed"] = ("Update failed — open the download page", "Не удалось обновить — открыть страницу загрузки",
+            "Не вдалося оновити — відкрити сторінку завантаження"),
+        ["update.tooltip"] = ("Typlo — update {0} available", "Typlo — доступно обновление {0}", "Typlo — доступне оновлення {0}"),
+        ["settings.version"] = ("Typlo v{0}", "Typlo v{0}", "Typlo v{0}"),
 
         // Controller hotkey labels
         ["hk.toggle"] = ("Toggle layout", "Переключить раскладку", "Перемкнути розкладку"),

@@ -16,6 +16,9 @@
           <SolidColorBrush x:Key="MutedTextBrush" Color="#8A000000" />
           <SolidColorBrush x:Key="BadgeBrush" Color="#14000000" />
           <SolidColorBrush x:Key="AccentTextBrush" Color="#2563EB" />
+          <SolidColorBrush x:Key="SearchBrush" Color="#0D000000" />
+          <SolidColorBrush x:Key="SearchHoverBrush" Color="#14000000" />
+          <SolidColorBrush x:Key="SearchFocusBrush" Color="#FFFFFFFF" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
           <SolidColorBrush x:Key="PanelBrush" Color="#EE1E1F24" />
@@ -25,6 +28,9 @@
           <SolidColorBrush x:Key="MutedTextBrush" Color="#8CFFFFFF" />
           <SolidColorBrush x:Key="BadgeBrush" Color="#1FFFFFFF" />
           <SolidColorBrush x:Key="AccentTextBrush" Color="#7DA8FF" />
+          <SolidColorBrush x:Key="SearchBrush" Color="#14FFFFFF" />
+          <SolidColorBrush x:Key="SearchHoverBrush" Color="#1FFFFFFF" />
+          <SolidColorBrush x:Key="SearchFocusBrush" Color="#0AFFFFFF" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
     </ResourceDictionary>

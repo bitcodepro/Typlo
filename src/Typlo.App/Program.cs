@@ -13,6 +13,12 @@ internal static class Program
         Args = args;
         var isolated = args.Contains("--selftest") || args.Contains("--screenshots");
         using var mutex = new Mutex(true, @"Local\Typlo.SingleInstance", out var first);
+        if (!first && args.Contains("--updated"))
+        {
+            // Started by the updater: the old version is still shutting down and holds the mutex.
+            try { first = mutex.WaitOne(TimeSpan.FromSeconds(20)); }
+            catch (AbandonedMutexException) { first = true; }
+        }
         if (!first && !isolated)
         {
             // Already running: forward commands such as --history / --convert ru to it.
