@@ -131,7 +131,7 @@ def verify_archive(archive, version, rid, commit):
     line = checksum.read_text(encoding="ascii").strip()
     if line != f"{digest(archive)}  {expected}":
         raise ValueError(f"SHA-256 mismatch or invalid checksum filename: {expected}")
-    required = {"README.md", "LICENSE", "THIRD-PARTY-NOTICES.md", "docs/ci-release.md", "build-info.json", executable_path(rid)}
+    required = {"README.md", "LICENSE", NOTICES, "build-info.json", executable_path(rid)}
     if rid.startswith("osx-"):
         required.add("Typlo.app/Contents/Info.plist")
     with zipfile.ZipFile(archive) if extension(rid) == "zip" else tarfile.open(archive, "r:gz") as bundle:
@@ -153,6 +153,9 @@ def verify_archive(archive, version, rid, commit):
                 files[name] = entry
         if not required <= files.keys():
             raise ValueError(f"Missing package entries: {sorted(required - files.keys())}")
+        extra = sorted({name.split("/")[0] for name in files} - TOP_LEVEL)
+        if extra:
+            raise ValueError(f"Unexpected top-level package entries: {extra}")
 
         def read(name, limit=65536):
             stream = bundle.open(files[name]) if isinstance(bundle, zipfile.ZipFile) else bundle.extractfile(files[name])
@@ -164,6 +167,9 @@ def verify_archive(archive, version, rid, commit):
             raise ValueError("Package source/version/RID mismatch")
         if b"MIT License" not in read("LICENSE") or b"Copyright (c) 2026 bitcodepro" not in read("LICENSE"):
             raise ValueError("Missing Typlo MIT copyright")
+        notices = read(NOTICES, 16 * 1024 * 1024)
+        if not all(component in notices for component in (b"Avalonia", b"SkiaSharp", b"License for:")):
+            raise ValueError("Third-party notices are incomplete")
         validate_executable(read(executable_path(rid), 8192), rid)
         executable = files[executable_path(rid)]
         mode = executable.external_attr >> 16 if isinstance(bundle, zipfile.ZipFile) else executable.mode
@@ -186,26 +192,86 @@ def verify_packages(directory, version, commit, rids=RIDS):
     return [directory / name for name in sorted(expected)]
 
 
-def collect_notices(staging):
-    """Retain available dependency license/notice texts, without copying NuGet binaries."""
-    assets = json.loads((ROOT / "src/Typlo.App/obj/project.assets.json").read_text(encoding="utf-8-sig"))
-    lines = ["# Third-party notices", "", "Typlo's MIT license does not replace dependency licenses.", "", "Restored application packages:", ""]
-    for name, library in sorted(assets["libraries"].items()):
-        if library["type"] != "package":
+NOTICES = "THIRD-PARTY-NOTICES.txt"
+# Everything an archive may contain at its top level: no extra folders.
+TOP_LEVEL = {"README.md", "LICENSE", NOTICES, "build-info.json", "Typlo.exe", "Typlo", "Typlo.app"}
+LICENSE_FILE = re.compile(r"(?i)^(license|licence|copying)([._-].*)?(\.txt|\.md)?$")
+NOTICE_FILE = re.compile(r"(?i)^(third[-_]?party[-_]?notices?|notice)(\.txt|\.md)?$")
+
+
+def shipped_packages(assets, rid):
+    """Packages whose runtime or native files end up in the published app for this RID."""
+    target = assets["targets"].get(f"net10.0/{rid}") or assets["targets"]["net10.0"]
+    families = {rid, rid.split("-")[0]} | ({"unix"} if not rid.startswith("win") else set())
+    shipped = []
+    for key, entry in target.items():
+        if entry.get("type") != "package":
             continue
-        lines.append(f"- {name}")
-        for folder in assets["packageFolders"]:
-            package = Path(folder) / library["path"]
-            if not package.is_dir():
+        files = list(entry.get("runtime", {})) + list(entry.get("native", {}))
+        files += [f for f in entry.get("runtimeTargets", {}) if f.split("/")[1] in families]
+        if any(not f.endswith("/_._") for f in files):
+            shipped.append(key)
+    return sorted(shipped, key=str.lower)
+
+
+def package_texts(assets, key):
+    """License and notice texts found in a restored package, plus its declared license as a fallback."""
+    library = assets["libraries"][key]
+    for folder in assets["packageFolders"]:
+        package = Path(folder) / library["path"]
+        if not package.is_dir():
+            continue
+        licenses, notices = [], []
+        for file in sorted(package.rglob("*")):
+            if not file.is_file() or file.suffix.lower() not in ("", ".txt", ".md"):
                 continue
-            for file in package.rglob("*"):
-                if file.is_file() and re.match(r"(?i)^(license|copying|notice|third[-_]?party)", file.name) and file.suffix.lower() in ("", ".txt", ".md"):
-                    destination = staging / "licenses" / library["path"] / file.relative_to(package)
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(file, destination)
-            break
-    lines += ["", "Available package license/notice texts are retained under licenses/.", "", ".NET runtime: https://github.com/dotnet/runtime/blob/main/LICENSE.TXT", "", ".NET third-party notices: https://github.com/dotnet/runtime/blob/main/THIRD-PARTY-NOTICES.TXT", ""]
-    (staging / "THIRD-PARTY-NOTICES.md").write_text("\n".join(lines), encoding="utf-8")
+            if LICENSE_FILE.match(file.name):
+                licenses.append(file.read_text(encoding="utf-8", errors="replace").strip())
+            elif NOTICE_FILE.match(file.name):
+                notices.append(file.read_text(encoding="utf-8", errors="replace").strip())
+        declared = None
+        nuspec = next(package.glob("*.nuspec"), None)
+        if nuspec is not None:
+            text = nuspec.read_text(encoding="utf-8", errors="replace")
+            match = re.search(r"<license[^>]*>([^<]+)</license>", text) or re.search(r"<licenseUrl>([^<]+)</licenseUrl>", text)
+            declared = match.group(1).strip() if match else None
+        return list(dict.fromkeys(licenses)), list(dict.fromkeys(notices)), declared
+    return [], [], None
+
+
+def collect_notices(staging, rid):
+    """One THIRD-PARTY-NOTICES.txt for the packages actually shipped for this RID; identical texts appear once."""
+    assets = json.loads((ROOT / "src/Typlo.App/obj/project.assets.json").read_text(encoding="utf-8-sig"))
+    rule = "=" * 78
+    components, by_license, by_notice = [], {}, {}
+    for key in shipped_packages(assets, rid):
+        name, version = key.split("/")
+        licenses, notices, declared = package_texts(assets, key)
+        components.append(f"  {name} {version}" + (f"  ({declared})" if declared else ""))
+        for text in licenses:
+            by_license.setdefault(text, []).append(name)
+        if not licenses and declared:
+            by_license.setdefault(f"License: {declared}", []).append(name)
+        for text in notices:
+            by_notice.setdefault(text, []).append(name)
+
+    lines = [
+        "Typlo third-party notices",
+        "",
+        "Typlo is MIT-licensed (see LICENSE). It includes the open-source components below; their licenses",
+        "still apply to them. Identical license texts are listed once with all components that use them.",
+        "",
+        rule, "Components in this build", rule,
+        *components,
+        "  .NET runtime  (MIT) https://github.com/dotnet/runtime/blob/main/LICENSE.TXT",
+        "    .NET third-party notices: https://github.com/dotnet/runtime/blob/main/THIRD-PARTY-NOTICES.TXT",
+        "",
+    ]
+    for text, names in by_license.items():
+        lines += [rule, "License for: " + ", ".join(dict.fromkeys(names)), rule, text, ""]
+    for text, names in by_notice.items():
+        lines += [rule, "Notices for: " + ", ".join(dict.fromkeys(names)), rule, text, ""]
+    (staging / NOTICES).write_text("\n".join(lines), encoding="utf-8")
 
 
 def package(directory, version, rid):
@@ -239,9 +305,7 @@ def package(directory, version, rid):
                 shutil.copy2(file, target)
         for doc in ("README.md", "LICENSE"):
             shutil.copyfile(ROOT / doc, staging / doc)
-        (staging / "docs").mkdir()
-        shutil.copyfile(ROOT / "docs/ci-release.md", staging / "docs/ci-release.md")
-        collect_notices(staging)
+        collect_notices(staging, rid)
         (staging / "build-info.json").write_text(json.dumps({"version": version, "rid": rid, "commit": commit}) + "\n", encoding="utf-8")
         executable = staging / executable_path(rid)
         executable.chmod(executable.stat().st_mode | 0o111)

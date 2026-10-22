@@ -34,7 +34,7 @@ def executable(rid):
 
 
 def make_archive(directory, rid, change=None, link=False):
-    files = {"README.md": b"Typlo", "LICENSE": b"MIT License\nCopyright (c) 2026 bitcodepro", "THIRD-PARTY-NOTICES.md": b"Dependencies", "docs/ci-release.md": b"Release instructions", "build-info.json": json.dumps({"version": VERSION, "rid": rid, "commit": COMMIT}).encode(), release.executable_path(rid): executable(rid)}
+    files = {"README.md": b"Typlo", "LICENSE": b"MIT License\nCopyright (c) 2026 bitcodepro", release.NOTICES: b"Components in this build\n  Avalonia 12.1.3\n  SkiaSharp 3.119.4\nLicense for: Avalonia\nMIT", "build-info.json": json.dumps({"version": VERSION, "rid": rid, "commit": COMMIT}).encode(), release.executable_path(rid): executable(rid)}
     if rid.startswith("osx-"):
         files["Typlo.app/Contents/Info.plist"] = plistlib.dumps({"CFBundleShortVersionString": VERSION, "CFBundleExecutable": "Typlo"})
     if change:
@@ -127,6 +127,31 @@ class PackageTests(unittest.TestCase):
             archive = make_archive(subdirectory, "win-x64", change)
             with self.subTest(index=index), self.assertRaises(ValueError):
                 release.verify_archive(archive, VERSION, "win-x64", COMMIT)
+
+    def test_rejects_extra_folders_and_incomplete_notices(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for rid in ("win-x64", "linux-x64"):
+                with self.subTest(rid=rid):
+                    archive = make_archive(Path(temporary), rid, lambda files: files.update({"licenses/avalonia/LICENSE": b"MIT"}))
+                    with self.assertRaisesRegex(ValueError, "Unexpected top-level"):
+                        release.verify_archive(archive, VERSION, rid, COMMIT)
+                    archive.unlink()
+                    archive.with_name(archive.name + ".sha256").unlink()
+                    archive = make_archive(Path(temporary), rid, lambda files: files.update({release.NOTICES: b"Dependencies"}))
+                    with self.assertRaisesRegex(ValueError, "notices are incomplete"):
+                        release.verify_archive(archive, VERSION, rid, COMMIT)
+                    archive.unlink()
+                    archive.with_name(archive.name + ".sha256").unlink()
+
+    def test_shipped_packages_skip_build_only_and_other_platforms(self):
+        assets = {"targets": {"net10.0/win-x64": {
+            "Avalonia/12.1.3": {"type": "package", "runtime": {"lib/net8.0/Avalonia.dll": {}}},
+            "SkiaSharp.NativeAssets.Win32/3.119.4": {"type": "package", "native": {"runtimes/win-x64/native/libSkiaSharp.dll": {}}},
+            "SkiaSharp.NativeAssets.Linux/3.119.4": {"type": "package", "runtime": {"lib/net8.0/_._": {}}},
+            "Microsoft.NET.ILLink.Tasks/10.0.13": {"type": "package", "build": {"build/x.props": {}}},
+            "Typlo.Core/1.0.0": {"type": "project", "runtime": {"bin/placeholder/Typlo.Core.dll": {}}},
+        }}}
+        self.assertEqual(release.shipped_packages(assets, "win-x64"), ["Avalonia/12.1.3", "SkiaSharp.NativeAssets.Win32/3.119.4"])
 
     def test_rejects_zip_and_tar_links(self):
         for rid in ("osx-arm64", "linux-x64"):
