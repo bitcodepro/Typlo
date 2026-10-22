@@ -13,7 +13,7 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
 
 All hotkeys are configurable in Settings (tray icon → right click).
 
-**Updates** – Typlo checks GitHub Releases in the background (20 s after start, then every 6 h) and never
+**Updates** – Typlo checks GitHub Releases once, 20 s after it starts (no periodic checks), and never
 pops up a window. When a newer stable release exists, the tray menu shows “⬆ Update to vX.Y.Z”: it downloads
 the archive for the current OS, verifies its SHA-256, swaps the files (keeping `data/`), restarts, and removes
 the old files on the next start. Local `0.0.0-dev` builds do not update; `TYPLO_UPDATE_FEED` overrides the feed URL for tests.

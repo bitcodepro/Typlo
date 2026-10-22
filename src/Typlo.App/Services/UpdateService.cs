@@ -7,15 +7,15 @@ using Typlo.Core.Updates;
 namespace Typlo.App.Services;
 
 /// <summary>
-/// Quietly checks GitHub Releases for a newer version (never pops up anything). When one exists,
+/// Checks GitHub Releases for a newer version once, shortly after start (never pops up anything). When one exists,
 /// <see cref="Available"/> is set and the tray menu offers it; <see cref="InstallAsync"/> downloads it,
 /// verifies the SHA-256, swaps the files and restarts the app.
 /// </summary>
 public sealed class UpdateService : IDisposable
 {
     public const string DefaultFeed = "https://api.github.com/repos/bitcodepro/Typlo/releases/latest";
-    private static readonly TimeSpan FirstCheck = TimeSpan.FromSeconds(20);
-    private static readonly TimeSpan Interval = TimeSpan.FromHours(6);
+    // Shortly after start, so the network is up after logon; no periodic re-checks.
+    private static readonly TimeSpan CheckDelay = TimeSpan.FromSeconds(20);
 
     private readonly HttpClient _http;
     private readonly string _feed;
@@ -64,7 +64,7 @@ public sealed class UpdateService : IDisposable
     public void Start()
     {
         if (!Enabled || Rid is null) return;
-        _timer = new Timer(_ => _ = CheckAsync(), null, FirstCheck, Interval);
+        _timer = new Timer(_ => _ = CheckAsync(), null, CheckDelay, Timeout.InfiniteTimeSpan);
     }
 
     public async Task<UpdateInfo?> CheckAsync()
