@@ -45,7 +45,12 @@ public abstract class HookPlatformBase : IPlatform
                 _hook = new SimpleGlobalHook();
                 _hook.KeyPressed += OnKeyPressed;
                 _hook.KeyReleased += (_, e) => _down.TryRemove(e.Data.KeyCode, out bool _);
-                _hook.MouseMoved += (_, e) => { _cursorX = e.Data.X; _cursorY = e.Data.Y; };
+                _hook.MouseMoved += (_, e) =>
+                {
+                    _cursorX = e.Data.X;
+                    _cursorY = e.Data.Y;
+                    Interlocked.Exchange(ref _lastRealInputTicks, Environment.TickCount64);
+                };
                 _hook.MouseDragged += (_, e) => { _cursorX = e.Data.X; _cursorY = e.Data.Y; };
                 _ = _hook.RunAsync().ContinueWith(t =>
                 {
@@ -90,6 +95,7 @@ public abstract class HookPlatformBase : IPlatform
     {
         var code = e.Data.KeyCode;
         _down[code] = true;
+        if (!e.IsEventSimulated) Interlocked.Exchange(ref _lastRealInputTicks, Environment.TickCount64);
         if (DebugKeys) Log.Info($"key {code} mask {e.RawEvent.Mask} simulated {e.IsEventSimulated}");
         if (e.IsEventSimulated && !AcceptSimulatedHotkeys) return;
         var mods = CurrentModifiers();
@@ -247,9 +253,18 @@ public abstract class HookPlatformBase : IPlatform
 
     public abstract bool SetKeepAwake(bool enabled);
 
+    private long _lastRealInputTicks = Environment.TickCount64;
+
+    /// <summary>After 3 idle minutes, presses F15 (absent on standard keyboards); never touches the mouse.</summary>
     public virtual void SignalUserActivity()
     {
-        try { Simulator.SimulateMouseMovementRelative(0, 0); }
+        if (Environment.TickCount64 - Interlocked.Read(ref _lastRealInputTicks) < 3 * 60_000) return;
+        try
+        {
+            Simulator.SimulateKeyPress(KeyCode.VcF15);
+            Simulator.SimulateKeyRelease(KeyCode.VcF15);
+            Log.Info("Activity signal sent");
+        }
         catch (Exception e) { Log.Error("Activity signal failed", e); }
     }
     public abstract bool AutostartEnabled { get; set; }

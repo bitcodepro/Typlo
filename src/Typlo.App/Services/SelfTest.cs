@@ -158,7 +158,7 @@ internal static class SelfTest
                 await Task.Delay(1500);
                 var before = IdleMs();
                 if (before < 1000) return null; // the user is typing; nothing to measure
-                Platform.Windows.WinPlatform.SendZeroMouseMove();
+                Platform.Windows.WinPlatform.SendActivityKey();
                 await Task.Delay(100);
                 var after = IdleMs();
                 return after < before ? null : $"idle {before} ms -> {after} ms";
