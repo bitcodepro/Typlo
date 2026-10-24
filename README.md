@@ -17,7 +17,7 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
    "Copy text from image" (offline OCR: Windows built-in, `tesseract` on Linux). "Pause history" in the tray stops recording for
    10 minutes, 1 hour or until restart.
    Encrypted (AES-256-GCM). Limits on count, total size, image size; excluded apps.
-3. **System** – interface language and theme (system/light/dark), export/import of settings, add to autostart; keep the screen from locking (like video playback). After 3 idle minutes
+3. **System** – interface language (English, Русский, Українська, Deutsch, Español, Português, Français, Italiano, 中文, 日本語) and theme (system/light/dark), export/import of settings, add to autostart; keep the screen from locking (like video playback). After 3 idle minutes
    it also presses F15 (a key standard keyboards do not have) so Teams does not switch to "Away";
    it never touches the mouse and sends nothing while you work.
 

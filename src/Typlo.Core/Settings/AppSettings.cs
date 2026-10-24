@@ -56,7 +56,7 @@ public sealed class AppSettings
     /// <summary>Interface theme: "system" (default), "light" or "dark".</summary>
     public string UiTheme { get; set; } = "system";
 
-    /// <summary>Interface language: "en" (default), "ru" or "uk".</summary>
+    /// <summary>Interface language: "en" (default), "ru", "uk", "de", "es", "pt", "fr", "it", "zh" or "ja".</summary>
     public string UiLanguage { get; set; } = "en";
 
     /// <summary>Keep the display on and the session unlocked, the way video players do.</summary>
@@ -81,7 +81,7 @@ public sealed class AppSettings
             .Where(id => global::Typlo.Core.Layouts.KeyboardLayouts.Find(id) is not null)
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (Layouts.Count < 2) Layouts = ["en", "ru"];
-        if (UiLanguage is not ("en" or "ru" or "uk")) UiLanguage = "en";
+        if (UiLanguage is not ("en" or "ru" or "uk" or "de" or "es" or "pt" or "fr" or "it" or "zh" or "ja")) UiLanguage = "en";
         if (UiTheme is not ("system" or "light" or "dark")) UiTheme = "system";
         Snippets = (Snippets ?? []).Where(s => s is not null && !string.IsNullOrWhiteSpace(s.Trigger)).ToList();
         CaseHotkey ??= "";
