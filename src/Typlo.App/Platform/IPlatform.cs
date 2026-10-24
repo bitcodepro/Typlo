@@ -3,7 +3,8 @@ using Typlo.Core.Hotkeys;
 namespace Typlo.App.Platform;
 
 /// <summary>Raw clipboard content as read from the OS, before thumbnails/encoding.</summary>
-public sealed record RawClip(string? Text, byte[]? Image, bool ImageIsPng, string? SourceApp);
+public sealed record RawClip(string? Text, byte[]? Image, bool ImageIsPng, string? SourceApp,
+    string? Html = null, string? Rtf = null, IReadOnlyList<string>? Files = null);
 
 /// <summary>Opaque copy of the clipboard formats, used to put the user's clipboard back.</summary>
 public sealed class ClipboardSnapshot(IReadOnlyList<(string Format, byte[] Data)> formats)
@@ -44,6 +45,10 @@ public interface IPlatform : IDisposable
     ulong ClipboardSequence { get; }
     string? ReadText();
     void SetText(string text);
+    /// <summary>Puts text with its formatted versions (HTML fragment, RTF); null formats are left out.</summary>
+    void SetRichText(string text, string? html, string? rtf);
+    /// <summary>Puts a list of files, as if they were copied in the file manager.</summary>
+    void SetFiles(IReadOnlyList<string> paths);
     /// <summary>Puts an image on the clipboard; <paramref name="bgra"/> is top-down 32-bit pixels.</summary>
     void SetImage(byte[] png, byte[] bgra, int width, int height);
     ClipboardSnapshot Snapshot();

@@ -154,6 +154,31 @@ public partial class App : Application
             Dispatcher.UIThread.Post(() => (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown());
     }
 
+    /// <summary>"Pause history" submenu, or a "Resume" item while paused.</summary>
+    private NativeMenuItem BuildPauseItem()
+    {
+        var controller = _controller!;
+        if (controller.IsPaused)
+        {
+            var resume = new NativeMenuItem(controller.PausedUntil == DateTimeOffset.MaxValue
+                ? Loc.T("tray.resumeRestart")
+                : Loc.T("tray.resumeUntil", controller.PausedUntil!.Value.LocalDateTime));
+            resume.Click += (_, _) => controller.ResumeHistory();
+            return resume;
+        }
+        var pause = new NativeMenuItem(Loc.T("tray.pause")) { Menu = new NativeMenu() };
+        foreach (var (key, duration) in new (string, TimeSpan?)[]
+                 {
+                     ("tray.pause10", TimeSpan.FromMinutes(10)), ("tray.pause60", TimeSpan.FromHours(1)), ("tray.pauseRestart", null),
+                 })
+        {
+            var item = new NativeMenuItem(Loc.T(key));
+            item.Click += (_, _) => controller.PauseHistory(duration);
+            pause.Menu.Items.Add(item);
+        }
+        return pause;
+    }
+
     private NativeMenu BuildTrayMenu()
     {
         var menu = new NativeMenu();
@@ -188,6 +213,7 @@ public partial class App : Application
         menu.Items.Add(settings);
         menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(keepAwake);
+        menu.Items.Add(BuildPauseItem());
         menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(exit);
         return menu;

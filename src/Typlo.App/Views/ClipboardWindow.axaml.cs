@@ -93,7 +93,7 @@ public partial class ClipboardWindow : Window
                 e.Handled = true;
                 break;
             case Key.Enter:
-                PasteSelected();
+                PasteSelected(plainText: e.KeyModifiers.HasFlag(KeyModifiers.Shift));
                 e.Handled = true;
                 break;
             case Key.Down:
@@ -142,12 +142,12 @@ public partial class ClipboardWindow : Window
 
     private ClipItemViewModel? Selected => List.SelectedItem as ClipItemViewModel;
 
-    private void PasteSelected()
+    private void PasteSelected(bool plainText = false)
     {
         if (Selected is not { } item) return;
         Hide();
         var target = _targetWindow;
-        _ = Task.Run(() => _controller.PasteAsync(item.Entry.Id, target));
+        _ = Task.Run(() => _controller.PasteAsync(item.Entry.Id, target, plainText: plainText));
     }
 
     private void DeleteSelected()

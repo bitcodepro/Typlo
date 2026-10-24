@@ -55,7 +55,9 @@
         <TextBlock Classes="hint" Margin="0,0,0,8"
                    Text="{l:Tr settings.layoutHint}" />
         <Grid x:Name="HotkeyGrid" ColumnDefinitions="190,*,Auto" RowDefinitions="Auto" />
-        <CheckBox x:Name="SwitchLayoutBox" Margin="0,8,0,0"
+        <CheckBox x:Name="LastWordBox" Margin="0,8,0,0"
+                  Content="{l:Tr settings.lastWord}" />
+        <CheckBox x:Name="SwitchLayoutBox" Margin="0,4,0,0"
                   Content="{l:Tr settings.switchLayout}" />
         <Grid ColumnDefinitions="190,*,Auto,*" Margin="0,8,0,0">
           <TextBlock Classes="label" Text="{l:Tr settings.pair}" />

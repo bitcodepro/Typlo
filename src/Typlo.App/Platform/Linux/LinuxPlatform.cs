@@ -120,8 +120,15 @@ public sealed class LinuxPlatform : HookPlatformBase
         // KeePassXC & co. mark secrets so clipboard managers skip them.
         if (targets.Contains("x-kde-passwordManagerHint")) return null;
         var app = ActiveProcessName();
+        if (targets.Contains(UriListTarget) && Read(UriListTarget) is { Length: > 0 } uris && ParseUriList(uris) is { Count: > 0 } files)
+            return new RawClip(null, null, false, app, Files: files);
         if (TextTargetOf(targets) is { } tt && Read(tt) is { Length: > 0 } bytes)
-            return new RawClip(System.Text.Encoding.UTF8.GetString(bytes), null, false, app);
+        {
+            var html = targets.Contains("text/html") && Read("text/html") is { Length: > 0 } h ? System.Text.Encoding.UTF8.GetString(h) : null;
+            var rtfTarget = new[] { "text/rtf", "application/rtf" }.FirstOrDefault(targets.Contains);
+            var rtf = rtfTarget is not null && Read(rtfTarget) is { Length: > 0 } r ? System.Text.Encoding.Latin1.GetString(r) : null;
+            return new RawClip(System.Text.Encoding.UTF8.GetString(bytes), null, false, app, html, rtf);
+        }
         if (targets.Contains(PngTarget) && Read(PngTarget) is { Length: > 0 } png)
             return new RawClip(null, png, true, app);
         return null;
@@ -137,6 +144,19 @@ public sealed class LinuxPlatform : HookPlatformBase
         Write(_wayland ? "text/plain;charset=utf-8" : TextTarget, System.Text.Encoding.UTF8.GetBytes(text));
 
     protected override void WriteImage(byte[] png, byte[] bgra, int width, int height) => Write(PngTarget, png);
+
+    private const string UriListTarget = "text/uri-list";
+
+    private static List<string> ParseUriList(byte[] data) =>
+        System.Text.Encoding.UTF8.GetString(data).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(l => !l.StartsWith('#') && Uri.TryCreate(l, UriKind.Absolute, out var u) && u.IsFile)
+            .Select(l => new Uri(l).LocalPath).ToList();
+
+    // xclip/wl-copy serve one type per selection: plain text pastes everywhere, so formatting is not restored here.
+    protected override void WriteRichText(string text, string? html, string? rtf) => WriteText(text);
+
+    protected override void WriteFiles(IReadOnlyList<string> paths) =>
+        Write(UriListTarget, System.Text.Encoding.UTF8.GetBytes(string.Concat(paths.Select(p => new Uri(p).AbsoluteUri + "\r\n"))));
 
     protected override ClipboardSnapshot ReadSnapshot()
     {

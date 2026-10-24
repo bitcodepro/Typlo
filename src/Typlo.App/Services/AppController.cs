@@ -156,19 +156,21 @@ public sealed class AppController : IDisposable
             var snapshot = _platform.Snapshot();
             // A unique placeholder guarantees the copy is visible as a change even when the selection
             // equals what was already on the clipboard (content-hashing platforms such as Linux).
-            _platform.SetText("⁣typlo-" + Guid.NewGuid().ToString("N"));
-            var before = _platform.ClipboardSequence;
-            _platform.SendCopy();
-            if (!await WaitForClipboardChange(before, TimeSpan.FromMilliseconds(600)))
+            var text = await CopySelectionAsync();
+            if (text is null && Settings.ConvertLastWord)
+            {
+                // Nothing selected: select the word left of the caret and try again.
+                _platform.SendChord(OperatingSystem.IsMacOS() ? KeyModifiers.Alt | KeyModifiers.Shift : KeyModifiers.Ctrl | KeyModifiers.Shift, "Left");
+                await Task.Delay(40);
+                text = await CopySelectionAsync();
+            }
+            if (string.IsNullOrEmpty(text))
             {
                 Log.Info("Convert: nothing selected");
                 _platform.Restore(snapshot);
                 if (target is not null && Settings.SwitchSystemLayout) _platform.SwitchKeyboardLayout(window, target.LangId);
                 return;
             }
-
-            var text = _platform.ReadText();
-            if (string.IsNullOrEmpty(text)) { _platform.Restore(snapshot); return; }
 
             var result = target is null ? _converter.Toggle(text) : _converter.ConvertTo(text, target);
             if (result.Changed && result.Text != text)
@@ -192,6 +194,22 @@ public sealed class AppController : IDisposable
         }
     }
 
+    /// <summary>Sends Copy and returns the selected text, or null when nothing is selected.</summary>
+    private async Task<string?> CopySelectionAsync()
+    {
+        // A unique placeholder guarantees the copy is visible as a change even when the selection
+        // equals what was already on the clipboard (content-hashing platforms such as Linux).
+        _platform.SetText("\u2063typlo-" + Guid.NewGuid().ToString("N"));
+        var before = _platform.ClipboardSequence;
+        _platform.SendCopy();
+        if (!await WaitForClipboardChange(before, TimeSpan.FromMilliseconds(600))) return null;
+        var text = _platform.ReadText();
+        if (string.IsNullOrEmpty(text) || text.StartsWith('\u2063')) return null;
+        // Editors such as VS Code copy the whole current line (with its line break) when nothing is selected.
+        if (text.EndsWith('\n') && text.IndexOf('\n') == text.Length - 1) return null;
+        return text;
+    }
+
     private async Task<bool> WaitForClipboardChange(ulong before, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
@@ -203,14 +221,41 @@ public sealed class AppController : IDisposable
         return false;
     }
 
+    /// <summary>When set, nothing is stored until this moment (<see cref="DateTimeOffset.MaxValue"/> = until restart).</summary>
+    public DateTimeOffset? PausedUntil { get; private set; }
+
+    public bool IsPaused => PausedUntil is { } until && until > DateTimeOffset.Now;
+
+    /// <summary>Stops storing clipboard history for <paramref name="duration"/>, or until the app restarts when null.</summary>
+    public void PauseHistory(TimeSpan? duration)
+    {
+        PausedUntil = duration is { } d ? DateTimeOffset.Now + d : DateTimeOffset.MaxValue;
+        _pauseTimer?.Dispose();
+        // Refresh the tray when a timed pause ends by itself.
+        _pauseTimer = duration is { } span ? new Timer(_ => ResumeHistory(), null, span, Timeout.InfiniteTimeSpan) : null;
+        Log.Info(duration is null ? "History paused until restart" : $"History paused for {duration}");
+        SettingsChanged?.Invoke();
+    }
+
+    public void ResumeHistory()
+    {
+        PausedUntil = null;
+        _pauseTimer?.Dispose();
+        _pauseTimer = null;
+        SettingsChanged?.Invoke();
+    }
+
+    private Timer? _pauseTimer;
+
     private void OnClipboardCaptured(RawClip raw)
     {
-        if (!Settings.HistoryEnabled) return;
+        if (!Settings.HistoryEnabled || IsPaused) return;
         if (raw.SourceApp is { } app &&
             Settings.ExcludedApps.Any(x => string.Equals(x.Trim(), app, StringComparison.OrdinalIgnoreCase))) return;
         try
         {
-            if (raw.Text is not null) Store.Add(ClipContent.FromText(raw.Text, raw.SourceApp));
+            if (raw.Files is { Count: > 0 } files) Store.Add(ClipContent.FromFiles(files, raw.SourceApp));
+            else if (raw.Text is not null) Store.Add(ClipContent.FromText(raw.Text, raw.SourceApp, raw.Html, raw.Rtf));
             else if (raw.Image is not null)
             {
                 if (raw.Image.LongLength > Settings.MaxImageBytes * 4) return; // BMPs are big; PNG is checked by the store
@@ -221,18 +266,31 @@ public sealed class AppController : IDisposable
         catch (Exception e) { Log.Error("Storing clip failed", e); }
     }
 
-    /// <summary>Puts a history item on the clipboard, focuses the previous window and pastes it.</summary>
-    public async Task PasteAsync(long id, nint targetWindow, bool paste = true)
+    /// <summary>
+    /// Puts a history item on the clipboard, focuses the previous window and pastes it.
+    /// <paramref name="plainText"/> drops the HTML/RTF formatting of text items.
+    /// </summary>
+    public async Task PasteAsync(long id, nint targetWindow, bool paste = true, bool plainText = false)
     {
         try
         {
             var content = Store.Get(id);
             if (content is null) return;
-            if (content.Kind == ClipKind.Text) _platform.SetText(content.Text!);
-            else
+            switch (content.Kind)
             {
-                var (bgra, w, h) = ImageCodec.DecodeBgra(content.ImagePng!);
-                _platform.SetImage(content.ImagePng!, bgra, w, h);
+                case ClipKind.Text when content.HasFormatting && !plainText:
+                    _platform.SetRichText(content.Text!, content.Html, content.Rtf);
+                    break;
+                case ClipKind.Text:
+                    _platform.SetText(content.Text!);
+                    break;
+                case ClipKind.Files:
+                    _platform.SetFiles(content.Files);
+                    break;
+                default:
+                    var (bgra, w, h) = ImageCodec.DecodeBgra(content.ImagePng!);
+                    _platform.SetImage(content.ImagePng!, bgra, w, h);
+                    break;
             }
             Store.Touch(id);
             if (!paste || !_platform.Capabilities.SimulateInput) return;
@@ -249,6 +307,7 @@ public sealed class AppController : IDisposable
         _platform.HotkeyPressed -= OnHotkey;
         _platform.ClipboardCaptured -= OnClipboardCaptured;
         _activityTimer?.Dispose();
+        _pauseTimer?.Dispose();
         _platform.SetKeepAwake(false);
         Store.Dispose();
     }
