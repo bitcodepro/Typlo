@@ -24,6 +24,12 @@ public partial class SettingsWindow : Window
 
     /// <summary>Called after a successful import so the app can show a fresh settings window.</summary>
     public Action? Reopen { get; set; }
+
+    /// <summary>Opens the "Check for updates" window.</summary>
+    public Action? CheckForUpdates { get; set; }
+
+    /// <summary>Opens the list of all keyboard shortcuts.</summary>
+    public Action? ShowShortcuts { get; set; }
     private bool _saved;
 
     public SettingsWindow() : this(null!) { } // designer
@@ -66,6 +72,8 @@ public partial class SettingsWindow : Window
         foreach (var snippet in _draft.Snippets) AddSnippetRow(snippet);
         AddSnippetButton.Click += (_, _) => AddSnippetRow(new Snippet());
         ExportButton.Click += async (_, _) => await ExportAsync();
+        CheckUpdatesButton.Click += (_, _) => CheckForUpdates?.Invoke();
+        ShortcutsButton.Click += (_, _) => ShowShortcuts?.Invoke();
         ImportButton.Click += async (_, _) => await ImportAsync();
         StorageHint.Text = Loc.T("settings.storage", Platform.PlatformFactory.KeyStorageDescription);
         if (controller.Platform.Capabilities.Notes is { } notes)

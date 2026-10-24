@@ -210,6 +210,10 @@ public partial class App : Application
         history.Click += (_, _) => ShowHistory(_platform!.ForegroundWindow);
         var settings = new NativeMenuItem(Loc.T("tray.settings"));
         settings.Click += (_, _) => ShowSettings();
+        var shortcuts = new NativeMenuItem(Loc.T("shortcuts.menu"));
+        shortcuts.Click += (_, _) => ShowShortcuts();
+        var checkUpdates = new NativeMenuItem(Loc.T("update.check"));
+        checkUpdates.Click += (_, _) => ShowUpdateDialog();
         var keepAwake = new NativeMenuItem(Loc.T("tray.keepAwake"))
         {
             ToggleType = MenuItemToggleType.CheckBox,
@@ -220,10 +224,12 @@ public partial class App : Application
         exit.Click += (_, _) => (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
         menu.Items.Add(history);
         menu.Items.Add(settings);
+        menu.Items.Add(shortcuts);
         menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(keepAwake);
         menu.Items.Add(BuildPauseItem());
         menu.Items.Add(new NativeMenuItemSeparator());
+        menu.Items.Add(checkUpdates);
         menu.Items.Add(exit);
         return menu;
     }
@@ -235,6 +241,35 @@ public partial class App : Application
         _historyWindow.ShowFor(previousWindow);
     }
 
+    private ShortcutsWindow? _shortcutsWindow;
+
+    public void ShowShortcuts()
+    {
+        if (_controller is null) return;
+        _shortcutsWindow?.Close();
+        _shortcutsWindow = new ShortcutsWindow(_controller.Settings, ShowSettings);
+        _shortcutsWindow.Closed += (_, _) => _shortcutsWindow = null;
+        _shortcutsWindow.Show();
+        _shortcutsWindow.Activate();
+    }
+
+    private UpdateDialog? _updateDialog;
+
+    /// <summary>Opens the "Check for updates" window (one at a time).</summary>
+    public void ShowUpdateDialog()
+    {
+        if (_updates is null) return;
+        if (_updateDialog is { IsVisible: true })
+        {
+            _updateDialog.Activate();
+            return;
+        }
+        _updateDialog = new UpdateDialog(_updates, InstallUpdateAsync);
+        _updateDialog.Closed += (_, _) => _updateDialog = null;
+        _updateDialog.Show();
+        _updateDialog.Activate();
+    }
+
     private void ShowSettings()
     {
         if (_controller is null) return;
@@ -243,7 +278,12 @@ public partial class App : Application
             _settingsWindow.Activate();
             return;
         }
-        _settingsWindow = new SettingsWindow(_controller) { Reopen = () => Dispatcher.UIThread.Post(ShowSettings) };
+        _settingsWindow = new SettingsWindow(_controller)
+        {
+            Reopen = () => Dispatcher.UIThread.Post(ShowSettings),
+            CheckForUpdates = ShowUpdateDialog,
+            ShowShortcuts = ShowShortcuts,
+        };
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         _settingsWindow.Show();
         _settingsWindow.Activate();

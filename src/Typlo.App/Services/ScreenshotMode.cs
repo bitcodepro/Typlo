@@ -95,6 +95,20 @@ internal static class ScreenshotMode
                     Save(darkSettings, Path.Combine(outDir, "settings_dark_bottom.png"));
                 }
                 darkSettings.Close();
+
+                var shortcuts = new ShortcutsWindow(controller.Settings, null);
+                shortcuts.Show();
+                await Task.Delay(500);
+                Save(shortcuts, Path.Combine(outDir, "shortcuts_dark.png"));
+                shortcuts.Close();
+
+                // The update dialog checks the feed when it opens (TYPLO_UPDATE_FEED points it at a test server).
+                using var updates = new UpdateService(dataDir);
+                var dialog = new UpdateDialog(updates, () => Task.CompletedTask);
+                dialog.Show();
+                await Task.Delay(3000);
+                Save(dialog, Path.Combine(outDir, "update_dialog.png"));
+                dialog.Close();
             });
         }
         finally

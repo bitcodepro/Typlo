@@ -67,10 +67,18 @@ public sealed class UpdateService : IDisposable
         _timer = new Timer(_ => _ = CheckAsync(), null, CheckDelay, Timeout.InfiniteTimeSpan);
     }
 
+    /// <summary>Error message of the last check, or null if it succeeded.</summary>
+    public string? LastCheckError { get; private set; }
+
+    /// <summary>False for local developer builds and unsupported platforms: there is nothing to update to.</summary>
+    public bool CanCheck => Enabled && Rid is not null;
+
     public async Task<UpdateInfo?> CheckAsync()
     {
         try
         {
+            LastCheckError = null;
+            LastError = null;
             var json = await _http.GetStringAsync(_feed);
             var info = ReleaseFeed.Parse(json, CurrentVersion, Rid!);
             if (info?.Version != Available?.Version)
@@ -84,6 +92,7 @@ public sealed class UpdateService : IDisposable
         catch (Exception e)
         {
             Log.Error("Update check failed", e);
+            LastCheckError = e is HttpRequestException or TaskCanceledException ? Loc.T("update.noConnection") : e.Message;
             return Available;
         }
     }
