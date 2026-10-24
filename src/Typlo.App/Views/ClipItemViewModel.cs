@@ -45,6 +45,14 @@ public sealed class ClipItemViewModel : INotifyPropertyChanged
         return files.Count > shown ? title + "\n" + Loc.T("history.more", files.Count - shown) : title;
     }
     public string Title { get; }
+
+    /// <summary>Hover text: the stored start of the text (up to 400 chars) or every file path.</summary>
+    public string? Tooltip => Entry.Kind switch
+    {
+        ClipKind.Text => Entry.PreviewText.Length >= ClipEntry.PreviewChars ? Entry.PreviewText + "…" : Entry.PreviewText,
+        ClipKind.Files => string.Join('\n', Entry.Files),
+        _ => null,
+    };
     public string Meta { get; }
 
     /// <summary>Thumbnails are decoded lazily, only for items that get displayed.</summary>

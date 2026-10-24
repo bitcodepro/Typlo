@@ -9,6 +9,7 @@ using Typlo.Core;
 using Typlo.Core.Hotkeys;
 using Typlo.Core.Layouts;
 using Typlo.Core.Storage;
+using Typlo.Core.Text;
 
 namespace Typlo.App.Services;
 
@@ -25,6 +26,7 @@ internal static class SelfTest
         var dir = Path.Combine(Path.GetTempPath(), "typlo-selftest-" + Guid.NewGuid().ToString("N"));
         using var platform = PlatformFactory.Create();
         if (platform is HookPlatformBase hook) hook.AcceptSimulatedHotkeys = true;
+        TypingEvents.AcceptSimulated = true;
         lines.Add($"Platform: {platform.Name}");
         var caps = platform.Capabilities;
         var userClipboard = platform.Snapshot();
@@ -152,6 +154,74 @@ internal static class SelfTest
             await Check("last word is converted when nothing is selected", () => ConvertInTextBox(controller, platform,
                 "Привет ghbdtn", KeyboardLayouts.Russian, "Привет привет", selectAll: false), when: caps.SimulateInput);
 
+            await Check("change case cycles lower → Title → UPPER in a text box", async () =>
+                await TransformInTextBox(platform, "hello world", controller.ChangeCaseAsync, "Hello World")
+                ?? await TransformInTextBox(platform, "Hello World", controller.ChangeCaseAsync, "HELLO WORLD"), when: caps.SimulateInput);
+
+            await Check("transliteration Привет ⇄ Privet in a text box", async () =>
+                await TransformInTextBox(platform, "Привет, мир", controller.TransliterateAsync, "Privet, mir")
+                ?? await TransformInTextBox(platform, "Privet", controller.TransliterateAsync, "Привет"), when: caps.SimulateInput);
+
+            await Check("snippet trigger typed in a text box is replaced", async () =>
+            {
+                var s = controller.Settings.Clone();
+                s.Snippets = [new Snippet { Trigger = ";hi", Text = "Hello there" }];
+                controller.ApplySettings(s);
+                await Task.Delay(500); // the typing hook starts asynchronously
+                try
+                {
+                    return await TransformInTextBox(platform, "", async () =>
+                    {
+                        foreach (var key in new[] { "Semicolon", "H", "I" })
+                        {
+                            platform.SendChord(KeyModifiers.None, key);
+                            await Task.Delay(60);
+                        }
+                        await Task.Delay(1500);
+                    }, "Hello there", select: false);
+                }
+                finally
+                {
+                    s.Snippets = [];
+                    controller.ApplySettings(s);
+                }
+            }, when: caps.SimulateInput);
+
+            await Check("second press pastes the previous item", async () =>
+            {
+                External.SetText("older-item-55");
+                if (!await WaitFor(() => controller.Store.List().Any(e => e.PreviewText == "older-item-55"), 5000)) return "older not captured";
+                await Task.Delay(1500); // let the external writer finish
+                External.SetText("newer-item-55");
+                if (!await WaitFor(() => controller.Store.List().Any(e => e.PreviewText == "newer-item-55"), 5000)) return "newer not captured";
+                await Task.Delay(1500);
+                await controller.PastePreviousAsync(0, paste: false);
+                var text = platform.ReadText();
+                var order = string.Join(" | ", controller.Store.List().OrderByDescending(e => e.LastUsed).Take(3).Select(e => $"{e.Kind}:{e.PreviewText}"));
+                return text == "older-item-55" ? null : $"clipboard is '{text}'; newest: {order}";
+            });
+
+            await Check("text is read from an image (OCR)", async () =>
+            {
+                var png = await MakeTextPng("CLIPBOARD 2026");
+                var text = await OcrService.RecognizeAsync(png);
+                return text?.Contains("CLIPBOARD", StringComparison.OrdinalIgnoreCase) == true && text.Contains("2026") ? null : $"OCR returned '{text}'";
+            }, when: OcrService.Available);
+
+            await Check("keyboard layout group switches (Linux X11)", () =>
+            {
+                if (!OperatingSystem.IsLinux()) return Task.FromResult<string?>(null);
+                var layouts = Platform.Linux.XkbLayouts.ConfiguredLayouts().ToList();
+                var ru = layouts.IndexOf("ru");
+                var en = layouts.FindIndex(l => l is "us" or "gb");
+                if (ru < 0 || en < 0) return Task.FromResult<string?>($"layouts are '{string.Join(",", layouts)}'");
+                if (!platform.SwitchKeyboardLayout(0, 0x0419)) return Task.FromResult<string?>("switch to ru failed");
+                var afterRu = Platform.Linux.XkbLayouts.CurrentGroup();
+                platform.SwitchKeyboardLayout(0, 0x0409);
+                var afterEn = Platform.Linux.XkbLayouts.CurrentGroup();
+                return Task.FromResult(afterRu == ru && afterEn == en ? null : $"groups: ru {afterRu}/{ru}, en {afterEn}/{en}");
+            }, when: OperatingSystem.IsLinux() && caps.SwitchLayout);
+
             await Check("formatted text keeps HTML; Shift+Enter pastes plain text", async () =>
             {
                 if (!OperatingSystem.IsWindows()) return null;
@@ -270,6 +340,56 @@ internal static class SelfTest
         bmp.Save(ms, PngBitmapEncoderOptions.Default);
         return ms.ToArray();
     });
+
+    private static Task<byte[]> MakeTextPng(string text) => Dispatcher.UIThread.InvokeAsync(() =>
+    {
+        using var bmp = new RenderTargetBitmap(new PixelSize(900, 200));
+        using (var ctx = bmp.CreateDrawingContext())
+        {
+            ctx.FillRectangle(Avalonia.Media.Brushes.White, new Rect(0, 0, 900, 200));
+            var ft = new Avalonia.Media.FormattedText(text, System.Globalization.CultureInfo.InvariantCulture,
+                Avalonia.Media.FlowDirection.LeftToRight, new Avalonia.Media.Typeface("Inter"), 72, Avalonia.Media.Brushes.Black);
+            ctx.DrawText(ft, new Point(40, 50));
+        }
+        using var ms = new MemoryStream();
+        bmp.Save(ms, PngBitmapEncoderOptions.Default);
+        return ms.ToArray();
+    }).GetTask();
+
+    /// <summary>Puts <paramref name="input"/> in a focused text box, runs <paramref name="action"/> and compares the result.</summary>
+    private static async Task<string?> TransformInTextBox(IPlatform platform, string input, Func<Task> action, string expected, bool select = true)
+    {
+        Window? window = null;
+        TextBox? box = null;
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            box = new TextBox { Text = input, AcceptsReturn = false };
+            window = new Window { Width = 400, Height = 120, Content = box, Title = "Typlo self-test", Topmost = true };
+            window.Show();
+            window.Activate();
+        });
+        try
+        {
+            await Task.Delay(500);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (OperatingSystem.IsWindows() && window!.TryGetPlatformHandle()?.Handle is { } h) platform.ActivateWindow(h);
+                window!.Activate();
+                box!.Focus();
+                if (select) box.SelectAll();
+                else box.CaretIndex = input.Length;
+            });
+            await Task.Delay(300);
+            await action();
+            await Task.Delay(300);
+            var text = await Dispatcher.UIThread.InvokeAsync(() => box!.Text);
+            return text == expected ? null : $"text box has '{text}', expected '{expected}'";
+        }
+        finally
+        {
+            await Dispatcher.UIThread.InvokeAsync(() => window?.Close());
+        }
+    }
 
     private static async Task<string?> ConvertInTextBox(AppController controller, IPlatform platform,
         string input, KeyboardLayout target, string expected, bool selectAll = true)

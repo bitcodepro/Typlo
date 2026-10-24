@@ -127,6 +127,7 @@ public partial class App : Application
         TrayIcon.SetIcons(this, [_tray]);
 
         var language = Loc.Current;
+        ApplyTheme();
         _controller!.SettingsChanged += () => Dispatcher.UIThread.Post(() =>
         {
             // Rebuild everything that shows text when the interface language changes.
@@ -136,9 +137,17 @@ public partial class App : Application
                 _historyWindow?.Close();
                 _historyWindow = null;
             }
+            ApplyTheme();
             RefreshTray();
         });
     }
+
+    private void ApplyTheme() => RequestedThemeVariant = _controller?.Settings.UiTheme switch
+    {
+        "light" => Avalonia.Styling.ThemeVariant.Light,
+        "dark" => Avalonia.Styling.ThemeVariant.Dark,
+        _ => Avalonia.Styling.ThemeVariant.Default,
+    };
 
     private void RefreshTray()
     {
@@ -234,7 +243,7 @@ public partial class App : Application
             _settingsWindow.Activate();
             return;
         }
-        _settingsWindow = new SettingsWindow(_controller);
+        _settingsWindow = new SettingsWindow(_controller) { Reopen = () => Dispatcher.UIThread.Post(ShowSettings) };
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         _settingsWindow.Show();
         _settingsWindow.Activate();

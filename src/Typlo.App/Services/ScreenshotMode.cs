@@ -6,6 +6,7 @@ using Typlo.App.Platform;
 using Typlo.App.Views;
 using Typlo.Core;
 using Typlo.Core.Storage;
+using Typlo.Core.Text;
 
 namespace Typlo.App.Services;
 
@@ -71,6 +72,29 @@ internal static class ScreenshotMode
                     Save(settings, Path.Combine(outDir, $"settings_{code}.png"));
                     settings.Close();
                 }
+
+                // Dark theme, with a snippet, scrolled to the new sections.
+                var dark = controller.Settings.Clone();
+                dark.UiTheme = "dark";
+                dark.Snippets = [new Snippet { Trigger = ";addr", Text = "Kyiv, Khreshchatyk St. 1" }];
+                controller.ApplySettings(dark);
+                Application.Current!.RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Dark;
+                var darkHistory = new ClipboardWindow(controller);
+                darkHistory.ShowFor(0);
+                await Task.Delay(600);
+                Save(darkHistory, Path.Combine(outDir, "history_dark.png"));
+                darkHistory.Close();
+                var darkSettings = new SettingsWindow(controller);
+                darkSettings.Show();
+                await Task.Delay(600);
+                Save(darkSettings, Path.Combine(outDir, "settings_dark.png"));
+                if (darkSettings.FindControl<ScrollViewer>("Scroller") is { } scroller)
+                {
+                    scroller.ScrollToEnd();
+                    await Task.Delay(400);
+                    Save(darkSettings, Path.Combine(outDir, "settings_dark_bottom.png"));
+                }
+                darkSettings.Close();
             });
         }
         finally

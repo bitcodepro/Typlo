@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Typlo.App.Services;
 
 namespace Typlo.App.Views;
@@ -27,6 +28,7 @@ public partial class ClipboardWindow : Window
         List.ItemsSource = _items;
         SearchBox.TextChanged += (_, _) => ApplyFilter();
         List.DoubleTapped += (_, _) => PasteSelected();
+        List.ContextRequested += OnContextRequested;
         // Tunnel so arrows/Enter work while the search box has focus.
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
         Deactivated += (_, _) => Hide();
@@ -35,6 +37,14 @@ public partial class ClipboardWindow : Window
 
     public void ShowFor(nint targetWindow)
     {
+        if (IsVisible)
+        {
+            // Second press of the history shortcut: paste the previous item right away.
+            Hide();
+            var target = _targetWindow;
+            _ = Task.Run(() => _controller.PastePreviousAsync(target));
+            return;
+        }
         _targetWindow = targetWindow;
         if (_dirty) Reload();
         SearchBox.Text = "";
@@ -120,6 +130,10 @@ public partial class ClipboardWindow : Window
                 TogglePin();
                 e.Handled = true;
                 break;
+            case Key.T when ctrl:
+                _ = CopyTextFromImageAsync();
+                e.Handled = true;
+                break;
             case >= Key.D1 and <= Key.D9 when ctrl:
             case >= Key.NumPad1 and <= Key.NumPad9 when ctrl:
                 var index = e.Key >= Key.NumPad1 ? e.Key - Key.NumPad1 : e.Key - Key.D1;
@@ -148,6 +162,48 @@ public partial class ClipboardWindow : Window
         Hide();
         var target = _targetWindow;
         _ = Task.Run(() => _controller.PasteAsync(item.Entry.Id, target, plainText: plainText));
+    }
+
+    /// <summary>Right click: select the item under the pointer and offer its actions.</summary>
+    private void OnContextRequested(object? sender, ContextRequestedEventArgs e)
+    {
+        if ((e.Source as Control)?.FindAncestorOfType<ListBoxItem>(includeSelf: true) is { DataContext: ClipItemViewModel vm })
+            List.SelectedItem = vm;
+        if (Selected is not { } item) return;
+        var menu = new ContextMenu();
+        void Add(string key, string gesture, Action action, bool enabled = true)
+        {
+            var mi = new MenuItem { Header = Loc.T(key), InputGesture = string.IsNullOrEmpty(gesture) ? null : KeyGesture.Parse(gesture), IsEnabled = enabled };
+            mi.Click += (_, _) => action();
+            menu.Items.Add(mi);
+        }
+        Add("history.ctx.paste", "Enter", () => PasteSelected());
+        if (item.IsText) Add("history.ctx.plain", "Shift+Enter", () => PasteSelected(plainText: true), item.Entry.HasFormatting);
+        if (item.IsImage) Add("history.ctx.ocr", "Ctrl+T", () => _ = CopyTextFromImageAsync(), OcrService.Available);
+        menu.Items.Add(new Separator());
+        Add(item.Pinned ? "history.ctx.unpin" : "history.ctx.pin", "Ctrl+P", TogglePin);
+        Add("history.ctx.delete", "Delete", DeleteSelected);
+        menu.Open(List);
+        e.Handled = true;
+    }
+
+    /// <summary>OCR on the selected image: the text goes to the clipboard and to the top of the history.</summary>
+    private async Task CopyTextFromImageAsync()
+    {
+        if (Selected is not { IsImage: true } item || !OcrService.Available) return;
+        CountText.Text = Loc.T("history.ocrBusy");
+        var png = _controller.Store.Get(item.Entry.Id)?.ImagePng;
+        var text = png is null ? null : await Task.Run(() => OcrService.RecognizeAsync(png));
+        if (text is null)
+        {
+            CountText.Text = Loc.T("history.ocrNone");
+            return;
+        }
+        _controller.Platform.SetText(text);
+        _controller.Store.Add(Core.Storage.ClipContent.FromText(text, "Typlo OCR"));
+        Reload();
+        ApplyFilter();
+        CountText.Text = Loc.T("history.ocrDone");
     }
 
     private void DeleteSelected()

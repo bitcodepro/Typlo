@@ -1,3 +1,4 @@
+using Typlo.App.Platform.Shared;
 using Typlo.Core.Hotkeys;
 
 namespace Typlo.App.Platform;
@@ -67,6 +68,12 @@ public interface IPlatform : IDisposable
     void ActivateWindow(nint handle);
     /// <summary>Mouse position in physical screen pixels.</summary>
     (int X, int Y) CursorPosition { get; }
+
+    // Typing (for snippets)
+    /// <summary>Starts or stops <see cref="KeyTyped"/> events (a global keyboard hook on Windows).</summary>
+    void SetTypingWatch(bool enabled);
+    /// <summary>Raised on a hook thread for every character the user types; keep handlers short.</summary>
+    event Action<TypedKey>? KeyTyped;
 
     // Keyboard layout
     /// <summary>Switches the input language of <paramref name="window"/> to the given Windows LANGID if supported.</summary>
