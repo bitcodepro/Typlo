@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Typlo.Core.Text;
 
 namespace Typlo.Core.Settings;
 
@@ -24,6 +25,15 @@ public sealed class AppSettings
         new() { LayoutId = "ru", Hotkey = "Ctrl+Alt+Shift+R" },
     ];
 
+    /// <summary>Cycles the case of the selection: lower → Title → UPPER.</summary>
+    public string CaseHotkey { get; set; } = "Ctrl+Alt+Shift+C";
+
+    /// <summary>Transliterates the selection: «Привет» ⇄ "Privet".</summary>
+    public string TranslitHotkey { get; set; } = "Ctrl+Alt+Shift+T";
+
+    /// <summary>Typed triggers replaced by text (";addr" → address). Stored in settings.json, not encrypted.</summary>
+    public List<Snippet> Snippets { get; set; } = [];
+
     /// <summary>With nothing selected, convert the word left of the caret (like Punto Switcher).</summary>
     public bool ConvertLastWord { get; set; } = true;
 
@@ -42,6 +52,9 @@ public sealed class AppSettings
     public List<string> ExcludedApps { get; set; } = ["KeePass", "KeePassXC", "1Password", "Bitwarden"];
 
     public bool StartWithSystem { get; set; }
+
+    /// <summary>Interface theme: "system" (default), "light" or "dark".</summary>
+    public string UiTheme { get; set; } = "system";
 
     /// <summary>Interface language: "en" (default), "ru" or "uk".</summary>
     public string UiLanguage { get; set; } = "en";
@@ -69,6 +82,10 @@ public sealed class AppSettings
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (Layouts.Count < 2) Layouts = ["en", "ru"];
         if (UiLanguage is not ("en" or "ru" or "uk")) UiLanguage = "en";
+        if (UiTheme is not ("system" or "light" or "dark")) UiTheme = "system";
+        Snippets = (Snippets ?? []).Where(s => s is not null && !string.IsNullOrWhiteSpace(s.Trigger)).ToList();
+        CaseHotkey ??= "";
+        TranslitHotkey ??= "";
         LayoutHotkeys ??= [];
         ExcludedApps ??= [];
     }
@@ -100,6 +117,22 @@ public sealed class SettingsStore(string path)
         var defaults = new AppSettings();
         Save(defaults);
         return defaults;
+    }
+
+    /// <summary>Writes the settings to a file chosen by the user (for moving to another computer).</summary>
+    public void Export(AppSettings settings, string file)
+    {
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(file))!);
+        File.WriteAllText(file, JsonSerializer.Serialize(settings, SettingsJson.Default.AppSettings));
+    }
+
+    /// <summary>Reads exported settings; throws if the file is not a Typlo settings file.</summary>
+    public AppSettings Import(string file)
+    {
+        var s = JsonSerializer.Deserialize(File.ReadAllText(file), SettingsJson.Default.AppSettings)
+                ?? throw new InvalidDataException("Empty settings file.");
+        s.Normalize();
+        return s;
     }
 
     public void Save(AppSettings settings)

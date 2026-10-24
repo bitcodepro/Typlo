@@ -4,6 +4,8 @@ using Typlo.Core.Hotkeys;
 using Typlo.Core.Layouts;
 using Typlo.Core.Settings;
 using Typlo.Core.Storage;
+using Typlo.Core.Text;
+using Typlo.App.Platform.Shared;
 
 namespace Typlo.App.Services;
 
@@ -12,6 +14,8 @@ public sealed class AppController : IDisposable
 {
     private const int ToggleId = 1;
     private const int ClipboardId = 2;
+    private const int CaseId = 3;
+    private const int TranslitId = 4;
     private const int LayoutIdBase = 100;
 
     private readonly IPlatform _platform;
@@ -40,6 +44,8 @@ public sealed class AppController : IDisposable
         BuildConverter();
         ApplyKeepAwake();
         _platform.HotkeyPressed += OnHotkey;
+        _platform.KeyTyped += OnKeyTyped;
+        ApplySnippets();
         _platform.ClipboardCaptured += OnClipboardCaptured;
         RegisterHotkeys();
     }
@@ -65,6 +71,7 @@ public sealed class AppController : IDisposable
         try { _platform.AutostartEnabled = settings.StartWithSystem; }
         catch (Exception e) { Log.Error("Autostart update failed", e); }
         ApplyKeepAwake();
+        ApplySnippets();
         RegisterHotkeys();
     }
 
@@ -118,6 +125,8 @@ public sealed class AppController : IDisposable
 
         Register(ToggleId, Settings.ToggleHotkey, Loc.T("hk.toggle"));
         Register(ClipboardId, Settings.ClipboardHotkey, Loc.T("hk.history"));
+        Register(CaseId, Settings.CaseHotkey, Loc.T("hk.case"));
+        Register(TranslitId, Settings.TranslitHotkey, Loc.T("hk.translit"));
         var next = LayoutIdBase;
         foreach (var lh in Settings.LayoutHotkeys)
         {
@@ -134,17 +143,36 @@ public sealed class AppController : IDisposable
         {
             if (id == ClipboardId) ShowHistoryRequested?.Invoke(_platform.ForegroundWindow);
             else if (id == ToggleId) _ = ConvertSelectionAsync(null);
+            else if (id == CaseId) _ = ChangeCaseAsync();
+            else if (id == TranslitId) _ = TransliterateAsync();
             else if (_layoutHotkeys.TryGetValue(id, out var layout)) _ = ConvertSelectionAsync(layout);
         }
         catch (Exception e) { Log.Error("Hotkey handler failed", e); }
     }
 
     /// <summary>Copies the selection, converts it to <paramref name="target"/> (null = toggle) and pastes it back.</summary>
-    public async Task ConvertSelectionAsync(KeyboardLayout? target)
+    public Task ConvertSelectionAsync(KeyboardLayout? target) => TransformSelectionAsync(text =>
+    {
+        var result = target is null ? _converter.Toggle(text) : _converter.ConvertTo(text, target);
+        return (result.Changed ? result.Text : text, result.Target);
+    }, switchToIfNothingSelected: target);
+
+    /// <summary>Cycles the case of the selection (lower → Title → UPPER).</summary>
+    public Task ChangeCaseAsync() => TransformSelectionAsync(text => (CaseConverter.Cycle(text), null));
+
+    /// <summary>Transliterates the selection: «Привет» ⇄ "Privet".</summary>
+    public Task TransliterateAsync() => TransformSelectionAsync(text => (Transliterator.Toggle(text), null));
+
+    /// <summary>
+    /// Copies the selection (or, with nothing selected, the word left of the caret), replaces it with
+    /// <paramref name="transform"/>'s result and puts the user's clipboard back. Optionally switches the layout.
+    /// </summary>
+    private async Task TransformSelectionAsync(Func<string, (string Text, KeyboardLayout? SwitchTo)> transform,
+        KeyboardLayout? switchToIfNothingSelected = null)
     {
         if (!_platform.Capabilities.SimulateInput)
         {
-            Log.Info("Convert: synthetic input is not available on this platform/session");
+            Log.Info("Text tools: synthetic input is not available on this platform/session");
             return;
         }
         if (!await _convertGate.WaitAsync(0)) return;
@@ -154,8 +182,6 @@ public sealed class AppController : IDisposable
             var window = _platform.ForegroundWindow;
             using var _ = _platform.SuspendCapture();
             var snapshot = _platform.Snapshot();
-            // A unique placeholder guarantees the copy is visible as a change even when the selection
-            // equals what was already on the clipboard (content-hashing platforms such as Linux).
             var text = await CopySelectionAsync();
             if (text is null && Settings.ConvertLastWord)
             {
@@ -166,32 +192,78 @@ public sealed class AppController : IDisposable
             }
             if (string.IsNullOrEmpty(text))
             {
-                Log.Info("Convert: nothing selected");
+                Log.Info("Text tools: nothing selected");
                 _platform.Restore(snapshot);
-                if (target is not null && Settings.SwitchSystemLayout) _platform.SwitchKeyboardLayout(window, target.LangId);
+                if (switchToIfNothingSelected is not null && Settings.SwitchSystemLayout)
+                    _platform.SwitchKeyboardLayout(window, switchToIfNothingSelected.LangId);
                 return;
             }
 
-            var result = target is null ? _converter.Toggle(text) : _converter.ConvertTo(text, target);
-            if (result.Changed && result.Text != text)
-            {
-                _platform.SetText(result.Text);
-                await Task.Delay(30);
-                _platform.SendPaste();
-                // Give the target app time to read the clipboard before putting the user's content back.
-                await Task.Delay(300);
-            }
+            var (result, switchTo) = transform(text);
+            if (result != text) await PasteTextAsync(result);
             _platform.Restore(snapshot);
-            if (Settings.SwitchSystemLayout) _platform.SwitchKeyboardLayout(window, result.Target.LangId);
+            if (switchTo is not null && Settings.SwitchSystemLayout) _platform.SwitchKeyboardLayout(window, switchTo.LangId);
         }
         catch (Exception e)
         {
-            Log.Error("Convert failed", e);
+            Log.Error("Text tool failed", e);
         }
         finally
         {
             _convertGate.Release();
         }
+    }
+
+    /// <summary>Pastes text into the focused app through the clipboard (the caller restores the clipboard).</summary>
+    private async Task PasteTextAsync(string text)
+    {
+        _platform.SetText(text);
+        await Task.Delay(30);
+        _platform.SendPaste();
+        // Give the target app time to read the clipboard before it changes again.
+        await Task.Delay(300);
+    }
+
+    // ---------------------------------------------------------------- snippets
+
+    private readonly SnippetMatcher _snippets = new();
+
+    private void ApplySnippets()
+    {
+        _snippets.SetSnippets(Settings.Snippets);
+        _platform.SetTypingWatch(_snippets.HasSnippets && _platform.Capabilities.SimulateInput);
+    }
+
+    private void OnKeyTyped(TypedKey key)
+    {
+        Snippet? hit;
+        lock (_snippets)
+        {
+            if (key.Reset) { _snippets.Reset(); return; }
+            if (key.Backspace) { _snippets.Backspace(); return; }
+            hit = _snippets.OnChar(key.Char);
+        }
+        // Never block the hook thread: expand on the thread pool.
+        if (hit is not null) ThreadPool.QueueUserWorkItem(_ => _ = ExpandSnippetAsync(hit));
+    }
+
+    /// <summary>Deletes the typed trigger and pastes the snippet text in its place.</summary>
+    public async Task ExpandSnippetAsync(Snippet snippet)
+    {
+        if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(2))) return;
+        try
+        {
+            await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromMilliseconds(500));
+            using var _ = _platform.SuspendCapture();
+            var snapshot = _platform.Snapshot();
+            for (var i = 0; i < snippet.Trigger.Trim().Length; i++) _platform.SendChord(KeyModifiers.None, "Backspace");
+            await Task.Delay(20);
+            await PasteTextAsync(snippet.Text);
+            _platform.Restore(snapshot);
+            Log.Info("Snippet expanded");
+        }
+        catch (Exception e) { Log.Error("Snippet expansion failed", e); }
+        finally { _convertGate.Release(); }
     }
 
     /// <summary>Sends Copy and returns the selected text, or null when nothing is selected.</summary>
@@ -302,9 +374,18 @@ public sealed class AppController : IDisposable
         catch (Exception e) { Log.Error("Paste failed", e); }
     }
 
+    /// <summary>Pastes the item copied before the current one (second hotkey press in the history popup).</summary>
+    public Task PastePreviousAsync(nint targetWindow, bool paste = true)
+    {
+        var previous = Store.List().OrderByDescending(e => e.LastUsed).Skip(1).FirstOrDefault();
+        return previous is null ? Task.CompletedTask : PasteAsync(previous.Id, targetWindow, paste);
+    }
+
     public void Dispose()
     {
         _platform.HotkeyPressed -= OnHotkey;
+        _platform.KeyTyped -= OnKeyTyped;
+        _platform.SetTypingWatch(false);
         _platform.ClipboardCaptured -= OnClipboardCaptured;
         _activityTimer?.Dispose();
         _pauseTimer?.Dispose();

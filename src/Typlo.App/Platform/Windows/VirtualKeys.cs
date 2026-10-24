@@ -9,7 +9,7 @@ internal static class VirtualKeys
         ["Left"] = 0x25, ["Up"] = 0x26, ["Right"] = 0x27, ["Down"] = 0x28, ["Insert"] = 0x2D, ["Delete"] = 0x2E,
         ["Pause"] = 0x13, ["Semicolon"] = 0xBA, ["Plus"] = 0xBB, ["Comma"] = 0xBC, ["Minus"] = 0xBD,
         ["Period"] = 0xBE, ["Slash"] = 0xBF, ["Tilde"] = 0xC0, ["OpenBracket"] = 0xDB, ["Backslash"] = 0xDC,
-        ["CloseBracket"] = 0xDD, ["Quote"] = 0xDE,
+        ["CloseBracket"] = 0xDD, ["Quote"] = 0xDE, ["Backspace"] = 0x08,
     };
 
     public static uint FromName(string key)

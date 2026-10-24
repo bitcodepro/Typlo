@@ -47,7 +47,7 @@ public sealed class LinuxPlatform : HookPlatformBase
             if (_wayland)
                 notes.Add(Services.Loc.T("note.linux.wayland"));
             return new PlatformCapabilities(
-                GlobalHotkeys: !_wayland, SimulateInput: !_wayland, SwitchLayout: false, DetectHotkeyConflicts: false,
+                GlobalHotkeys: !_wayland, SimulateInput: !_wayland, SwitchLayout: !_wayland && XkbLayouts.Available, DetectHotkeyConflicts: false,
                 Notes: notes.Count > 0 ? string.Join(' ', notes) : null);
         }
     }
@@ -203,7 +203,8 @@ public sealed class LinuxPlatform : HookPlatformBase
         catch (IOException) { return null; }
     }
 
-    public override bool SwitchKeyboardLayout(nint window, int langId) => false;
+    // X11 only: Wayland compositors (GNOME, KDE) keep the layout to themselves.
+    public override bool SwitchKeyboardLayout(nint window, int langId) => !_wayland && XkbLayouts.Available && XkbLayouts.SwitchTo(langId);
 
     // ---------------------------------------------------------------- system
 

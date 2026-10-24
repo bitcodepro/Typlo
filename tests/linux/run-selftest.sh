@@ -15,6 +15,8 @@ sleep 1
 openbox >/dev/null 2>&1 &
 wm_pid=$!
 sleep 1
+# Two layouts so the self-test can switch between them.
+setxkbmap -layout us,ru
 test -x /app/Typlo
 mkdir -p /out
 set +e

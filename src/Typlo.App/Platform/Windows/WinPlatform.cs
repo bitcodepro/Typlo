@@ -33,6 +33,32 @@ public sealed class WinPlatform : IPlatform
 
     public event Action<int>? HotkeyPressed;
     public event Action<RawClip>? ClipboardCaptured;
+    public event Action<Shared.TypedKey>? KeyTyped;
+
+    private SharpHook.SimpleGlobalHook? _typingHook;
+
+    public void SetTypingWatch(bool enabled)
+    {
+        if (enabled == (_typingHook is not null)) return;
+        if (!enabled)
+        {
+            _typingHook!.Dispose();
+            _typingHook = null;
+            return;
+        }
+        try
+        {
+            _typingHook = new SharpHook.SimpleGlobalHook();
+            Shared.TypingEvents.Attach(_typingHook, key => KeyTyped?.Invoke(key));
+            _ = _typingHook.RunAsync().ContinueWith(t => Log.Error("Typing hook stopped", t.Exception!.GetBaseException()),
+                TaskContinuationOptions.OnlyOnFaulted);
+        }
+        catch (Exception e)
+        {
+            Log.Error("Typing hook unavailable", e);
+            _typingHook = null;
+        }
+    }
 
     public string Name => "Windows";
 
@@ -486,6 +512,7 @@ public sealed class WinPlatform : IPlatform
 
     public void Dispose()
     {
+        _typingHook?.Dispose();
         if (_hwnd != 0) PostMessageW(_hwnd, WM_CLOSE, 0, 0);
         _thread.Join(TimeSpan.FromSeconds(2));
     }

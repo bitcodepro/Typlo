@@ -26,6 +26,11 @@ public abstract class HookPlatformBase : IPlatform
 
     public event Action<int>? HotkeyPressed;
     public event Action<RawClip>? ClipboardCaptured;
+    public event Action<TypedKey>? KeyTyped;
+
+    private volatile bool _typingWatch;
+
+    public void SetTypingWatch(bool enabled) => _typingWatch = enabled;
 
     public abstract string Name { get; }
     public abstract PlatformCapabilities Capabilities { get; }
@@ -44,6 +49,7 @@ public abstract class HookPlatformBase : IPlatform
             {
                 _hook = new SimpleGlobalHook();
                 _hook.KeyPressed += OnKeyPressed;
+                TypingEvents.Attach(_hook, key => { if (_typingWatch) KeyTyped?.Invoke(key); });
                 _hook.KeyReleased += (_, e) => _down.TryRemove(e.Data.KeyCode, out bool _);
                 _hook.MouseMoved += (_, e) =>
                 {
@@ -301,7 +307,7 @@ internal static class KeyCodes
         ["Tilde"] = KeyCode.VcBackQuote, ["Minus"] = KeyCode.VcMinus, ["Plus"] = KeyCode.VcEquals,
         ["Comma"] = KeyCode.VcComma, ["Period"] = KeyCode.VcPeriod, ["Slash"] = KeyCode.VcSlash,
         ["Backslash"] = KeyCode.VcBackslash, ["Semicolon"] = KeyCode.VcSemicolon, ["Quote"] = KeyCode.VcQuote,
-        ["OpenBracket"] = KeyCode.VcOpenBracket, ["CloseBracket"] = KeyCode.VcCloseBracket,
+        ["OpenBracket"] = KeyCode.VcOpenBracket, ["CloseBracket"] = KeyCode.VcCloseBracket, ["Backspace"] = KeyCode.VcBackspace,
     };
 
     public static KeyCode? FromName(string key)

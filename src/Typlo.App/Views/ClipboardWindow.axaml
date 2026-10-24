@@ -96,6 +96,7 @@
                    HorizontalAlignment="Center" VerticalAlignment="Center"
                    Foreground="{DynamicResource MutedTextBrush}" />
         <ListBox x:Name="List" Background="Transparent" Padding="6,0,6,6"
+                 ContextMenu="{x:Null}"
                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
           <ListBox.Styles>
             <Style Selector="ListBoxItem">
@@ -112,7 +113,8 @@
           </ListBox.Styles>
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="v:ClipItemViewModel">
-              <Grid ColumnDefinitions="28,*,Auto" Margin="8,7">
+              <Grid ColumnDefinitions="28,*,Auto" Margin="8,7" Background="Transparent"
+                    ToolTip.Tip="{Binding Tooltip}" ToolTip.ShowDelay="600" ToolTip.Placement="Right">
                 <Border Width="20" Height="20" CornerRadius="5" VerticalAlignment="Top" Margin="0,1,0,0"
                         Background="{DynamicResource BadgeBrush}" IsVisible="{Binding Badge, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
                   <TextBlock Text="{Binding Badge}" FontSize="11" FontWeight="SemiBold"

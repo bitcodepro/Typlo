@@ -6,14 +6,18 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
    - `Ctrl+Alt+Shift+Space` – toggle between the pair (EN ⇄ RU by default)
    - `Ctrl+Alt+Shift+E` / `Ctrl+Alt+Shift+R` – convert into English / Russian (Ukrainian available)
    - Nothing selected? The word left of the caret is converted (can be turned off).
-   - The clipboard is restored afterwards; on Windows the system layout is switched too.
+   - The clipboard is restored afterwards; the system layout is switched too (Windows, Linux X11).
+   - `Ctrl+Alt+Shift+C` cycles the case (lower → Title → UPPER); `Ctrl+Alt+Shift+T` transliterates (Привет ⇄ Privet).
+   - Snippets: typing a trigger such as `;addr` replaces it with saved text, in any keyboard layout.
 2. **Clipboard history** – `Ctrl+Shift+V` opens a popup near the cursor with text and image previews.
    Arrows/Enter, `Ctrl+1…9`, mouse; `Shift+Enter` pastes plain text, `Ctrl+P` pin, `Del` delete, type to search.
    Keeps HTML/RTF formatting (Excel tables, bold text, links) and files copied in the file manager;
-   on Linux formatting is stored but pasted as plain text. "Pause history" in the tray stops recording for
+   on Linux formatting is stored but pasted as plain text. Pressing the history shortcut again pastes the
+   previous item at once. Hover shows the full text; right click offers paste, plain paste, pin, delete and
+   "Copy text from image" (offline OCR: Windows built-in, `tesseract` on Linux). "Pause history" in the tray stops recording for
    10 minutes, 1 hour or until restart.
    Encrypted (AES-256-GCM). Limits on count, total size, image size; excluded apps.
-3. **System** – add to autostart; keep the screen from locking (like video playback). After 3 idle minutes
+3. **System** – interface language and theme (system/light/dark), export/import of settings, add to autostart; keep the screen from locking (like video playback). After 3 idle minutes
    it also presses F15 (a key standard keyboards do not have) so Teams does not switch to "Away";
    it never touches the mouse and sends nothing while you work.
 
@@ -32,7 +36,7 @@ the old files on the next start. Local `0.0.0-dev` builds do not update; `TYPLO_
 | Copy/paste simulation | SendInput | CGEvent (Cmd+C/V) | XTest | – (history only puts the item on the clipboard) |
 | Clipboard history | Win32 listener | NSPasteboard | `xclip` (+ `clipnotify` if present) | `wl-clipboard` |
 | Key for history | DPAPI | Keychain | Secret Service (`secret-tool`), else 0600 file | same |
-| Switch system layout | yes | not yet | not yet | not yet |
+| Switch system layout | yes | not yet | yes (XKB, needs `setxkbmap`) | no |
 | Keep screen on | SetThreadExecutionState | `caffeinate` | `gnome-session-inhibit` / `systemd-inhibit` / `xset s reset` | same |
 | Autostart | HKCU Run | LaunchAgent | `~/.config/autostart` | same |
 | Verified by self-test | yes | **not yet (no Mac available)** | yes (Ubuntu 24.04, Xvfb, `tests/linux`) | no |

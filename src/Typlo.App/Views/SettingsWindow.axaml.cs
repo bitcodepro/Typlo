@@ -1,10 +1,12 @@
 using Avalonia.Controls;
+using Avalonia.Platform.Storage;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Typlo.App.Services;
 using Typlo.Core.Hotkeys;
 using Typlo.Core.Layouts;
 using Typlo.Core.Settings;
+using Typlo.Core.Text;
 
 namespace Typlo.App.Views;
 
@@ -15,6 +17,13 @@ public partial class SettingsWindow : Window
     private readonly List<(HotkeyBox Box, TextBlock Status)> _hotkeyRows = [];
     private HotkeyBox _toggleBox = null!;
     private readonly Dictionary<string, HotkeyBox> _layoutBoxes = [];
+    private HotkeyBox _caseBox = null!;
+    private HotkeyBox _translitBox = null!;
+    private readonly List<(TextBox Trigger, TextBox Text, Control Row)> _snippetRows = [];
+    private static readonly string[] Themes = ["system", "light", "dark"];
+
+    /// <summary>Called after a successful import so the app can show a fresh settings window.</summary>
+    public Action? Reopen { get; set; }
     private bool _saved;
 
     public SettingsWindow() : this(null!) { } // designer
@@ -52,6 +61,12 @@ public partial class SettingsWindow : Window
         KeepAwakeBox.IsChecked = _draft.PreventScreenLock;
         LanguageBox.ItemsSource = Loc.Languages.Select(l => l.Name).ToList();
         LanguageBox.SelectedIndex = Math.Max(0, Loc.Languages.ToList().FindIndex(l => l.Code == _draft.UiLanguage));
+        ThemeBox.ItemsSource = Themes.Select(t => Loc.T("theme." + t)).ToList();
+        ThemeBox.SelectedIndex = Math.Max(0, Array.IndexOf(Themes, _draft.UiTheme));
+        foreach (var snippet in _draft.Snippets) AddSnippetRow(snippet);
+        AddSnippetButton.Click += (_, _) => AddSnippetRow(new Snippet());
+        ExportButton.Click += async (_, _) => await ExportAsync();
+        ImportButton.Click += async (_, _) => await ImportAsync();
         StorageHint.Text = Loc.T("settings.storage", Platform.PlatformFactory.KeyStorageDescription);
         if (controller.Platform.Capabilities.Notes is { } notes)
         {
@@ -89,6 +104,65 @@ public partial class SettingsWindow : Window
             _layoutBoxes[layout.Id] = box;
             AddRow(Loc.T("settings.convertTo", Loc.T("layout." + layout.Id)), box);
         }
+        _caseBox = new HotkeyBox { HotkeyText = _draft.CaseHotkey };
+        AddRow(Loc.T("hk.case"), _caseBox);
+        _translitBox = new HotkeyBox { HotkeyText = _draft.TranslitHotkey };
+        AddRow(Loc.T("hk.translit"), _translitBox);
+    }
+
+    private void AddSnippetRow(Snippet snippet)
+    {
+        var trigger = new TextBox { Text = snippet.Trigger, PlaceholderText = Loc.T("settings.snippetTrigger"), Width = 130 };
+        var text = new TextBox
+        {
+            Text = snippet.Text, PlaceholderText = Loc.T("settings.snippetText"), AcceptsReturn = true,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap, MaxHeight = 120,
+        };
+        var remove = new Button { Content = "✕", VerticalAlignment = VerticalAlignment.Top };
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), ColumnSpacing = 8 };
+        Grid.SetColumn(text, 1);
+        Grid.SetColumn(remove, 2);
+        row.Children.Add(trigger);
+        row.Children.Add(text);
+        row.Children.Add(remove);
+        var entry = (trigger, text, (Control)row);
+        remove.Click += (_, _) =>
+        {
+            SnippetRows.Children.Remove(row);
+            _snippetRows.Remove(entry);
+        };
+        _snippetRows.Add(entry);
+        SnippetRows.Children.Add(row);
+    }
+
+    private async Task ExportAsync()
+    {
+        var file = await StorageProvider.SaveFilePickerAsync(new Avalonia.Platform.Storage.FilePickerSaveOptions
+        {
+            SuggestedFileName = "typlo-settings.json",
+            DefaultExtension = "json",
+        });
+        if (file?.TryGetLocalPath() is not { } path) return;
+        Collect();
+        new SettingsStore(path).Export(_draft, path);
+        ExportStatus.Text = Loc.T("settings.exported");
+    }
+
+    private async Task ImportAsync()
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new Avalonia.Platform.Storage.FilePickerOpenOptions { AllowMultiple = false });
+        if (files.Count == 0 || files[0].TryGetLocalPath() is not { } path) return;
+        AppSettings imported;
+        try { imported = new SettingsStore(path).Import(path); }
+        catch (Exception)
+        {
+            ExportStatus.Text = Loc.T("settings.importFailed");
+            return;
+        }
+        _controller.ApplySettings(imported);
+        _saved = true;
+        Close();
+        Reopen?.Invoke();
     }
 
     private void AddRow(string label, HotkeyBox box)
@@ -175,7 +249,28 @@ public partial class SettingsWindow : Window
     private void Save()
     {
         if (!Validate()) return;
+        Collect();
+
+        _controller.ApplySettings(_draft);
+        _saved = true;
+        if (_controller.FailedHotkeys.Count > 0)
+        {
+            SaveStatus.Text = Loc.T("settings.failed", string.Join("; ", _controller.FailedHotkeys));
+            return;
+        }
+        Close();
+    }
+
+    /// <summary>Copies the form into the draft settings.</summary>
+    private void Collect()
+    {
         _draft.ToggleHotkey = _toggleBox.HotkeyText;
+        _draft.CaseHotkey = _caseBox.HotkeyText;
+        _draft.TranslitHotkey = _translitBox.HotkeyText;
+        _draft.UiTheme = Themes[Math.Max(0, ThemeBox.SelectedIndex)];
+        _draft.Snippets = _snippetRows
+            .Where(r => !string.IsNullOrWhiteSpace(r.Trigger.Text) && !string.IsNullOrEmpty(r.Text.Text))
+            .Select(r => new Snippet { Trigger = r.Trigger.Text!.Trim(), Text = r.Text.Text! }).ToList();
         _draft.LayoutHotkeys = _layoutBoxes
             .Where(kv => !string.IsNullOrWhiteSpace(kv.Value.HotkeyText))
             .Select(kv => new LayoutHotkey { LayoutId = kv.Key, Hotkey = kv.Value.HotkeyText }).ToList();
@@ -196,14 +291,5 @@ public partial class SettingsWindow : Window
         _draft.StartWithSystem = AutostartBox.IsChecked == true;
         _draft.PreventScreenLock = KeepAwakeBox.IsChecked == true;
         _draft.UiLanguage = Loc.Languages[Math.Max(0, LanguageBox.SelectedIndex)].Code;
-
-        _controller.ApplySettings(_draft);
-        _saved = true;
-        if (_controller.FailedHotkeys.Count > 0)
-        {
-            SaveStatus.Text = Loc.T("settings.failed", string.Join("; ", _controller.FailedHotkeys));
-            return;
-        }
-        Close();
     }
 }
