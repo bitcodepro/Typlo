@@ -186,11 +186,15 @@ public abstract class HookPlatformBase : IPlatform
     public abstract string? ReadText();
     protected abstract void WriteText(string text);
     protected abstract void WriteImage(byte[] png, byte[] bgra, int width, int height);
+    protected abstract void WriteRichText(string text, string? html, string? rtf);
+    protected abstract void WriteFiles(IReadOnlyList<string> paths);
     protected abstract ClipboardSnapshot ReadSnapshot();
     protected abstract void WriteSnapshot(ClipboardSnapshot snapshot);
 
     public void SetText(string text) => OwnWrite(() => WriteText(text));
     public void SetImage(byte[] png, byte[] bgra, int width, int height) => OwnWrite(() => WriteImage(png, bgra, width, height));
+    public void SetRichText(string text, string? html, string? rtf) => OwnWrite(() => WriteRichText(text, html, rtf));
+    public void SetFiles(IReadOnlyList<string> paths) => OwnWrite(() => WriteFiles(paths));
     public ClipboardSnapshot Snapshot() => ReadSnapshot();
     public void Restore(ClipboardSnapshot snapshot) => OwnWrite(() => WriteSnapshot(snapshot));
 
@@ -210,12 +214,10 @@ public abstract class HookPlatformBase : IPlatform
         Interlocked.Increment(ref _suspendCount);
         return new Scope(() =>
         {
-            // Resume after the watcher had a chance to see the last change made while suspended.
-            _ = Task.Delay(PollInterval * 2).ContinueWith(_ =>
-            {
-                _lastToken = SafeToken();
-                Interlocked.Decrement(ref _suspendCount);
-            }, TaskScheduler.Default);
+            // Resume at once: the watcher only compares the current state, so the short-lived states during the
+            // suspension (placeholder, copied selection) are gone, and the restored clipboard is our own write.
+            // A delay here would also swallow whatever the user copies right after a conversion.
+            Interlocked.Decrement(ref _suspendCount);
         });
     }
 

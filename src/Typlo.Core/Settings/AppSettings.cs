@@ -24,6 +24,9 @@ public sealed class AppSettings
         new() { LayoutId = "ru", Hotkey = "Ctrl+Alt+Shift+R" },
     ];
 
+    /// <summary>With nothing selected, convert the word left of the caret (like Punto Switcher).</summary>
+    public bool ConvertLastWord { get; set; } = true;
+
     /// <summary>Also switch the system keyboard layout to the target after converting.</summary>
     public bool SwitchSystemLayout { get; set; } = true;
 

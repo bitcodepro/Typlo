@@ -5,9 +5,13 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
 1. **Layout fix** – select text typed in the wrong layout and press a hotkey: `ghbdtn` → `привет`.
    - `Ctrl+Alt+Shift+Space` – toggle between the pair (EN ⇄ RU by default)
    - `Ctrl+Alt+Shift+E` / `Ctrl+Alt+Shift+R` – convert into English / Russian (Ukrainian available)
+   - Nothing selected? The word left of the caret is converted (can be turned off).
    - The clipboard is restored afterwards; on Windows the system layout is switched too.
 2. **Clipboard history** – `Ctrl+Shift+V` opens a popup near the cursor with text and image previews.
-   Arrows/Enter, `Ctrl+1…9`, mouse; `Ctrl+P` pin, `Del` delete, type to search.
+   Arrows/Enter, `Ctrl+1…9`, mouse; `Shift+Enter` pastes plain text, `Ctrl+P` pin, `Del` delete, type to search.
+   Keeps HTML/RTF formatting (Excel tables, bold text, links) and files copied in the file manager;
+   on Linux formatting is stored but pasted as plain text. "Pause history" in the tray stops recording for
+   10 minutes, 1 hour or until restart.
    Encrypted (AES-256-GCM). Limits on count, total size, image size; excluded apps.
 3. **System** – add to autostart; keep the screen from locking (like video playback). After 3 idle minutes
    it also presses F15 (a key standard keyboards do not have) so Teams does not switch to "Away";

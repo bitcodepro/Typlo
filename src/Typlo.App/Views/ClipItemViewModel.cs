@@ -16,14 +16,34 @@ public sealed class ClipItemViewModel : INotifyPropertyChanged
     {
         Entry = entry;
         _pinned = entry.Pinned;
-        Title = entry.Kind == ClipKind.Text ? Shorten(entry.PreviewText) : "";
-        var kind = entry.Kind == ClipKind.Image ? Loc.T("history.image", entry.Width, entry.Height) : FormatChars(entry);
-        Meta = string.Join("  ·  ", new[] { kind, entry.SourceApp, Ago(entry.LastUsed) }.Where(s => !string.IsNullOrEmpty(s)));
+        Title = entry.Kind switch
+        {
+            ClipKind.Text => Shorten(entry.PreviewText),
+            ClipKind.Files => FileTitle(entry.Files),
+            _ => "",
+        };
+        var kind = entry.Kind switch
+        {
+            ClipKind.Image => Loc.T("history.image", entry.Width, entry.Height),
+            ClipKind.Files => entry.Files.Count == 1 ? Loc.T("history.file") : Loc.T("history.files", entry.Files.Count),
+            _ => FormatChars(entry),
+        };
+        var formatted = entry.HasFormatting ? Loc.T("history.formatted") : null;
+        Meta = string.Join("  ·  ", new[] { kind, formatted, entry.SourceApp, Ago(entry.LastUsed) }.Where(s => !string.IsNullOrEmpty(s)));
     }
 
     public ClipEntry Entry { get; }
     public bool IsImage => Entry.Kind == ClipKind.Image;
-    public bool IsText => Entry.Kind == ClipKind.Text;
+    public bool IsText => Entry.Kind is ClipKind.Text or ClipKind.Files;
+
+    /// <summary>"📄 report.pdf" lines for the first few files, then "and N more".</summary>
+    private static string FileTitle(IReadOnlyList<string> files)
+    {
+        const int shown = 4;
+        var lines = files.Take(shown).Select(f => "📄 " + Path.GetFileName(f.TrimEnd('\\', '/')));
+        var title = string.Join('\n', lines);
+        return files.Count > shown ? title + "\n" + Loc.T("history.more", files.Count - shown) : title;
+    }
     public string Title { get; }
     public string Meta { get; }
 

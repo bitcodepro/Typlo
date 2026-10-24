@@ -45,6 +45,10 @@ internal static class ScreenshotMode
             var pin = controller.Store.Add(ClipContent.FromText("Привет! Это закреплённая запись — она не удаляется при очистке.", "Telegram"));
             controller.Store.SetPinned(pin!.Value, true);
             controller.Store.Add(ClipContent.FromText("ghbdtn vbh", "notepad"));
+            controller.Store.Add(ClipContent.FromFiles([@"C:\Users\me\Documents\Quarterly report.pdf", @"C:\Users\me\Pictures\team.jpg",
+                @"C:\Users\me\Desktop\notes.txt"], "explorer"));
+            controller.Store.Add(ClipContent.FromText("Q3 revenue\t1 240 000\nQ4 revenue\t1 410 000", "EXCEL",
+                "<table><tr><td>Q3 revenue</td><td>1 240 000</td></tr></table>"));
 
             await Dispatcher.UIThread.InvokeAsync(async () =>
             {

@@ -50,6 +50,56 @@ public sealed class ClipStoreTests : IDisposable
     }
 
     [Fact]
+    public void Formatting_RoundTrips_Encrypted()
+    {
+        const string html = "<table><tr><td><b>secret-cell</b></td></tr></table>";
+        using (var store = Open())
+        {
+            var id = store.Add(ClipContent.FromText("secret-cell", "EXCEL", html, @"{\rtf1 secret-cell}"))!.Value;
+            var got = store.Get(id)!;
+            Assert.Equal(html, got.Html);
+            Assert.Equal(@"{\rtf1 secret-cell}", got.Rtf);
+            Assert.True(Assert.Single(store.List()).HasFormatting);
+        }
+        SqliteCleanup();
+        foreach (var file in Directory.GetFiles(_dir))
+            Assert.DoesNotContain("<table>", Encoding.UTF8.GetString(File.ReadAllBytes(file)));
+    }
+
+    [Fact]
+    public void Files_RoundTrip()
+    {
+        using var store = Open();
+        var id = store.Add(ClipContent.FromFiles([@"C:\a\report.pdf", @"C:\b\photo.jpg"], "explorer"))!.Value;
+        var got = store.Get(id)!;
+        Assert.Equal(ClipKind.Files, got.Kind);
+        Assert.Equal([@"C:\a\report.pdf", @"C:\b\photo.jpg"], got.Files);
+        var entry = Assert.Single(store.List());
+        Assert.Equal(2, entry.Files.Count);
+        Assert.False(entry.HasFormatting);
+    }
+
+    [Fact]
+    public void OldDatabase_WithoutFormattingColumn_IsUpgraded()
+    {
+        Directory.CreateDirectory(_dir);
+        using (var raw = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Db};Pooling=False"))
+        {
+            raw.Open();
+            using var cmd = raw.CreateCommand();
+            cmd.CommandText = """
+                CREATE TABLE clips(id INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, created INTEGER NOT NULL,
+                  last_used INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, hash BLOB NOT NULL UNIQUE, size INTEGER NOT NULL,
+                  width INTEGER NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0, preview BLOB NOT NULL, app BLOB, payload BLOB NOT NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+        using var store = Open();
+        var id = store.Add(ClipContent.FromText("after upgrade", html: "<i>x</i>"))!.Value;
+        Assert.Equal("<i>x</i>", store.Get(id)!.Html);
+    }
+
+    [Fact]
     public void Duplicate_IsBumpedNotDuplicated()
     {
         using var store = Open();

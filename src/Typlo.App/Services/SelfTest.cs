@@ -149,6 +149,56 @@ internal static class SelfTest
                 return err ?? (back == "keep-me" ? null : $"clipboard is '{back}'");
             }, when: caps.SimulateInput);
 
+            await Check("last word is converted when nothing is selected", () => ConvertInTextBox(controller, platform,
+                "Привет ghbdtn", KeyboardLayouts.Russian, "Привет привет", selectAll: false), when: caps.SimulateInput);
+
+            await Check("formatted text keeps HTML; Shift+Enter pastes plain text", async () =>
+            {
+                if (!OperatingSystem.IsWindows()) return null;
+                var marker = "fmt-" + Guid.NewGuid().ToString("N")[..6];
+                await External.SetHtmlWindowsAsync($"<b>{marker}</b>", marker);
+                if (!await WaitFor(() => controller.Store.List().Any(e => e.PreviewText == marker && e.HasFormatting), 5000))
+                    return "formatted text not captured";
+                var id = controller.Store.List().First(e => e.PreviewText == marker).Id;
+                await controller.PasteAsync(id, 0, paste: false);
+                var html = await External.ReadHtmlWindowsAsync();
+                if (!html.Contains($"<b>{marker}</b>")) return $"HTML not restored: '{html}'";
+                await controller.PasteAsync(id, 0, paste: false, plainText: true);
+                var plain = await External.ReadHtmlWindowsAsync();
+                return plain.Length == 0 && platform.ReadText() == marker ? null : $"plain paste still has HTML: '{plain}'";
+            }, when: OperatingSystem.IsWindows());
+
+            await Check("copied files are stored and pasted back as files", async () =>
+            {
+                var dirForFiles = Path.Combine(dir, "files");
+                Directory.CreateDirectory(dirForFiles);
+                var a = Path.Combine(dirForFiles, "report one.txt");
+                var b = Path.Combine(dirForFiles, "photo.txt");
+                File.WriteAllText(a, "a");
+                File.WriteAllText(b, "b");
+                External.SetFiles([a, b]);
+                if (!await WaitFor(() => controller.Store.List().Any(e => e.Kind == ClipKind.Files && e.Files.Count == 2), 5000))
+                    return "files not captured";
+                var id = controller.Store.List().First(e => e.Kind == ClipKind.Files).Id;
+                platform.SetText("placeholder");
+                await controller.PasteAsync(id, 0, paste: false);
+                var back = await External.ReadFilesAsync();
+                return back.Order().SequenceEqual(new[] { a, b }.Order()) ? null : $"clipboard files: [{string.Join(", ", back)}]";
+            });
+
+            await Check("paused history stores nothing, resume stores again", async () =>
+            {
+                controller.PauseHistory(TimeSpan.FromMinutes(1));
+                External.SetText("paused-secret-777");
+                await Task.Delay(2000);
+                var stored = controller.Store.List().Any(e => e.PreviewText == "paused-secret-777");
+                controller.ResumeHistory();
+                if (stored) return "stored while paused";
+                External.SetText("after-resume-777");
+                return await WaitFor(() => controller.Store.List().Any(e => e.PreviewText == "after-resume-777"), 5000)
+                    ? null : "not stored after resume";
+            });
+
             await Check("keep-awake request is accepted by the OS", () =>
                 Task.FromResult(platform.SetKeepAwake(true) && platform.SetKeepAwake(false) ? null : "keep-awake failed"));
 
@@ -222,7 +272,7 @@ internal static class SelfTest
     });
 
     private static async Task<string?> ConvertInTextBox(AppController controller, IPlatform platform,
-        string input, KeyboardLayout target, string expected)
+        string input, KeyboardLayout target, string expected, bool selectAll = true)
     {
         Window? window = null;
         TextBox? box = null;
@@ -241,7 +291,12 @@ internal static class SelfTest
                 if (OperatingSystem.IsWindows() && window!.TryGetPlatformHandle()?.Handle is { } h) platform.ActivateWindow(h);
                 window!.Activate();
                 box!.Focus();
-                box.SelectAll();
+                if (selectAll) box.SelectAll();
+                else
+                {
+                    box.ClearSelection();
+                    box.CaretIndex = input.Length;
+                }
             });
             await Task.Delay(300);
             await controller.ConvertSelectionAsync(target);
@@ -288,6 +343,58 @@ internal static class SelfTest
             else if (OperatingSystem.IsMacOS())
                 Proc.Run("/usr/bin/osascript", ["-e", $"set the clipboard to (read (POSIX file \"{file}\") as «class PNGf»)"]);
             else Proc.Run("xclip", ["-selection", "clipboard", "-t", "image/png", "-i"], png, captureOutput: false);
+        }
+
+        public static async Task SetHtmlWindowsAsync(string fragment, string plain)
+        {
+            // CF_HTML needs a header with byte offsets of the HTML and the fragment.
+            const string header = "Version:0.9\r\nStartHTML:{0:D10}\r\nEndHTML:{1:D10}\r\nStartFragment:{2:D10}\r\nEndFragment:{3:D10}\r\n";
+            var pre = "<html><body><!--StartFragment-->";
+            var post = "<!--EndFragment--></body></html>";
+            var headerLength = string.Format(header, 0, 0, 0, 0).Length;
+            var startHtml = headerLength;
+            var startFragment = startHtml + System.Text.Encoding.UTF8.GetByteCount(pre);
+            var endFragment = startFragment + System.Text.Encoding.UTF8.GetByteCount(fragment);
+            var endHtml = endFragment + System.Text.Encoding.UTF8.GetByteCount(post);
+            var cfHtml = string.Format(header, startHtml, endHtml, startFragment, endFragment) + pre + fragment + post;
+            var file = Path.Combine(Path.GetTempPath(), "typlo-selftest-html.txt");
+            await File.WriteAllTextAsync(file, cfHtml);
+            _ = RunPowerShellAsync($"""
+                Add-Type -AssemblyName System.Windows.Forms
+                $d = New-Object System.Windows.Forms.DataObject
+                $d.SetData('HTML Format', [System.IO.File]::ReadAllText('{file}'))
+                $d.SetData('UnicodeText', '{plain}')
+                [System.Windows.Forms.Clipboard]::SetDataObject($d, $true); Start-Sleep -Seconds 1
+                """);
+        }
+
+        public static async Task<string> ReadHtmlWindowsAsync() => (await RunPowerShellAsync("""
+            Add-Type -AssemblyName System.Windows.Forms
+            $h = [System.Windows.Forms.Clipboard]::GetData('HTML Format'); if ($h) { $h } else { '' }
+            """)).Trim();
+
+        public static void SetFiles(IReadOnlyList<string> paths)
+        {
+            if (OperatingSystem.IsWindows())
+                _ = RunPowerShellAsync("Set-Clipboard -Path " + string.Join(',', paths.Select(p => $"'{p}'")) + "; Start-Sleep -Seconds 1");
+            else if (OperatingSystem.IsMacOS())
+                Proc.Run("/usr/bin/osascript", ["-e", "set the clipboard to {" + string.Join(", ", paths.Select(p => $"POSIX file \"{p}\"")) + "}"]);
+            else
+                Proc.Run("xclip", ["-selection", "clipboard", "-t", "text/uri-list", "-i"],
+                    System.Text.Encoding.UTF8.GetBytes(string.Concat(paths.Select(p => new Uri(p).AbsoluteUri + "\r\n"))), captureOutput: false);
+        }
+
+        public static async Task<List<string>> ReadFilesAsync()
+        {
+            string text;
+            if (OperatingSystem.IsWindows())
+                text = await RunPowerShellAsync("Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }");
+            else if (OperatingSystem.IsMacOS())
+                text = Proc.Run("/usr/bin/osascript", ["-e", "set out to \"\"\nrepeat with f in (the clipboard as «class furl»)\nset out to out & POSIX path of f & linefeed\nend repeat\nout"]).Text;
+            else
+                text = string.Join('\n', Proc.Run("xclip", ["-selection", "clipboard", "-t", "text/uri-list", "-o"]).Text
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(u => new Uri(u).LocalPath));
+            return text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
         }
 
         public static string ImageSize()

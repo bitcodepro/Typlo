@@ -27,7 +27,7 @@ public sealed class WinPlatform : IPlatform
     private readonly WndProc _wndProc; // keeps the delegate alive for native code
     private readonly HashSet<int> _hotkeyIds = [];
     private readonly HashSet<uint> _ownSequences = [];
-    private readonly uint _fmtPng, _fmtExclude, _fmtCanInclude, _fmtViewerIgnore;
+    private readonly uint _fmtPng, _fmtExclude, _fmtCanInclude, _fmtViewerIgnore, _fmtHtml, _fmtRtf, _fmtDropEffect;
     private nint _hwnd;
     private int _suspendCount;
 
@@ -45,6 +45,9 @@ public sealed class WinPlatform : IPlatform
         _fmtExclude = RegisterClipboardFormatW("ExcludeClipboardContentFromMonitorProcessing");
         _fmtCanInclude = RegisterClipboardFormatW("CanIncludeInClipboardHistory");
         _fmtViewerIgnore = RegisterClipboardFormatW("Clipboard Viewer Ignore");
+        _fmtHtml = RegisterClipboardFormatW("HTML Format");
+        _fmtRtf = RegisterClipboardFormatW("Rich Text Format");
+        _fmtDropEffect = RegisterClipboardFormatW("Preferred DropEffect");
         _wndProc = WindowProc;
         _thread = new Thread(MessageLoop) { IsBackground = true, Name = "Typlo.MessageLoop" };
         _thread.SetApartmentState(ApartmentState.STA);
@@ -176,10 +179,13 @@ public sealed class WinPlatform : IPlatform
                     BitConverter.ToInt32(flag) == 0) return null;
 
                 var app = OwnerProcessName();
+                if (IsClipboardFormatAvailable(CF_HDROP) && ReadBytes(CF_HDROP) is { } drop && DropFiles.Parse(drop) is { Count: > 0 } files)
+                    return new RawClip(null, null, false, app, Files: files);
                 if (IsClipboardFormatAvailable(CF_UNICODETEXT))
                 {
                     var text = ReadUnicode();
-                    if (!string.IsNullOrEmpty(text)) return new RawClip(text, null, false, app);
+                    if (!string.IsNullOrEmpty(text))
+                        return new RawClip(text, null, false, app, ReadHtml(), ReadRtf());
                 }
                 if (_fmtPng != 0 && IsClipboardFormatAvailable(_fmtPng) && ReadBytes(_fmtPng) is { Length: > 0 } png)
                     return new RawClip(null, png, true, app);
@@ -205,6 +211,35 @@ public sealed class WinPlatform : IPlatform
         System.Text.Encoding.Unicode.GetBytes(text, bytes);
         SetBytes(CF_UNICODETEXT, bytes);
     }));
+
+    public void SetRichText(string text, string? html, string? rtf) => Invoke(() => WriteClipboard(() =>
+    {
+        var bytes = new byte[(text.Length + 1) * 2];
+        System.Text.Encoding.Unicode.GetBytes(text, bytes);
+        SetBytes(CF_UNICODETEXT, bytes);
+        // "HTML Format" is UTF-8 with a header of byte offsets; RTF is 8-bit text. Both NUL-terminated.
+        if (!string.IsNullOrEmpty(html) && _fmtHtml != 0) SetBytes(_fmtHtml, [.. System.Text.Encoding.UTF8.GetBytes(html), 0]);
+        if (!string.IsNullOrEmpty(rtf) && _fmtRtf != 0) SetBytes(_fmtRtf, [.. System.Text.Encoding.Latin1.GetBytes(rtf), 0]);
+    }));
+
+    public void SetFiles(IReadOnlyList<string> paths) => Invoke(() => WriteClipboard(() =>
+    {
+        SetBytes(CF_HDROP, DropFiles.Build(paths));
+        if (_fmtDropEffect != 0) SetBytes(_fmtDropEffect, BitConverter.GetBytes(1)); // DROPEFFECT_COPY: paste copies, not moves
+    }));
+
+    private string? ReadHtml() =>
+        _fmtHtml != 0 && IsClipboardFormatAvailable(_fmtHtml) && ReadBytes(_fmtHtml) is { } b ? TrimNul(System.Text.Encoding.UTF8.GetString(b)) : null;
+
+    private string? ReadRtf() =>
+        _fmtRtf != 0 && IsClipboardFormatAvailable(_fmtRtf) && ReadBytes(_fmtRtf) is { } b ? TrimNul(System.Text.Encoding.Latin1.GetString(b)) : null;
+
+    private static string? TrimNul(string s)
+    {
+        var nul = s.IndexOf('\0');
+        var result = nul >= 0 ? s[..nul] : s;
+        return result.Length > 0 ? result : null;
+    }
 
     public void SetImage(byte[] png, byte[] bgra, int width, int height) => Invoke(() => WriteClipboard(() =>
     {

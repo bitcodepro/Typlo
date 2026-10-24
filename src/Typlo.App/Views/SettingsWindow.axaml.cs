@@ -42,6 +42,7 @@ public partial class SettingsWindow : Window
         PairSecond.SelectedItem = KeyboardLayouts.Find(_draft.Layouts[1]);
 
         SwitchLayoutBox.IsChecked = _draft.SwitchSystemLayout;
+        LastWordBox.IsChecked = _draft.ConvertLastWord;
         HistoryEnabledBox.IsChecked = _draft.HistoryEnabled;
         MaxItemsBox.Value = _draft.MaxItems;
         MaxTotalBox.Value = _draft.MaxTotalMegabytes;
@@ -184,6 +185,7 @@ public partial class SettingsWindow : Window
         if (first == second) second = first == "en" ? "ru" : "en";
         _draft.Layouts = [first, second];
         _draft.SwitchSystemLayout = SwitchLayoutBox.IsChecked == true;
+        _draft.ConvertLastWord = LastWordBox.IsChecked == true;
         _draft.HistoryEnabled = HistoryEnabledBox.IsChecked == true;
         _draft.MaxItems = (int)(MaxItemsBox.Value ?? 500);
         _draft.MaxTotalMegabytes = (int)(MaxTotalBox.Value ?? 200);
