@@ -53,6 +53,28 @@ internal static class SelfTest
             controller = new AppController(platform, new AppPaths(dir), PlatformFactory.CreateKeyProtector());
             controller.ApplySettings(Tweak(controller.Settings));
 
+            await Check("every interface language has every string with the same placeholders", () =>
+            {
+                var problems = new List<string>();
+                var saved = Loc.Current;
+                foreach (var (code, _) in Loc.Languages)
+                {
+                    foreach (var key in Loc.MissingKeys(code)) problems.Add($"{code}: missing {key}");
+                    Loc.SetLanguage(code);
+                    foreach (var key in Loc.AllKeys)
+                    {
+                        Loc.SetLanguage("en");
+                        var english = Placeholders(Loc.T(key));
+                        Loc.SetLanguage(code);
+                        var translated = Loc.T(key);
+                        if (!english.SetEquals(Placeholders(translated))) problems.Add($"{code}: placeholders differ in {key}");
+                        if (string.IsNullOrWhiteSpace(translated)) problems.Add($"{code}: empty {key}");
+                    }
+                }
+                Loc.SetLanguage(saved);
+                return Task.FromResult(problems.Count == 0 ? null : string.Join("; ", problems.Take(10)));
+            });
+
             await Check("clipboard text round-trip", () =>
             {
                 platform.SetText("Привет, clipboard ✓");
@@ -310,6 +332,9 @@ internal static class SelfTest
         await File.WriteAllLinesAsync(reportPath, lines);
         return failures == 0 ? 0 : 1;
     }
+
+    private static HashSet<string> Placeholders(string text) =>
+        System.Text.RegularExpressions.Regex.Matches(text, @"\{\d+(:[^}]*)?\}").Select(m => m.Value).ToHashSet();
 
     private static uint IdleMs()
     {

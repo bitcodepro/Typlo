@@ -6,10 +6,13 @@ namespace Typlo.App.Services;
 /// UI strings in English (default), Russian and Ukrainian. Windows read them when created,
 /// so changing the language takes effect for newly opened windows and the rebuilt tray menu.
 /// </summary>
-public static class Loc
+public static partial class Loc
 {
     public static readonly IReadOnlyList<(string Code, string Name)> Languages =
-        [("en", "English"), ("ru", "Русский"), ("uk", "Українська")];
+        [
+            ("en", "English"), ("ru", "Русский"), ("uk", "Українська"), ("de", "Deutsch"), ("es", "Español"),
+            ("pt", "Português"), ("fr", "Français"), ("it", "Italiano"), ("zh", "中文（简体）"), ("ja", "日本語"),
+        ];
 
     public static string Current { get; private set; } = "en";
 
@@ -19,7 +22,14 @@ public static class Loc
     public static string T(string key)
     {
         if (!Strings.TryGetValue(key, out var s)) return key;
-        return Current switch { "ru" => s.Ru, "uk" => s.Uk, _ => s.En };
+        return Current switch
+        {
+            "en" => s.En,
+            "ru" => s.Ru,
+            "uk" => s.Uk,
+            // Other languages live in Loc.Translations.cs; anything missing falls back to English.
+            _ => Extra.TryGetValue(Current, out var table) && table.TryGetValue(key, out var text) ? text : s.En,
+        };
     }
 
     public static string T(string key, params object[] args) => string.Format(T(key), args);

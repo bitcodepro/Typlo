@@ -31,7 +31,8 @@
     <Border DockPanel.Dock="Bottom" Padding="20,12" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="0,1,0,0">
       <Grid ColumnDefinitions="Auto,*,Auto,Auto">
         <Button x:Name="CheckUpdatesButton" Content="{l:Tr update.check}" Margin="0,0,10,0" />
-        <TextBlock Grid.Column="1" x:Name="SaveStatus" Classes="hint" VerticalAlignment="Center" TextWrapping="Wrap" />
+        <TextBlock Grid.Column="1" x:Name="SaveStatus" Classes="hint" VerticalAlignment="Center" TextWrapping="Wrap"
+                   MaxLines="2" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding #SaveStatus.Text}" />
         <Button Grid.Column="2" x:Name="CancelButton" Content="{l:Tr settings.cancel}" Margin="0,0,8,0" />
         <Button Grid.Column="3" x:Name="SaveButton" Content="{l:Tr settings.save}" Classes="accent" />
       </Grid>
