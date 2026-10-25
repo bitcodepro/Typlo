@@ -12,11 +12,12 @@ public static class PlatformFactory
         throw new PlatformNotSupportedException();
     }
 
-    public static IKeyProtector CreateKeyProtector()
+    /// <param name="diagnostic">Self-test/screenshot runs: a separate key entry, never the user's real one.</param>
+    public static IKeyProtector CreateKeyProtector(bool diagnostic = false)
     {
-        if (OperatingSystem.IsWindows()) return new DpapiKeyProtector();
-        if (OperatingSystem.IsMacOS()) return new KeychainKeyProtector();
-        if (OperatingSystem.IsLinux()) return new SecretServiceKeyProtector();
+        if (OperatingSystem.IsWindows()) return new DpapiKeyProtector(); // per-file, nothing shared to overwrite
+        if (OperatingSystem.IsMacOS()) return new KeychainKeyProtector(diagnostic);
+        if (OperatingSystem.IsLinux()) return new SecretServiceKeyProtector(diagnostic);
         return new PlainKeyProtector();
     }
 

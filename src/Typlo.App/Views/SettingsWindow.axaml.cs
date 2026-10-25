@@ -19,6 +19,7 @@ public partial class SettingsWindow : Window
     private readonly Dictionary<string, HotkeyBox> _layoutBoxes = [];
     private HotkeyBox _caseBox = null!;
     private HotkeyBox _translitBox = null!;
+    private HotkeyBox _undoBox = null!;
     private readonly List<(TextBox Trigger, TextBox Text, Control Row)> _snippetRows = [];
     private static readonly string[] Themes = ["system", "light", "dark"];
 
@@ -116,6 +117,8 @@ public partial class SettingsWindow : Window
         AddRow(Loc.T("hk.case"), _caseBox);
         _translitBox = new HotkeyBox { HotkeyText = _draft.TranslitHotkey };
         AddRow(Loc.T("hk.translit"), _translitBox);
+        _undoBox = new HotkeyBox { HotkeyText = _draft.UndoHotkey };
+        AddRow(Loc.T("hk.undo"), _undoBox);
     }
 
     private void AddSnippetRow(Snippet snippet)
@@ -162,6 +165,11 @@ public partial class SettingsWindow : Window
         if (files.Count == 0 || files[0].TryGetLocalPath() is not { } path) return;
         AppSettings imported;
         try { imported = new SettingsStore(path).Import(path); }
+        catch (SettingsImportException e) when (e.Problems.Count > 0)
+        {
+            ExportStatus.Text = Loc.T("settings.snippetProblem", Describe(e.Problems));
+            return;
+        }
         catch (Exception)
         {
             ExportStatus.Text = Loc.T("settings.importFailed");
@@ -258,6 +266,11 @@ public partial class SettingsWindow : Window
     {
         if (!Validate()) return;
         Collect();
+        if (_draft.Validate() is { Count: > 0 } problems)
+        {
+            SaveStatus.Text = Loc.T("settings.snippetProblem", Describe(problems));
+            return;
+        }
 
         _controller.ApplySettings(_draft);
         _saved = true;
@@ -269,12 +282,21 @@ public partial class SettingsWindow : Window
         Close();
     }
 
+    private static string Describe(IReadOnlyList<SettingsProblem> problems) => string.Join("; ", problems.Take(4).Select(p => p.Kind switch
+    {
+        SettingsProblemKind.TriggerTooShort => Loc.T("snippet.tooShort", p.Trigger),
+        SettingsProblemKind.TriggerTooLong => Loc.T("snippet.tooLong", p.Trigger[..Math.Min(20, p.Trigger.Length)] + "…", AppSettings.MaxTriggerLength),
+        SettingsProblemKind.DuplicateTrigger => Loc.T("snippet.duplicate", p.Trigger),
+        _ => Loc.T("snippet.emptyText", p.Trigger),
+    }));
+
     /// <summary>Copies the form into the draft settings.</summary>
     private void Collect()
     {
         _draft.ToggleHotkey = _toggleBox.HotkeyText;
         _draft.CaseHotkey = _caseBox.HotkeyText;
         _draft.TranslitHotkey = _translitBox.HotkeyText;
+        _draft.UndoHotkey = _undoBox.HotkeyText;
         _draft.UiTheme = Themes[Math.Max(0, ThemeBox.SelectedIndex)];
         _draft.Snippets = _snippetRows
             .Where(r => !string.IsNullOrWhiteSpace(r.Trigger.Text) && !string.IsNullOrEmpty(r.Text.Text))

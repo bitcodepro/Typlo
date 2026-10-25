@@ -29,6 +29,7 @@ public sealed class ShortcutsWindow : Window
                 Row(body, Key(lh.Hotkey), Loc.T("settings.convertTo", Loc.T("layout." + layout.Id)));
         Row(body, Key(settings.CaseHotkey), Loc.T("shortcuts.case"));
         Row(body, Key(settings.TranslitHotkey), Loc.T("shortcuts.translit"));
+        Row(body, Key(settings.UndoHotkey), Loc.T("shortcuts.undo"));
         Row(body, Key(settings.ClipboardHotkey), Loc.T("shortcuts.history"));
         Row(body, Key(settings.ClipboardHotkey) + " ×2", Loc.T("shortcuts.previous"));
 
@@ -37,6 +38,7 @@ public sealed class ShortcutsWindow : Window
         Row(body, "Enter", Loc.T("history.ctx.paste"));
         Row(body, "Shift+Enter", Loc.T("history.ctx.plain"));
         Row(body, "Ctrl+1 … Ctrl+9", Loc.T("shortcuts.quick"));
+        Row(body, "Ctrl+O", Loc.T("history.ctx.view"));
         Row(body, "Ctrl+T", Loc.T("history.ctx.ocr"));
         Row(body, "Ctrl+P", Loc.T("history.ctx.pin") + " / " + Loc.T("history.ctx.unpin"));
         Row(body, "Del", Loc.T("history.ctx.delete"));

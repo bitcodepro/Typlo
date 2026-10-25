@@ -130,6 +130,9 @@ public sealed class ClipStore : IDisposable
         if (payload.Length == 0) return null;
         if (content.Kind is ClipKind.Text or ClipKind.Files && (payload.Length > _limits.MaxTextBytes || string.IsNullOrWhiteSpace(content.Text)))
             return null;
+        // The text limit covers the formatting too; if only the plain text fits, keep the plain text.
+        if (content.HasFormatting && payload.LongLength + (content.FormattingBytes()?.LongLength ?? 0) > _limits.MaxTextBytes)
+            content = content with { Html = null, Rtf = null };
         if (content.Kind == ClipKind.Image && payload.Length > _limits.MaxImageBytes) return null;
 
         long id;
@@ -148,11 +151,13 @@ public sealed class ClipStore : IDisposable
         {
             if (find.ExecuteScalar() is long existing)
             {
-                // Same text again: keep the newest formatting if the source offered any.
+                // Same text again: keep the newest formatting if the source offered any, and count its size.
                 using var bump = formatting is null
                     ? Cmd("UPDATE clips SET last_used=$t WHERE id=$id", ("$t", now), ("$id", existing))
-                    : Cmd("UPDATE clips SET last_used=$t, extra=$x WHERE id=$id", ("$t", now), ("$x", extra), ("$id", existing));
+                    : Cmd("UPDATE clips SET last_used=$t, extra=$x, size=$s WHERE id=$id",
+                        ("$t", now), ("$x", extra), ("$s", payload.LongLength + formatting.LongLength), ("$id", existing));
                 bump.ExecuteNonQuery();
+                if (formatting is not null) Enforce();
                 return existing;
             }
         }
@@ -214,6 +219,32 @@ public sealed class ClipStore : IDisposable
             }
         }
         return list;
+    }
+
+    /// <summary>
+    /// Ids of text and file clips whose full content contains <paramref name="query"/> (case-insensitive).
+    /// Payloads are decrypted in memory only for the search; nothing is written in plain text.
+    /// </summary>
+    public HashSet<long> SearchFullText(string query, CancellationToken cancel = default)
+    {
+        var found = new HashSet<long>();
+        if (string.IsNullOrWhiteSpace(query)) return found;
+        lock (_lock)
+        {
+            using var cmd = Cmd("SELECT id, payload FROM clips WHERE kind IN ($t, $f)", ("$t", (int)ClipKind.Text), ("$f", (int)ClipKind.Files));
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                cancel.ThrowIfCancellationRequested();
+                try
+                {
+                    var text = Encoding.UTF8.GetString(_crypto.Decrypt((byte[])r[1]));
+                    if (text.Contains(query, StringComparison.CurrentCultureIgnoreCase)) found.Add(r.GetInt64(0));
+                }
+                catch (System.Security.Cryptography.CryptographicException) { }
+            }
+        }
+        return found;
     }
 
     /// <summary>Full decrypted content of a clip, or null if it no longer exists.</summary>

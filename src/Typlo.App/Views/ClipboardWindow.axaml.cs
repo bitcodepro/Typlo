@@ -62,16 +62,54 @@ public partial class ClipboardWindow : Window
         _dirty = false;
     }
 
+    private CancellationTokenSource? _searchCts;
+
+    /// <summary>
+    /// Filters at once by the stored preview (start of each text), then searches the full content of every
+    /// text/file item in the background and adds the further matches.
+    /// </summary>
     private void ApplyFilter()
     {
         var q = SearchBox.Text?.Trim() ?? "";
+        ShowItems(_all.Where(i => i.Matches(q)).ToList(), q);
+
+        _searchCts?.Cancel();
+        if (q.Length < 2 || _controller is null) return;
+        var cts = _searchCts = new CancellationTokenSource();
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(150, cts.Token); // typing debounce
+            var ids = _controller.Store.SearchFullText(q, cts.Token);
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (cts.IsCancellationRequested || ids.Count == 0) return;
+                var matches = _all.Where(i => i.Matches(q) || ids.Contains(i.Entry.Id)).ToList();
+                if (matches.Count != _items.Count) ShowItems(matches, q, keepSelection: true);
+            });
+        }, cts.Token).ContinueWith(_ => { }, TaskScheduler.Default);
+    }
+
+    private void ShowItems(List<ClipItemViewModel> items, string query, bool keepSelection = false)
+    {
+        var selected = keepSelection ? Selected : null;
         _items.Clear();
-        foreach (var item in _all.Where(i => i.Matches(q))) _items.Add(item);
+        foreach (var item in items) _items.Add(item);
         for (var i = 0; i < _items.Count; i++) _items[i].Badge = i < 9 ? (i + 1).ToString() : "";
-        List.SelectedIndex = _items.Count > 0 ? 0 : -1;
+        List.SelectedIndex = selected is not null && _items.Contains(selected) ? _items.IndexOf(selected) : _items.Count > 0 ? 0 : -1;
         EmptyText.IsVisible = _items.Count == 0;
         EmptyText.Text = Loc.T(_all.Count == 0 ? "history.empty" : "history.notFound");
-        CountText.Text = q.Length == 0 ? $"{_all.Count}" : $"{_items.Count} / {_all.Count}";
+        CountText.Text = query.Length == 0 ? $"{_all.Count}" : $"{_items.Count} / {_all.Count}";
+    }
+
+    /// <summary>Opens the selected item in full in its own window.</summary>
+    private void ViewSelected()
+    {
+        if (Selected is not { } item) return;
+        var target = _targetWindow;
+        Hide();
+        var viewer = new EntryViewWindow(_controller, item.Entry, target);
+        viewer.Show();
+        viewer.Activate();
     }
 
     private void PlaceNearCursor()
@@ -134,6 +172,10 @@ public partial class ClipboardWindow : Window
                 _ = CopyTextFromImageAsync();
                 e.Handled = true;
                 break;
+            case Key.O when ctrl:
+                ViewSelected();
+                e.Handled = true;
+                break;
             case >= Key.D1 and <= Key.D9 when ctrl:
             case >= Key.NumPad1 and <= Key.NumPad9 when ctrl:
                 var index = e.Key >= Key.NumPad1 ? e.Key - Key.NumPad1 : e.Key - Key.D1;
@@ -178,6 +220,7 @@ public partial class ClipboardWindow : Window
             menu.Items.Add(mi);
         }
         Add("history.ctx.paste", "Enter", () => PasteSelected());
+        Add("history.ctx.view", "Ctrl+O", ViewSelected);
         if (item.IsText) Add("history.ctx.plain", "Shift+Enter", () => PasteSelected(plainText: true), item.Entry.HasFormatting);
         if (item.IsImage) Add("history.ctx.ocr", "Ctrl+T", () => _ = CopyTextFromImageAsync(), OcrService.Available);
         menu.Items.Add(new Separator());

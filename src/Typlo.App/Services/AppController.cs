@@ -16,6 +16,7 @@ public sealed class AppController : IDisposable
     private const int ClipboardId = 2;
     private const int CaseId = 3;
     private const int TranslitId = 4;
+    private const int UndoId = 5;
     private const int LayoutIdBase = 100;
 
     private readonly IPlatform _platform;
@@ -34,8 +35,12 @@ public sealed class AppController : IDisposable
     /// <summary>Hotkeys that could not be registered (taken by another app), as text for the UI.</summary>
     public IReadOnlyList<string> FailedHotkeys { get; private set; } = [];
 
-    public AppController(IPlatform platform, AppPaths paths, IKeyProtector keyProtector)
+    /// <summary>Self-test/screenshot run: never touches system-wide settings such as autostart.</summary>
+    private readonly bool _diagnostic;
+
+    public AppController(IPlatform platform, AppPaths paths, IKeyProtector keyProtector, bool diagnostic = false)
     {
+        _diagnostic = diagnostic;
         _platform = platform;
         _settingsStore = new SettingsStore(paths.SettingsFile);
         Settings = _settingsStore.Load();
@@ -68,8 +73,11 @@ public sealed class AppController : IDisposable
         _settingsStore.Save(settings);
         Store.UpdateLimits(Limits(settings));
         BuildConverter();
-        try { _platform.AutostartEnabled = settings.StartWithSystem; }
-        catch (Exception e) { Log.Error("Autostart update failed", e); }
+        if (!_diagnostic)
+        {
+            try { _platform.AutostartEnabled = settings.StartWithSystem; }
+            catch (Exception e) { Log.Error("Autostart update failed", e); }
+        }
         ApplyKeepAwake();
         ApplySnippets();
         RegisterHotkeys();
@@ -127,6 +135,7 @@ public sealed class AppController : IDisposable
         Register(ClipboardId, Settings.ClipboardHotkey, Loc.T("hk.history"));
         Register(CaseId, Settings.CaseHotkey, Loc.T("hk.case"));
         Register(TranslitId, Settings.TranslitHotkey, Loc.T("hk.translit"));
+        Register(UndoId, Settings.UndoHotkey, Loc.T("hk.undo"));
         var next = LayoutIdBase;
         foreach (var lh in Settings.LayoutHotkeys)
         {
@@ -145,6 +154,7 @@ public sealed class AppController : IDisposable
             else if (id == ToggleId) _ = ConvertSelectionAsync(null);
             else if (id == CaseId) _ = ChangeCaseAsync();
             else if (id == TranslitId) _ = TransliterateAsync();
+            else if (id == UndoId) _ = UndoLastTransformAsync();
             else if (_layoutHotkeys.TryGetValue(id, out var layout)) _ = ConvertSelectionAsync(layout);
         }
         catch (Exception e) { Log.Error("Hotkey handler failed", e); }
@@ -167,7 +177,7 @@ public sealed class AppController : IDisposable
     /// Copies the selection (or, with nothing selected, the word left of the caret), replaces it with
     /// <paramref name="transform"/>'s result and puts the user's clipboard back. Optionally switches the layout.
     /// </summary>
-    private async Task TransformSelectionAsync(Func<string, (string Text, KeyboardLayout? SwitchTo)> transform,
+    internal async Task TransformSelectionAsync(Func<string, (string Text, KeyboardLayout? SwitchTo)> transform,
         KeyboardLayout? switchToIfNothingSelected = null)
     {
         if (!_platform.Capabilities.SimulateInput)
@@ -176,12 +186,13 @@ public sealed class AppController : IDisposable
             return;
         }
         if (!await _convertGate.WaitAsync(0)) return;
+        ClipboardSnapshot? snapshot = null;
         try
         {
             await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromSeconds(1));
             var window = _platform.ForegroundWindow;
             using var _ = _platform.SuspendCapture();
-            var snapshot = _platform.Snapshot();
+            snapshot = _platform.Snapshot();
             var text = await CopySelectionAsync();
             if (text is null && Settings.ConvertLastWord)
             {
@@ -193,15 +204,14 @@ public sealed class AppController : IDisposable
             if (string.IsNullOrEmpty(text))
             {
                 Log.Info("Text tools: nothing selected");
-                _platform.Restore(snapshot);
                 if (switchToIfNothingSelected is not null && Settings.SwitchSystemLayout)
                     _platform.SwitchKeyboardLayout(window, switchToIfNothingSelected.LangId);
                 return;
             }
 
             var (result, switchTo) = transform(text);
-            if (result != text) await PasteTextAsync(result);
-            _platform.Restore(snapshot);
+            if (result != text && await PasteTextAsync(result, window))
+                _lastTransform = new TransformRecord(window, text, result, DateTime.UtcNow);
             if (switchTo is not null && Settings.SwitchSystemLayout) _platform.SwitchKeyboardLayout(window, switchTo.LangId);
         }
         catch (Exception e)
@@ -210,18 +220,97 @@ public sealed class AppController : IDisposable
         }
         finally
         {
+            // Always put the user's clipboard back, even after an error.
+            if (snapshot is not null) RestoreIfUnchanged(snapshot);
             _convertGate.Release();
         }
     }
 
-    /// <summary>Pastes text into the focused app through the clipboard (the caller restores the clipboard).</summary>
-    private async Task PasteTextAsync(string text)
+    /// <summary>Clipboard sequence right after our last own write or triggered copy.</summary>
+    private ulong _expectedSequence;
+
+    /// <summary>
+    /// Restores the user's clipboard, unless something else was copied since our last change
+    /// (the user copied a new item meanwhile: keep it).
+    /// </summary>
+    private void RestoreIfUnchanged(ClipboardSnapshot snapshot)
+    {
+        try
+        {
+            if (_platform.ClipboardSequence != _expectedSequence)
+            {
+                Log.Info("Clipboard changed by someone else meanwhile; not restoring");
+                return;
+            }
+            _platform.Restore(snapshot);
+        }
+        catch (Exception e) { Log.Error("Clipboard restore failed", e); }
+    }
+
+    private void SetOwnText(string text)
     {
         _platform.SetText(text);
+        _expectedSequence = _platform.ClipboardSequence;
+    }
+
+    /// <summary>
+    /// Pastes text into <paramref name="window"/> through the clipboard (the caller restores the clipboard).
+    /// Nothing is pasted if the user switched to another window meanwhile.
+    /// </summary>
+    private async Task<bool> PasteTextAsync(string text, nint window)
+    {
+        SetOwnText(text);
         await Task.Delay(30);
+        if (window != 0 && _platform.ForegroundWindow != window)
+        {
+            Log.Info("Paste skipped: the active window changed");
+            return false;
+        }
         _platform.SendPaste();
         // Give the target app time to read the clipboard before it changes again.
         await Task.Delay(300);
+        return true;
+    }
+
+    // ---------------------------------------------------------------- undo
+
+    private sealed record TransformRecord(nint Window, string Original, string Result, DateTime At);
+
+    private TransformRecord? _lastTransform;
+
+    /// <summary>
+    /// Puts back the text replaced by the last layout fix, case change or transliteration: selects the inserted
+    /// text left of the caret and pastes the original. Works within two minutes, in the same window.
+    /// </summary>
+    public async Task UndoLastTransformAsync()
+    {
+        if (_lastTransform is not { } last || DateTime.UtcNow - last.At > TimeSpan.FromMinutes(2)) return;
+        if (!_platform.Capabilities.SimulateInput || !await _convertGate.WaitAsync(0)) return;
+        ClipboardSnapshot? snapshot = null;
+        try
+        {
+            await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromSeconds(1));
+            var window = _platform.ForegroundWindow;
+            if (last.Window != 0 && window != last.Window)
+            {
+                Log.Info("Undo skipped: another window is active");
+                return;
+            }
+            using var _ = _platform.SuspendCapture();
+            snapshot = _platform.Snapshot();
+            // Editors move over a line break in one step, so count "\r\n" once.
+            var length = last.Result.Replace("\r\n", "\n").Length;
+            if (length > 2000) return;
+            for (var i = 0; i < length; i++) _platform.SendChord(KeyModifiers.Shift, "Left");
+            await Task.Delay(40);
+            if (await PasteTextAsync(last.Original, window)) _lastTransform = null;
+        }
+        catch (Exception e) { Log.Error("Undo failed", e); }
+        finally
+        {
+            if (snapshot is not null) RestoreIfUnchanged(snapshot);
+            _convertGate.Release();
+        }
     }
 
     // ---------------------------------------------------------------- snippets
@@ -251,19 +340,24 @@ public sealed class AppController : IDisposable
     public async Task ExpandSnippetAsync(Snippet snippet)
     {
         if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(2))) return;
+        ClipboardSnapshot? snapshot = null;
         try
         {
             await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromMilliseconds(500));
+            var window = _platform.ForegroundWindow;
             using var _ = _platform.SuspendCapture();
-            var snapshot = _platform.Snapshot();
+            snapshot = _platform.Snapshot();
+            _expectedSequence = _platform.ClipboardSequence;
             for (var i = 0; i < snippet.Trigger.Trim().Length; i++) _platform.SendChord(KeyModifiers.None, "Backspace");
             await Task.Delay(20);
-            await PasteTextAsync(snippet.Text);
-            _platform.Restore(snapshot);
-            Log.Info("Snippet expanded");
+            if (await PasteTextAsync(snippet.Text, window)) Log.Info("Snippet expanded");
         }
         catch (Exception e) { Log.Error("Snippet expansion failed", e); }
-        finally { _convertGate.Release(); }
+        finally
+        {
+            if (snapshot is not null) RestoreIfUnchanged(snapshot);
+            _convertGate.Release();
+        }
     }
 
     /// <summary>Sends Copy and returns the selected text, or null when nothing is selected.</summary>
@@ -271,10 +365,11 @@ public sealed class AppController : IDisposable
     {
         // A unique placeholder guarantees the copy is visible as a change even when the selection
         // equals what was already on the clipboard (content-hashing platforms such as Linux).
-        _platform.SetText("\u2063typlo-" + Guid.NewGuid().ToString("N"));
+        SetOwnText("\u2063typlo-" + Guid.NewGuid().ToString("N"));
         var before = _platform.ClipboardSequence;
         _platform.SendCopy();
         if (!await WaitForClipboardChange(before, TimeSpan.FromMilliseconds(600))) return null;
+        _expectedSequence = _platform.ClipboardSequence; // the copy we triggered
         var text = _platform.ReadText();
         if (string.IsNullOrEmpty(text) || text.StartsWith('\u2063')) return null;
         // Editors such as VS Code copy the whole current line (with its line break) when nothing is selected.
@@ -344,6 +439,8 @@ public sealed class AppController : IDisposable
     /// </summary>
     public async Task PasteAsync(long id, nint targetWindow, bool paste = true, bool plainText = false)
     {
+        // One clipboard operation at a time: a paste must not interleave with a conversion or snippet.
+        if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(3))) return;
         try
         {
             var content = Store.Get(id);
@@ -369,9 +466,15 @@ public sealed class AppController : IDisposable
             _platform.ActivateWindow(targetWindow);
             await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromMilliseconds(500));
             await Task.Delay(60);
+            if (targetWindow != 0 && _platform.ForegroundWindow != targetWindow)
+            {
+                Log.Info("Paste skipped: the target window is not active");
+                return;
+            }
             _platform.SendPaste();
         }
         catch (Exception e) { Log.Error("Paste failed", e); }
+        finally { _convertGate.Release(); }
     }
 
     /// <summary>Pastes the item copied before the current one (second hotkey press in the history popup).</summary>

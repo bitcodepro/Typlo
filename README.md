@@ -9,11 +9,12 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
    - The clipboard is restored afterwards; the system layout is switched too (Windows, Linux X11).
    - `Ctrl+Alt+Shift+C` cycles the case (lower → Title → UPPER); `Ctrl+Alt+Shift+T` transliterates (Привет ⇄ Privet).
    - Snippets: typing a trigger such as `;addr` replaces it with saved text, in any keyboard layout.
+   - `Ctrl+Alt+Shift+Z` undoes the last layout fix, case change or transliteration (within 2 minutes, same window).
 2. **Clipboard history** – `Ctrl+Shift+V` opens a popup near the cursor with text and image previews.
    Arrows/Enter, `Ctrl+1…9`, mouse; `Shift+Enter` pastes plain text, `Ctrl+P` pin, `Del` delete, type to search.
    Keeps HTML/RTF formatting (Excel tables, bold text, links) and files copied in the file manager;
    on Linux formatting is stored but pasted as plain text. Pressing the history shortcut again pastes the
-   previous item at once. Hover shows the full text; right click offers paste, plain paste, pin, delete and
+   previous item at once. Search covers the full text of every item; `Ctrl+O` opens an item in full. Hover shows the start of the text; right click offers paste, plain paste, pin, delete and
    "Copy text from image" (offline OCR: Windows built-in, `tesseract` on Linux). "Pause history" in the tray stops recording for
    10 minutes, 1 hour or until restart.
    Encrypted (AES-256-GCM). Limits on count, total size, image size; excluded apps.
