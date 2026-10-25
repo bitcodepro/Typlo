@@ -46,7 +46,7 @@ public sealed class ClipItemViewModel : INotifyPropertyChanged
     }
     public string Title { get; }
 
-    /// <summary>Hover text: the stored start of the text (up to 400 chars) or every file path.</summary>
+    /// <summary>Hover text: the stored start of the text (up to 400 chars) or every file path; Ctrl+O shows everything.</summary>
     public string? Tooltip => Entry.Kind switch
     {
         ClipKind.Text => Entry.PreviewText.Length >= ClipEntry.PreviewChars ? Entry.PreviewText + "…" : Entry.PreviewText,

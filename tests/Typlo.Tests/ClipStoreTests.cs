@@ -100,6 +100,45 @@ public sealed class ClipStoreTests : IDisposable
     }
 
     [Fact]
+    public void Duplicate_WithNewFormatting_CountsItsSize_AndEnforcesLimits()
+    {
+        using var store = Open(Roomy with { MaxTotalBytes = 5000 });
+        store.Add(ClipContent.FromText("same"));
+        store.Add(ClipContent.FromText("same", html: new string('x', 3000)));
+        var (_, total) = store.Stats();
+        Assert.True(total > 3000, $"size {total} ignores the formatting");
+
+        store.Add(ClipContent.FromText("other", html: new string('y', 3000)));
+        var after = store.Stats();
+        Assert.True(after.TotalBytes <= 5000, $"total {after.TotalBytes} exceeds the limit");
+        Assert.Equal("other", Assert.Single(store.List()).PreviewText);
+    }
+
+    [Fact]
+    public void Formatting_OverTextLimit_KeepsPlainTextOnly()
+    {
+        using var store = Open(Roomy with { MaxTextBytes = 1000 });
+        var id = store.Add(ClipContent.FromText("short text", html: new string('h', 5000)))!.Value;
+        var got = store.Get(id)!;
+        Assert.Equal("short text", got.Text);
+        Assert.Null(got.Html);
+        Assert.False(Assert.Single(store.List()).HasFormatting);
+    }
+
+    [Fact]
+    public void FullTextSearch_FindsWordsBeyondThePreview()
+    {
+        using var store = Open();
+        var longText = new string('a', 2000) + " needle-at-the-end";
+        var id = store.Add(ClipContent.FromText(longText))!.Value;
+        store.Add(ClipContent.FromText("something else"));
+        var files = store.Add(ClipContent.FromFiles([@"C:\docs\Needle report.pdf"]))!.Value;
+        Assert.DoesNotContain("needle", Assert.Single(store.List(), e => e.Id == id).PreviewText);
+        Assert.Equal(new HashSet<long> { id, files }, store.SearchFullText("NEEDLE"));
+        Assert.Empty(store.SearchFullText("absent"));
+    }
+
+    [Fact]
     public void Duplicate_IsBumpedNotDuplicated()
     {
         using var store = Open();

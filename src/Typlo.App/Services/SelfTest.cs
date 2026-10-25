@@ -50,7 +50,7 @@ internal static class SelfTest
 
         try
         {
-            controller = new AppController(platform, new AppPaths(dir), PlatformFactory.CreateKeyProtector());
+            controller = new AppController(platform, new AppPaths(dir), PlatformFactory.CreateKeyProtector(diagnostic: true), diagnostic: true);
             controller.ApplySettings(Tweak(controller.Settings));
 
             await Check("every interface language has every string with the same placeholders", () =>
@@ -208,6 +208,39 @@ internal static class SelfTest
                     controller.ApplySettings(s);
                 }
             }, when: caps.SimulateInput);
+
+            await Check("undo puts back the text replaced by the last conversion", () =>
+                TransformInTextBox(platform, "ghbdtn", async () =>
+                {
+                    await controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+                    await Task.Delay(300);
+                    await controller.UndoLastTransformAsync();
+                }, "ghbdtn"), when: caps.SimulateInput);
+
+            await Check("a copy made during a conversion is kept (clipboard not restored over it)", () =>
+                TransformInTextBox(platform, "keep", async () =>
+                {
+                    platform.SetText("before-conversion");
+                    await controller.TransformSelectionAsync(text =>
+                    {
+                        platform.SetText("copied-meanwhile"); // stands for the user copying something during the operation
+                        return (text, null);
+                    });
+                    var now = platform.ReadText();
+                    if (now != "copied-meanwhile") throw new InvalidOperationException($"clipboard is '{now}'");
+                }, "keep"), when: caps.SimulateInput);
+
+            await Check("diagnostic runs never change autostart", () =>
+            {
+                var before = platform.AutostartEnabled;
+                var s = controller.Settings.Clone();
+                s.StartWithSystem = !before;
+                controller.ApplySettings(s);
+                var after = platform.AutostartEnabled;
+                s.StartWithSystem = false;
+                controller.ApplySettings(s);
+                return Task.FromResult(after == before ? null : $"autostart changed from {before} to {after}");
+            });
 
             await Check("second press pastes the previous item", async () =>
             {

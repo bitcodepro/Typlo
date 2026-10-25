@@ -199,6 +199,15 @@ public static partial class Loc
         ["update.devBuild"] = ("Updates are off for developer builds", "В сборке для разработки обновления отключены", "У збірці для розробки оновлення вимкнено"),
         ["settings.version"] = ("Typlo v{0}", "Typlo v{0}", "Typlo v{0}"),
 
+        ["history.ctx.view"] = ("View…", "Просмотр…", "Перегляд…"),
+        ["viewer.title"] = ("Typlo — item", "Typlo — запись", "Typlo — запис"),
+        ["hk.undo"] = ("Undo last conversion", "Отменить преобразование", "Скасувати перетворення"),
+        ["shortcuts.undo"] = ("Undo the last layout fix, case change or transliteration (within 2 minutes, same window)", "Отменить последнее исправление раскладки, смену регистра или транслитерацию (в течение 2 минут, в том же окне)", "Скасувати останнє виправлення розкладки, зміну регістру чи транслітерацію (протягом 2 хвилин, у тому ж вікні)"),
+        ["settings.snippetProblem"] = ("Fix the snippets: {0}", "Исправьте шаблоны: {0}", "Виправте шаблони: {0}"),
+        ["snippet.tooShort"] = ("trigger “{0}” needs at least 2 characters", "сокращение «{0}» короче 2 символов", "скорочення «{0}» коротше 2 символів"),
+        ["snippet.tooLong"] = ("trigger “{0}” is longer than {1} characters", "сокращение «{0}» длиннее {1} символов", "скорочення «{0}» довше за {1} символів"),
+        ["snippet.duplicate"] = ("trigger “{0}” is used twice", "сокращение «{0}» повторяется", "скорочення «{0}» повторюється"),
+        ["snippet.emptyText"] = ("trigger “{0}” has no text", "у сокращения «{0}» нет текста", "у скорочення «{0}» немає тексту"),
         // Controller hotkey labels
         ["hk.case"] = ("Change case", "Сменить регистр", "Змінити регістр"),
         ["hk.translit"] = ("Transliterate", "Транслитерация", "Транслітерація"),

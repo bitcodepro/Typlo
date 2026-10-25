@@ -10,8 +10,36 @@ public sealed class LayoutHotkey
     public string Hotkey { get; set; } = "";
 }
 
+/// <summary>Something wrong with a snippet, reported to the user before settings are saved or imported.</summary>
+public sealed record SettingsProblem(SettingsProblemKind Kind, string Trigger);
+
+public enum SettingsProblemKind
+{
+    TriggerTooShort,
+    TriggerTooLong,
+    DuplicateTrigger,
+    EmptyText,
+}
+
+/// <summary>An exported settings file that is not valid; <see cref="Problems"/> is empty for "not a Typlo file".</summary>
+public sealed class SettingsImportException(string message, IReadOnlyList<SettingsProblem> problems) : Exception(message)
+{
+    public IReadOnlyList<SettingsProblem> Problems { get; } = problems;
+}
+
 public sealed class AppSettings
 {
+    public const string FormatId = "typlo-settings";
+    public const int CurrentSchemaVersion = 1;
+    /// <summary>Longest trigger the typing buffer can recognise.</summary>
+    public const int MaxTriggerLength = 64;
+
+    /// <summary>Marks the file as Typlo settings (checked on import).</summary>
+    public string Format { get; set; } = FormatId;
+
+    /// <summary>Settings file layout version, for future migrations.</summary>
+    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+
     /// <summary>Layouts taking part in conversion, in priority order; Toggle flips between the first two found.</summary>
     public List<string> Layouts { get; set; } = ["en", "ru"];
 
@@ -30,6 +58,9 @@ public sealed class AppSettings
 
     /// <summary>Transliterates the selection: «Привет» ⇄ "Privet".</summary>
     public string TranslitHotkey { get; set; } = "Ctrl+Alt+Shift+T";
+
+    /// <summary>Puts back the text replaced by the last layout fix, case change or transliteration.</summary>
+    public string UndoHotkey { get; set; } = "Ctrl+Alt+Shift+Z";
 
     /// <summary>Typed triggers replaced by text (";addr" → address). Stored in settings.json, not encrypted.</summary>
     public List<Snippet> Snippets { get; set; } = [];
@@ -84,10 +115,37 @@ public sealed class AppSettings
         if (UiLanguage is not ("en" or "ru" or "uk" or "de" or "es" or "pt" or "fr" or "it" or "zh" or "ja")) UiLanguage = "en";
         if (UiTheme is not ("system" or "light" or "dark")) UiTheme = "system";
         Snippets = (Snippets ?? []).Where(s => s is not null && !string.IsNullOrWhiteSpace(s.Trigger)).ToList();
+        foreach (var s in Snippets)
+        {
+            s.Trigger = s.Trigger.Trim();
+            s.Text ??= "";
+        }
+        LayoutHotkeys = (LayoutHotkeys ?? []).Where(h => h is not null && h.LayoutId is not null).ToList();
+        foreach (var h in LayoutHotkeys) h.Hotkey ??= "";
+        ExcludedApps = (ExcludedApps ?? []).Where(a => !string.IsNullOrWhiteSpace(a)).ToList();
+        ToggleHotkey ??= "";
+        ClipboardHotkey ??= "";
+        Format = FormatId;
+        SchemaVersion = CurrentSchemaVersion;
         CaseHotkey ??= "";
         TranslitHotkey ??= "";
-        LayoutHotkeys ??= [];
-        ExcludedApps ??= [];
+        UndoHotkey ??= "";
+    }
+
+    /// <summary>Snippet problems that would make a snippet never fire or fire ambiguously.</summary>
+    public IReadOnlyList<SettingsProblem> Validate()
+    {
+        var problems = new List<SettingsProblem>();
+        var seen = new HashSet<string>();
+        foreach (var s in Snippets ?? [])
+        {
+            var trigger = (s?.Trigger ?? "").Trim();
+            if (trigger.Length < 2) problems.Add(new(SettingsProblemKind.TriggerTooShort, trigger));
+            else if (trigger.Length > MaxTriggerLength) problems.Add(new(SettingsProblemKind.TriggerTooLong, trigger));
+            else if (!seen.Add(Typlo.Core.Text.SnippetMatcher.Normalize(trigger))) problems.Add(new(SettingsProblemKind.DuplicateTrigger, trigger));
+            if (string.IsNullOrEmpty(s?.Text)) problems.Add(new(SettingsProblemKind.EmptyText, trigger));
+        }
+        return problems;
     }
 }
 
@@ -127,10 +185,35 @@ public sealed class SettingsStore(string path)
     }
 
     /// <summary>Reads exported settings; throws if the file is not a Typlo settings file.</summary>
+    /// <summary>
+    /// Reads exported settings. Throws <see cref="SettingsImportException"/> for a file that is not Typlo settings
+    /// (an empty object included) or that has invalid snippets; nothing is applied in that case.
+    /// </summary>
     public AppSettings Import(string file)
     {
-        var s = JsonSerializer.Deserialize(File.ReadAllText(file), SettingsJson.Default.AppSettings)
-                ?? throw new InvalidDataException("Empty settings file.");
+        var json = File.ReadAllText(file);
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var marked = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("format", out var f) &&
+                         f.ValueKind == JsonValueKind.String && f.GetString() == AppSettings.FormatId;
+            // Files exported before the format marker existed (v0.2.x) still carry the hotkey fields.
+            var legacy = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("clipboardHotkey", out _) &&
+                         root.TryGetProperty("layouts", out _);
+            if (!marked && !legacy) throw new SettingsImportException("Not a Typlo settings file.", []);
+            if (root.TryGetProperty("schemaVersion", out var v) && v.TryGetInt32(out var version) && version > AppSettings.CurrentSchemaVersion)
+                throw new SettingsImportException("Settings from a newer Typlo version.", []);
+        }
+        catch (JsonException e)
+        {
+            throw new SettingsImportException("Not a Typlo settings file: " + e.Message, []);
+        }
+
+        var s = JsonSerializer.Deserialize(json, SettingsJson.Default.AppSettings)
+                ?? throw new SettingsImportException("Empty settings file.", []);
+        var problems = s.Validate();
+        if (problems.Count > 0) throw new SettingsImportException("Invalid snippets.", problems);
         s.Normalize();
         return s;
     }

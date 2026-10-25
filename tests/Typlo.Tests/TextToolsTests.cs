@@ -83,7 +83,51 @@ public class TextToolsTests
         Assert.Equal("dark", back.UiTheme);
         Assert.Equal("Hello", Assert.Single(back.Snippets).Text);
         File.WriteAllText(file, "not json");
-        Assert.ThrowsAny<Exception>(() => store.Import(file));
+        Assert.Throws<SettingsImportException>(() => store.Import(file));
         Directory.Delete(dir, true);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    [InlineData("""{"uiLanguage":"de"}""")]
+    [InlineData("""{"format":"typlo-settings","schemaVersion":99}""")]
+    public void Import_RejectsFilesThatAreNotTyploSettings(string json)
+    {
+        var file = Path.Combine(Path.GetTempPath(), "typlo-import-" + Guid.NewGuid().ToString("N") + ".json");
+        File.WriteAllText(file, json);
+        try
+        {
+            var e = Assert.Throws<SettingsImportException>(() => new SettingsStore(file).Import(file));
+            Assert.Empty(e.Problems);
+        }
+        finally { File.Delete(file); }
+    }
+
+    [Fact]
+    public void Import_RejectsBadSnippets_AndAcceptsLegacyFiles()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "typlo-import-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var longTrigger = ";" + new string('x', 70);
+            File.WriteAllText(file, $$"""
+                {"format":"typlo-settings","snippets":[{"trigger":";a1","text":null},{"trigger":";dup","text":"1"},
+                 {"trigger":";DUP","text":"2"},{"trigger":"{{longTrigger}}","text":"x"},{"trigger":";","text":"x"}]}
+                """);
+            var e = Assert.Throws<SettingsImportException>(() => new SettingsStore(file).Import(file));
+            Assert.Contains(e.Problems, p => p is { Kind: SettingsProblemKind.EmptyText, Trigger: ";a1" });
+            Assert.Contains(e.Problems, p => p is { Kind: SettingsProblemKind.DuplicateTrigger, Trigger: ";DUP" });
+            Assert.Contains(e.Problems, p => p.Kind == SettingsProblemKind.TriggerTooLong);
+            Assert.Contains(e.Problems, p => p.Kind == SettingsProblemKind.TriggerTooShort);
+
+            // v0.2.x exports have no format marker but carry the hotkey fields.
+            File.WriteAllText(file, """{"layouts":["en","ru"],"clipboardHotkey":"Ctrl+Alt+V","snippets":null,"layoutHotkeys":[null]}""");
+            var ok = new SettingsStore(file).Import(file);
+            Assert.Equal("Ctrl+Alt+V", ok.ClipboardHotkey);
+            Assert.Empty(ok.Snippets);
+            Assert.Empty(ok.LayoutHotkeys);
+        }
+        finally { File.Delete(file); }
     }
 }

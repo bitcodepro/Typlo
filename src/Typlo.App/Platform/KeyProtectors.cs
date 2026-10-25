@@ -8,9 +8,10 @@ namespace Typlo.App.Platform;
 /// Keeps the history master key in the macOS login Keychain; the key file only holds a marker.
 /// </summary>
 [SupportedOSPlatform("macos")]
-public sealed class KeychainKeyProtector : IKeyProtector
+public sealed class KeychainKeyProtector(bool diagnostic = false) : IKeyProtector
 {
-    private const string Service = "Typlo.HistoryKey";
+    // Diagnostic runs (--selftest, --screenshots) use their own item so they can never replace the real key.
+    private readonly string Service = diagnostic ? "Typlo.DiagnosticKey" : "Typlo.HistoryKey";
     private static readonly byte[] Marker = "keychain:v1"u8.ToArray();
 
     public byte[] Protect(byte[] key)
@@ -35,10 +36,11 @@ public sealed class KeychainKeyProtector : IKeyProtector
 /// Without it, falls back to a user-only (0600) key file.
 /// </summary>
 [SupportedOSPlatform("linux")]
-public sealed class SecretServiceKeyProtector : IKeyProtector
+public sealed class SecretServiceKeyProtector(bool diagnostic = false) : IKeyProtector
 {
     private static readonly byte[] Marker = "secret-service:v1"u8.ToArray();
-    private static readonly string[] Attributes = ["application", "typlo", "key", "history"];
+    // Diagnostic runs (--selftest, --screenshots) use their own entry so they can never replace the real key.
+    private readonly string[] Attributes = ["application", "typlo", "key", diagnostic ? "diagnostic" : "history"];
 
     public static bool Available => Proc.Has("secret-tool");
 

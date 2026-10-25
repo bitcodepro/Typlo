@@ -21,7 +21,7 @@ internal static class ScreenshotMode
         Directory.CreateDirectory(outDir);
         var dataDir = Path.Combine(Path.GetTempPath(), "typlo-shots-" + Guid.NewGuid().ToString("N"));
         using var platform = PlatformFactory.Create();
-        var controller = new AppController(platform, new AppPaths(dataDir), PlatformFactory.CreateKeyProtector());
+        var controller = new AppController(platform, new AppPaths(dataDir), PlatformFactory.CreateKeyProtector(diagnostic: true), diagnostic: true);
         try
         {
             var s = controller.Settings.Clone();
@@ -95,6 +95,13 @@ internal static class ScreenshotMode
                     Save(darkSettings, Path.Combine(outDir, "settings_dark_bottom.png"));
                 }
                 darkSettings.Close();
+
+                var sql = controller.Store.List().First(e => e.PreviewText.StartsWith("SELECT"));
+                var viewer = new EntryViewWindow(controller, sql, 0);
+                viewer.Show();
+                await Task.Delay(500);
+                Save(viewer, Path.Combine(outDir, "viewer_dark.png"));
+                viewer.Close();
 
                 var shortcuts = new ShortcutsWindow(controller.Settings, null);
                 shortcuts.Show();

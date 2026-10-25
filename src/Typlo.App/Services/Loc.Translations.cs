@@ -8,6 +8,15 @@ public static partial class Loc
     {
         ["de"] = new()
         {
+            ["history.ctx.view"] = "Anzeigen…",
+            ["viewer.title"] = "Typlo — Eintrag",
+            ["hk.undo"] = "Letzte Umwandlung rückgängig",
+            ["shortcuts.undo"] = "Letzte Layoutkorrektur, Groß-/Kleinschreibung oder Transliteration rückgängig machen (innerhalb von 2 Minuten, im selben Fenster)",
+            ["settings.snippetProblem"] = "Textbausteine korrigieren: {0}",
+            ["snippet.tooShort"] = "Kürzel „{0}“ braucht mindestens 2 Zeichen",
+            ["snippet.tooLong"] = "Kürzel „{0}“ ist länger als {1} Zeichen",
+            ["snippet.duplicate"] = "Kürzel „{0}“ kommt doppelt vor",
+            ["snippet.emptyText"] = "Kürzel „{0}“ hat keinen Text",
             ["tray.history"] = "Zwischenablage-Verlauf",
             ["tray.settings"] = "Einstellungen…",
             ["tray.keepAwake"] = "Bildschirmsperre verhindern",
@@ -149,6 +158,15 @@ public static partial class Loc
 
         ["es"] = new()
         {
+            ["history.ctx.view"] = "Ver…",
+            ["viewer.title"] = "Typlo — elemento",
+            ["hk.undo"] = "Deshacer la última conversión",
+            ["shortcuts.undo"] = "Deshacer la última corrección de distribución, cambio de mayúsculas o transliteración (en 2 minutos, en la misma ventana)",
+            ["settings.snippetProblem"] = "Corrija los fragmentos: {0}",
+            ["snippet.tooShort"] = "el atajo «{0}» necesita al menos 2 caracteres",
+            ["snippet.tooLong"] = "el atajo «{0}» supera los {1} caracteres",
+            ["snippet.duplicate"] = "el atajo «{0}» está repetido",
+            ["snippet.emptyText"] = "el atajo «{0}» no tiene texto",
             ["tray.history"] = "Historial del portapapeles",
             ["tray.settings"] = "Ajustes…",
             ["tray.keepAwake"] = "Evitar el bloqueo de pantalla",
@@ -290,6 +308,15 @@ public static partial class Loc
 
         ["pt"] = new()
         {
+            ["history.ctx.view"] = "Ver…",
+            ["viewer.title"] = "Typlo — item",
+            ["hk.undo"] = "Desfazer a última conversão",
+            ["shortcuts.undo"] = "Desfazer a última correção de disposição, mudança de maiúsculas ou transliteração (em 2 minutos, na mesma janela)",
+            ["settings.snippetProblem"] = "Corrija os modelos: {0}",
+            ["snippet.tooShort"] = "o atalho «{0}» precisa de pelo menos 2 caracteres",
+            ["snippet.tooLong"] = "o atalho «{0}» tem mais de {1} caracteres",
+            ["snippet.duplicate"] = "o atalho «{0}» está repetido",
+            ["snippet.emptyText"] = "o atalho «{0}» não tem texto",
             ["tray.history"] = "Histórico da área de transferência",
             ["tray.settings"] = "Configurações…",
             ["tray.keepAwake"] = "Impedir o bloqueio do ecrã",
@@ -431,6 +458,15 @@ public static partial class Loc
 
         ["fr"] = new()
         {
+            ["history.ctx.view"] = "Afficher…",
+            ["viewer.title"] = "Typlo — élément",
+            ["hk.undo"] = "Annuler la dernière conversion",
+            ["shortcuts.undo"] = "Annuler la dernière correction de disposition, changement de casse ou translittération (dans les 2 minutes, même fenêtre)",
+            ["settings.snippetProblem"] = "Corrigez les modèles : {0}",
+            ["snippet.tooShort"] = "le raccourci « {0} » doit avoir au moins 2 caractères",
+            ["snippet.tooLong"] = "le raccourci « {0} » dépasse {1} caractères",
+            ["snippet.duplicate"] = "le raccourci « {0} » est en double",
+            ["snippet.emptyText"] = "le raccourci « {0} » n’a pas de texte",
             ["tray.history"] = "Historique du presse-papiers",
             ["tray.settings"] = "Paramètres…",
             ["tray.keepAwake"] = "Empêcher le verrouillage de l’écran",
@@ -572,6 +608,15 @@ public static partial class Loc
 
         ["it"] = new()
         {
+            ["history.ctx.view"] = "Visualizza…",
+            ["viewer.title"] = "Typlo — elemento",
+            ["hk.undo"] = "Annulla l’ultima conversione",
+            ["shortcuts.undo"] = "Annulla l’ultima correzione del layout, cambio di maiuscole o traslitterazione (entro 2 minuti, nella stessa finestra)",
+            ["settings.snippetProblem"] = "Correggi i frammenti: {0}",
+            ["snippet.tooShort"] = "l’abbreviazione «{0}» richiede almeno 2 caratteri",
+            ["snippet.tooLong"] = "l’abbreviazione «{0}» supera {1} caratteri",
+            ["snippet.duplicate"] = "l’abbreviazione «{0}» è duplicata",
+            ["snippet.emptyText"] = "l’abbreviazione «{0}» non ha testo",
             ["tray.history"] = "Cronologia degli appunti",
             ["tray.settings"] = "Impostazioni…",
             ["tray.keepAwake"] = "Impedisci il blocco dello schermo",
@@ -713,6 +758,15 @@ public static partial class Loc
 
         ["zh"] = new()
         {
+            ["history.ctx.view"] = "查看…",
+            ["viewer.title"] = "Typlo — 条目",
+            ["hk.undo"] = "撤销上次转换",
+            ["shortcuts.undo"] = "撤销上次的布局修正、大小写切换或音译（2 分钟内，同一窗口）",
+            ["settings.snippetProblem"] = "请修正文本片段：{0}",
+            ["snippet.tooShort"] = "缩写“{0}”至少需要 2 个字符",
+            ["snippet.tooLong"] = "缩写“{0}”超过 {1} 个字符",
+            ["snippet.duplicate"] = "缩写“{0}”重复",
+            ["snippet.emptyText"] = "缩写“{0}”没有文本",
             ["tray.history"] = "剪贴板历史",
             ["tray.settings"] = "设置…",
             ["tray.keepAwake"] = "阻止锁屏",
@@ -854,6 +908,15 @@ public static partial class Loc
 
         ["ja"] = new()
         {
+            ["history.ctx.view"] = "表示…",
+            ["viewer.title"] = "Typlo — 項目",
+            ["hk.undo"] = "直前の変換を取り消す",
+            ["shortcuts.undo"] = "直前の配列修正・大文字小文字の変更・翻字を取り消す（2 分以内、同じウィンドウ）",
+            ["settings.snippetProblem"] = "定型文を修正してください：{0}",
+            ["snippet.tooShort"] = "短縮語「{0}」は 2 文字以上必要です",
+            ["snippet.tooLong"] = "短縮語「{0}」が {1} 文字を超えています",
+            ["snippet.duplicate"] = "短縮語「{0}」が重複しています",
+            ["snippet.emptyText"] = "短縮語「{0}」にテキストがありません",
             ["tray.history"] = "クリップボード履歴",
             ["tray.settings"] = "設定…",
             ["tray.keepAwake"] = "画面ロックを防ぐ",
