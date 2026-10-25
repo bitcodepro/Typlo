@@ -6,6 +6,7 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
    - `Ctrl+Alt+Shift+Space` – toggle between the pair (EN ⇄ RU by default)
    - `Ctrl+Alt+Shift+E` / `Ctrl+Alt+Shift+R` – convert into English / Russian (Ukrainian available)
    - Nothing selected? The word left of the caret is converted (can be turned off).
+     Punctuation inside a wrong-layout word is included: `htdm.dftim` → `ревьюваешь`.
    - The clipboard is restored afterwards; the system layout is switched too (Windows, Linux X11).
    - `Ctrl+Alt+Shift+C` cycles the case (lower → Title → UPPER); `Ctrl+Alt+Shift+T` transliterates (Привет ⇄ Privet).
    - Snippets: typing a trigger such as `;addr` replaces it with saved text, in any keyboard layout.
@@ -43,7 +44,7 @@ the old files on the next start. "Check for updates…" (tray menu or Settings) 
 | Autostart | HKCU Run | LaunchAgent | `~/.config/autostart` | same |
 | Verified by self-test | yes | **not yet (no Mac available)** | yes (Ubuntu 24.04, Xvfb, `tests/linux`) | no |
 
-Linux packages: `xclip xdotool` (X11) or `wl-clipboard` (Wayland); optional `clipnotify`, `libsecret-tools`.
+Linux packages: `xclip xdotool libxres1` (X11) or `wl-clipboard` (Wayland); optional `clipnotify`, `libsecret-tools`.
 
 macOS: the build is unsigned. Build/package on a Mac (`scripts/package-macos.sh` ad-hoc signs it), then
 right click → Open, and allow Typlo in System Settings → Privacy & Security → Accessibility.

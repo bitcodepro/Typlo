@@ -16,7 +16,7 @@ public partial class ClipboardWindow : Window
     private readonly ObservableCollection<ClipItemViewModel> _items = [];
     private List<ClipItemViewModel> _all = [];
     private nint _targetWindow;
-    private bool _dirty = true;
+    private volatile bool _dirty = true;
 
     public ClipboardWindow() : this(null!) { } // designer
 
@@ -32,8 +32,19 @@ public partial class ClipboardWindow : Window
         // Tunnel so arrows/Enter work while the search box has focus.
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
         Deactivated += (_, _) => Hide();
-        if (controller is not null) controller.Store.Changed += () => _dirty = true;
+        if (controller is not null) controller.Store.Changed += OnStoreChanged;
+        Closed += (_, _) =>
+        {
+            _searchCts?.Cancel();
+            if (controller is not null) controller.Store.Changed -= OnStoreChanged;
+        };
+        PropertyChanged += (_, e) =>
+        {
+            if (e.Property == IsVisibleProperty && !IsVisible) _searchCts?.Cancel();
+        };
     }
+
+    private void OnStoreChanged() => _dirty = true;
 
     public void ShowFor(nint targetWindow)
     {
@@ -78,18 +89,32 @@ public partial class ClipboardWindow : Window
         if (q.Length == 0 || _controller is null) return;
         var cts = _searchCts = new CancellationTokenSource();
         CountText.Text = $"{_items.Count} / {_all.Count} …"; // full-text search running
-        _ = Task.Run(async () =>
+        _ = SearchAsync(q, cts);
+    }
+
+    private async Task SearchAsync(string query, CancellationTokenSource cts)
+    {
+        var token = cts.Token;
+        try
         {
-            await Task.Delay(150, cts.Token); // typing debounce
-            var ids = _controller.Store.SearchFullText(q, cts.Token);
-            Dispatcher.UIThread.Post(() =>
-            {
-                if (cts.IsCancellationRequested) return;
-                var matches = _all.Where(i => i.Matches(q) || ids.Contains(i.Entry.Id)).ToList();
-                if (matches.Count != _items.Count) ShowItems(matches, q, keepSelection: true);
-                else CountText.Text = $"{_items.Count} / {_all.Count}";
-            });
-        }, cts.Token).ContinueWith(_ => { }, TaskScheduler.Default);
+            await Task.Delay(150, token);
+            var ids = await Task.Run(() => _controller.Store.SearchFullText(query, token), token);
+            if (token.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
+            var matches = _all.Where(i => i.Matches(query) || ids.Contains(i.Entry.Id)).ToList();
+            ShowItems(matches, query, keepSelection: true);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e)
+        {
+            Log.Error("Full-text search failed", e);
+            if (!token.IsCancellationRequested && ReferenceEquals(_searchCts, cts))
+                CountText.Text = $"{_items.Count} / {_all.Count}";
+        }
+        finally
+        {
+            if (ReferenceEquals(_searchCts, cts)) _searchCts = null;
+            cts.Dispose();
+        }
     }
 
     private void ShowItems(List<ClipItemViewModel> items, string query, bool keepSelection = false)

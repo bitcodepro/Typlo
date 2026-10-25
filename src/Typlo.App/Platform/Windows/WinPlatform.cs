@@ -254,6 +254,16 @@ public sealed class WinPlatform : IPlatform
         if (_fmtDropEffect != 0) SetBytes(_fmtDropEffect, BitConverter.GetBytes(1)); // DROPEFFECT_COPY: paste copies, not moves
     }));
 
+    public bool? IsClipboardOwnedBy(nint window)
+    {
+        if (window == 0) return null;
+        var owner = GetClipboardOwner();
+        if (owner == 0) return null; // some apps copy without an owner window
+        GetWindowThreadProcessId(owner, out var ownerPid);
+        GetWindowThreadProcessId(window, out var windowPid);
+        return ownerPid == windowPid;
+    }
+
     public bool IsEmptySelectionLineCopy() => Invoke(() => WithClipboard(() =>
     {
         foreach (var tag in new[] { "VisualStudioEditorOperationsLineCutCopyClipboardTag", "MSDEVLineSelect" })
@@ -297,7 +307,7 @@ public sealed class WinPlatform : IPlatform
             if (ReadBytes(fmt) is { } data) list.Add((fmt.ToString(System.Globalization.CultureInfo.InvariantCulture), data));
         }
         return new ClipboardSnapshot(list);
-    }) ?? new ClipboardSnapshot([]));
+    }) ?? throw new IOException("Clipboard is locked by another application."));
 
     public void Restore(ClipboardSnapshot snapshot) => Invoke(() => WriteClipboard(() =>
     {
@@ -415,6 +425,32 @@ public sealed class WinPlatform : IPlatform
     private static bool IsDown(ushort vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
 
     public void SendCopy() => SendChord(KeyModifiers.Ctrl, "C");
+
+    // Injected input is flagged by Windows, and the typing hook drops flagged events. One SendInput call puts the
+    // whole text into the input stream atomically, so it cannot interleave with a later window switch.
+    public unsafe bool TypeText(string text, Func<bool>? keepGoing = null)
+    {
+        if (text.IndexOfAny(['\n', '\r', '\t']) >= 0)
+            throw new ArgumentException("Line breaks and tabs would act as Enter/Tab keys; paste such text instead.");
+        if (keepGoing?.Invoke() == false) return false;
+        var inputs = new List<INPUT>(text.Length * 2);
+        void Key(ushort vk, ushort scan, uint flags)
+        {
+            var input = new INPUT { type = INPUT_KEYBOARD };
+            input.ki.wVk = vk;
+            input.ki.wScan = scan;
+            input.ki.dwFlags = flags;
+            inputs.Add(input);
+        }
+        foreach (var c in text)
+        {
+            Key(0, c, KEYEVENTF_UNICODE);
+            Key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
+        }
+        var array = inputs.ToArray();
+        fixed (INPUT* p = array) SendInput((uint)array.Length, p, sizeof(INPUT));
+        return true;
+    }
     public void SendPaste() => SendChord(KeyModifiers.Ctrl, "V");
 
     public void SendChord(KeyModifiers modifiers, string key)

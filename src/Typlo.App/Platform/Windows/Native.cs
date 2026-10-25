@@ -22,7 +22,7 @@ internal static partial class Native
     public const ushort VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12, VK_LWIN = 0x5B, VK_RWIN = 0x5C,
         VK_LSHIFT = 0xA0, VK_RSHIFT = 0xA1, VK_LCONTROL = 0xA2, VK_RCONTROL = 0xA3, VK_LMENU = 0xA4, VK_RMENU = 0xA5;
 
-    public const uint INPUT_KEYBOARD = 1, KEYEVENTF_KEYUP = 0x2;
+    public const uint INPUT_KEYBOARD = 1, KEYEVENTF_KEYUP = 0x2, KEYEVENTF_UNICODE = 0x4;
 
     public static readonly nint HWND_MESSAGE = -3;
 

@@ -214,6 +214,11 @@ public sealed class LinuxPlatform : HookPlatformBase
     }
 
     // X11 only: Wayland compositors (GNOME, KDE) keep the layout to themselves.
+    // X11 names the clipboard owner window; the X-Resource extension tells which process it belongs to.
+    public override bool? IsClipboardOwnedBy(nint window) => _wayland ? null : X11Clients.ClipboardOwnedBySameProcess(window);
+
+    protected override ushort? TextEntryKeycode() => _wayland ? null : X11Clients.TextEntryKeycode();
+
     public override bool SwitchKeyboardLayout(nint window, int langId) => !_wayland && XkbLayouts.Available && XkbLayouts.SwitchTo(langId);
 
     // ---------------------------------------------------------------- system

@@ -151,17 +151,20 @@ public static class UpdateInstaller
 
     /// <summary>
     /// Replaces every top-level entry of <paramref name="installRoot"/> that the new release contains.
-    /// Old entries are renamed to "*.old" (a running executable can be renamed, not overwritten);
+    /// Old entries are renamed to unique backups (a running executable can be renamed, not overwritten);
     /// on any failure everything is rolled back. The user's data folder is never touched.
     /// </summary>
     public static void Swap(string staging, string installRoot)
     {
         var done = new List<(string Target, string? Backup)>();
-        // A unique suffix, so a user's own "something.old" next to the app is never overwritten or deleted.
-        var suffix = $".typlo-backup-{DateTime.UtcNow:yyyyMMddHHmmss}";
+        var previousBackups = ReadBackupNames(installRoot).ToArray();
+        var sources = Directory.GetFileSystemEntries(staging);
+        if (sources.Any(s => Path.GetFileName(s).Equals(ManifestName, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidDataException("The update archive contains a reserved manifest name.");
+        var suffix = ".typlo-backup-" + Guid.NewGuid().ToString("N");
         try
         {
-            foreach (var source in Directory.EnumerateFileSystemEntries(staging))
+            foreach (var source in sources)
             {
                 var name = Path.GetFileName(source);
                 if (Preserved.Contains(name)) continue;
@@ -177,7 +180,7 @@ public static class UpdateInstaller
             }
             // Remember exactly what we created; cleanup on the next start removes only these.
             var backups = done.Where(d => d.Backup is not null).Select(d => Path.GetFileName(d.Backup!));
-            File.WriteAllLines(Path.Combine(installRoot, ManifestName), backups);
+            WriteBackupManifest(installRoot, previousBackups.Concat(backups).Distinct());
         }
         catch
         {
@@ -198,27 +201,16 @@ public static class UpdateInstaller
     /// <summary>Lists the backups made by the last update, one file or folder name per line.</summary>
     public const string ManifestName = ".typlo-update-backups";
 
-    /// <summary>Top-level names of a Typlo release, for the backups of versions without a manifest (0.4.0 and older).</summary>
-    private static readonly string[] ReleaseEntries =
-        ["Typlo.exe", "Typlo", "Typlo.app", "LICENSE", "README.md", "THIRD-PARTY-NOTICES.txt", "THIRD-PARTY-NOTICES.md", "build-info.json", "licenses", "docs"];
-
     /// <summary>
-    /// Removes the backups of a previous update (call on start): only the entries listed in the update manifest,
-    /// plus "&lt;release entry&gt;.old" left by versions before the manifest. Nothing else next to the app is touched.
+    /// Removes only the backups recorded by the updater. Legacy *.old files have no ownership record
+    /// and are left alone, even when their names resemble release files.
     /// </summary>
     public static void CleanupOld(string installRoot)
     {
         if (!Directory.Exists(installRoot)) return;
         var manifest = Path.Combine(installRoot, ManifestName);
-        var names = new List<string>();
-        if (File.Exists(manifest))
-            names.AddRange(File.ReadAllLines(manifest).Select(l => l.Trim())
-                // Only plain names with our suffix: a damaged manifest must not point anywhere else.
-                .Where(n => n.Contains(".typlo-backup-", StringComparison.Ordinal) && n == Path.GetFileName(n)));
-        names.AddRange(ReleaseEntries.Select(e => e + OldSuffix));
-
         var allRemoved = true;
-        foreach (var name in names.Distinct())
+        foreach (var name in ReadBackupNames(installRoot).Distinct())
         {
             var path = Path.Combine(installRoot, name);
             if (!Exists(path)) continue;
@@ -228,6 +220,41 @@ public static class UpdateInstaller
         if (allRemoved && File.Exists(manifest))
         {
             try { File.Delete(manifest); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    private static IEnumerable<string> ReadBackupNames(string installRoot)
+    {
+        var manifest = Path.Combine(installRoot, ManifestName);
+        if (!File.Exists(manifest)) return [];
+        return File.ReadAllLines(manifest).Where(IsBackupName);
+    }
+
+    private static bool IsBackupName(string name)
+    {
+        if (name.IndexOfAny(['/', '\\', ':', '\0']) >= 0 || name != Path.GetFileName(name)) return false;
+        const string marker = ".typlo-backup-";
+        var index = name.LastIndexOf(marker, StringComparison.Ordinal);
+        if (index <= 0) return false;
+        var suffix = name[(index + marker.Length)..];
+        // Accept timestamp suffixes from the first manifest-based release as well as new UUIDs.
+        return suffix.Length == 14 && suffix.All(char.IsAsciiDigit) ||
+               suffix.Length == 32 && suffix.All(char.IsAsciiHexDigit);
+    }
+
+    private static void WriteBackupManifest(string installRoot, IEnumerable<string> names)
+    {
+        var manifest = Path.Combine(installRoot, ManifestName);
+        var temp = manifest + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllLines(temp, names);
+            File.Move(temp, manifest, overwrite: true);
+        }
+        finally
+        {
+            try { File.Delete(temp); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
     }

@@ -58,6 +58,11 @@ public interface IPlatform : IDisposable
     /// (VS Code's isFromEmptySelection, Visual Studio's line-copy tag), not a real selection.
     /// </summary>
     bool IsEmptySelectionLineCopy();
+    /// <summary>
+    /// Whether the clipboard was last written by the process that owns <paramref name="window"/>;
+    /// null where the OS does not tell (then only the change timing is used).
+    /// </summary>
+    bool? IsClipboardOwnedBy(nint window);
     void Restore(ClipboardSnapshot snapshot);
 
     // Input & windows
@@ -67,6 +72,12 @@ public interface IPlatform : IDisposable
     void SendChord(KeyModifiers modifiers, string key);
     /// <summary>The platform's copy shortcut (Ctrl+C, or Cmd+C on macOS).</summary>
     void SendCopy();
+    /// <summary>
+    /// Types single-line text into the focused app as Unicode key input, without touching the clipboard.
+    /// Stops (returning false) as soon as <paramref name="keepGoing"/> says the target is no longer valid.
+    /// Typlo's own injected keys never come back as <see cref="KeyTyped"/> events.
+    /// </summary>
+    bool TypeText(string text, Func<bool>? keepGoing = null);
     void SendPaste();
     /// <summary>Opaque handle of the focused window/app (HWND, PID or X11 window id); 0 if unknown.</summary>
     nint ForegroundWindow { get; }

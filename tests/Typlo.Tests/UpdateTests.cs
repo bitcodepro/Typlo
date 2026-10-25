@@ -120,7 +120,7 @@ public sealed class UpdateTests : IDisposable
         var install = Path.Combine(_dir, "install3");
         Directory.CreateDirectory(Path.Combine(install, "personal-notes.old"));
         File.WriteAllText(Path.Combine(install, "unrelated-report.old"), "mine");
-        File.WriteAllText(Path.Combine(install, "Typlo.exe.old"), "left by v0.4.0"); // legacy backup, no manifest
+        File.WriteAllText(Path.Combine(install, "Typlo.exe.old"), "untracked backup");
         File.WriteAllText(Path.Combine(install, "LICENSE.old"), "left by v0.4.0");
         File.WriteAllLines(Path.Combine(install, UpdateInstaller.ManifestName), ["..\\outside.typlo-backup-1", "notes.txt"]);
         File.WriteAllText(Path.Combine(install, "notes.txt"), "mine");
@@ -130,8 +130,60 @@ public sealed class UpdateTests : IDisposable
         Assert.True(File.Exists(Path.Combine(install, "unrelated-report.old")));
         Assert.True(Directory.Exists(Path.Combine(install, "personal-notes.old")));
         Assert.True(File.Exists(Path.Combine(install, "notes.txt"))); // listed, but not a backup name
-        Assert.False(File.Exists(Path.Combine(install, "Typlo.exe.old")));
-        Assert.False(File.Exists(Path.Combine(install, "LICENSE.old")));
+        Assert.True(File.Exists(Path.Combine(install, "Typlo.exe.old")));
+        Assert.True(File.Exists(Path.Combine(install, "LICENSE.old")));
+    }
+
+    [Fact]
+    public void Cleanup_OnlyRemovesManifestBackups()
+    {
+        var install = Path.Combine(_dir, "manifest-cleanup");
+        Directory.CreateDirectory(install);
+        const string owned = "Typlo.exe.typlo-backup-20261025120000";
+        const string untracked = "notes.typlo-backup-20261025120000";
+        File.WriteAllText(Path.Combine(install, owned), "old executable");
+        File.WriteAllText(Path.Combine(install, untracked), "user file");
+        File.WriteAllLines(Path.Combine(install, UpdateInstaller.ManifestName),
+            [owned, "../outside.typlo-backup-20261025120000", "notes.typlo-backup-garbage"]);
+        UpdateInstaller.CleanupOld(install);
+        Assert.False(File.Exists(Path.Combine(install, owned)));
+        Assert.True(File.Exists(Path.Combine(install, untracked)));
+    }
+
+    [Fact]
+    public void ConsecutiveUpdates_PreserveAllTrackedBackups()
+    {
+        var install = Path.Combine(_dir, "consecutive");
+        Directory.CreateDirectory(install);
+        File.WriteAllText(Path.Combine(install, "Typlo.exe"), "version one");
+        for (var i = 2; i <= 3; i++)
+        {
+            var staging = Path.Combine(_dir, "version-" + i);
+            Directory.CreateDirectory(staging);
+            File.WriteAllText(Path.Combine(staging, "Typlo.exe"), "version " + i);
+            UpdateInstaller.Swap(staging, install);
+        }
+        Assert.Equal(2, File.ReadAllLines(Path.Combine(install, UpdateInstaller.ManifestName)).Length);
+        Assert.Equal(2, Directory.GetFiles(install, "Typlo.exe.typlo-backup-*").Length);
+        UpdateInstaller.CleanupOld(install);
+        Assert.Empty(Directory.GetFiles(install, "Typlo.exe.typlo-backup-*"));
+        Assert.Equal("version 3", File.ReadAllText(Path.Combine(install, "Typlo.exe")));
+    }
+
+    [Fact]
+    public void ManifestFailure_RollsBackTheUpdate()
+    {
+        var install = Path.Combine(_dir, "manifest-failure");
+        var staging = Path.Combine(_dir, "manifest-staging");
+        Directory.CreateDirectory(install);
+        Directory.CreateDirectory(staging);
+        Directory.CreateDirectory(Path.Combine(install, UpdateInstaller.ManifestName));
+        File.WriteAllText(Path.Combine(install, "Typlo.exe"), "old");
+        File.WriteAllText(Path.Combine(staging, "Typlo.exe"), "new");
+        var error = Record.Exception(() => UpdateInstaller.Swap(staging, install));
+        Assert.True(error is IOException or UnauthorizedAccessException);
+        Assert.Equal("old", File.ReadAllText(Path.Combine(install, "Typlo.exe")));
+        Assert.Empty(Directory.GetFiles(install, "*.typlo-backup-*"));
     }
 
     [Fact]

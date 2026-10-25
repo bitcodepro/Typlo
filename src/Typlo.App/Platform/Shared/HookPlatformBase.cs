@@ -49,7 +49,8 @@ public abstract class HookPlatformBase : IPlatform
             {
                 _hook = new SimpleGlobalHook();
                 _hook.KeyPressed += OnKeyPressed;
-                TypingEvents.Attach(_hook, key => { if (_typingWatch) KeyTyped?.Invoke(key); });
+                TypingEvents.Attach(_hook, key => { if (_typingWatch) KeyTyped?.Invoke(key); },
+                    HookFlagsOwnInput ? null : (code, raw) => _ownInput.Consume(code, raw, Environment.TickCount64));
                 _hook.KeyReleased += (_, e) => _down.TryRemove(e.Data.KeyCode, out bool _);
                 _hook.MouseMoved += (_, e) =>
                 {
@@ -153,7 +154,49 @@ public abstract class HookPlatformBase : IPlatform
 
     private EventSimulator Simulator => _simulatorLazy.Value;
 
-    public void SendChord(KeyModifiers modifiers, string key)
+    /// <summary>
+    /// True where the hook marks injected events as simulated, so the typing hook drops them without tracking.
+    /// macOS: libuiohook flags every event that carries a source process ID (all posted events, none from hardware).
+    /// </summary>
+    protected virtual bool HookFlagsOwnInput => false;
+
+    /// <summary>The raw key code text entry will be reported with, or null if it cannot be known.</summary>
+    protected virtual ushort? TextEntryKeycode() => null;
+
+    // X11: libuiohook does not flag our XTest input as simulated, so remember what we inject and drop exactly those
+    // events when the hook reports them back; real key presses in between are still seen.
+    private readonly OwnInputTracker _ownInput = new();
+
+    public void SendChord(KeyModifiers modifiers, string key) => SendChord(modifiers, key, own: true);
+
+    /// <summary>Self-test only: a key press the typing hook treats as coming from the user.</summary>
+    internal void SendChordAsUser(KeyModifiers modifiers, string key) => SendChord(modifiers, key, own: false);
+
+    public bool TypeText(string text, Func<bool>? keepGoing = null)
+    {
+        // One character at a time: X11 text entry is slow (libuiohook waits around each character), so the target
+        // is re-checked before every character and a window switch stops the rest from going elsewhere.
+        foreach (var element in System.Globalization.StringInfo.GetTextElementEnumerator(text).AsEnumerable())
+        {
+            if (keepGoing?.Invoke() == false) return false;
+            if (!HookFlagsOwnInput)
+            {
+                // Without the exact key the hook will report, our text would look like user input (or be confused
+                // with it), so nothing is typed.
+                if (TextEntryKeycode() is not { } raw)
+                {
+                    Log.Info("Text entry skipped: its key code cannot be determined");
+                    return false;
+                }
+                var now = Environment.TickCount64;
+                for (var i = OwnInputTracker.X11KeyEvents(element); i > 0; i--) _ownInput.TextKey(raw, now);
+            }
+            Simulator.SimulateTextEntry(element);
+        }
+        return true;
+    }
+
+    private void SendChord(KeyModifiers modifiers, string key, bool own)
     {
         if (KeyCodes.FromName(key) is not { } code) return;
         var mods = new List<KeyCode>();
@@ -161,6 +204,7 @@ public abstract class HookPlatformBase : IPlatform
         if (modifiers.HasFlag(KeyModifiers.Alt)) mods.Add(KeyCode.VcLeftAlt);
         if (modifiers.HasFlag(KeyModifiers.Shift)) mods.Add(KeyCode.VcLeftShift);
         if (modifiers.HasFlag(KeyModifiers.Win)) mods.Add(KeyCode.VcLeftMeta);
+        if (own && !HookFlagsOwnInput) _ownInput.Press(code, Environment.TickCount64); // modifiers are ignored by the typing hook anyway
         foreach (var m in mods) Simulator.SimulateKeyPress(m);
         Simulator.SimulateKeyPress(code);
         Simulator.SimulateKeyRelease(code);
@@ -205,6 +249,8 @@ public abstract class HookPlatformBase : IPlatform
 
     /// <summary>VS Code's "vscode-editor-data" clipboard type, as raw text, or null.</summary>
     protected abstract string? ReadEditorData();
+
+    public virtual bool? IsClipboardOwnedBy(nint window) => null;
 
     public bool IsEmptySelectionLineCopy() => ReadEditorData() is { } json && EditorClipboard.IsFromEmptySelection(json);
     public void Restore(ClipboardSnapshot snapshot) => OwnWrite(() => WriteSnapshot(snapshot));
@@ -315,10 +361,28 @@ internal static class KeyCodes
         ["OpenBracket"] = KeyCode.VcOpenBracket, ["CloseBracket"] = KeyCode.VcCloseBracket, ["Backspace"] = KeyCode.VcBackspace,
     };
 
+    /// <summary>The <see cref="Hotkey.Key"/> name of a key code, or null if hotkeys cannot use it.</summary>
+    public static string? ToName(KeyCode code)
+    {
+        foreach (var (name, value) in Named) if (value == code) return name;
+        var text = code.ToString(); // VcA, Vc7, VcF12
+        if (!text.StartsWith("Vc", StringComparison.Ordinal)) return null;
+        var rest = text[2..];
+        return Hotkey.IsValidKey(rest) ? rest : null;
+    }
+
     public static KeyCode? FromName(string key)
     {
         if (Named.TryGetValue(key, out var named)) return named;
         // A-Z, 0-9, F1-F24 follow the "Vc" + name convention.
         return Enum.TryParse<KeyCode>("Vc" + key, ignoreCase: false, out var code) ? code : null;
+    }
+}
+
+internal static class TextElementExtensions
+{
+    public static IEnumerable<string> AsEnumerable(this System.Globalization.TextElementEnumerator e)
+    {
+        while (e.MoveNext()) yield return e.GetTextElement();
     }
 }

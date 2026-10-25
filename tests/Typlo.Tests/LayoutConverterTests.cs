@@ -9,6 +9,7 @@ public class LayoutConverterTests
 
     [Theory]
     [InlineData("ghbdtn", "привет")]
+    [InlineData("htdm.dftim", "ревьюваешь")]
     [InlineData("Ghbdtn? rfr ltkf&", "Привет, как дела?")]
     [InlineData("z vtyz", "я меня")]
     [InlineData("`", "ё")]

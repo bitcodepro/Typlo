@@ -139,7 +139,7 @@ public sealed class ClipStoreTests : IDisposable
     }
 
     [Fact]
-    public void FullTextSearch_SingleCjkCharacter_AndDoesNotBlockWrites()
+    public async Task FullTextSearch_SingleCjkCharacter_AndDoesNotBlockWrites()
     {
         using var store = Open(Roomy with { MaxItems = 2000, MaxTotalBytes = 100_000_000 });
         var cat = store.Add(ClipContent.FromText(new string('a', 1000) + "猫"))!.Value;
@@ -148,11 +148,11 @@ public sealed class ClipStoreTests : IDisposable
 
         // A write during a long search finishes quickly: the search holds the lock only per batch.
         var search = Task.Run(() => { for (var i = 0; i < 5; i++) store.SearchFullText("absent"); });
-        Thread.Sleep(20);
+        await Task.Delay(20);
         var sw = System.Diagnostics.Stopwatch.StartNew();
         store.Add(ClipContent.FromText("written during search"));
         sw.Stop();
-        search.Wait();
+        await search;
         Assert.True(sw.ElapsedMilliseconds < 500, $"write waited {sw.ElapsedMilliseconds} ms");
     }
 
@@ -168,6 +168,17 @@ public sealed class ClipStoreTests : IDisposable
         var list = store.List();
         Assert.Equal(2, list.Count);
         Assert.Equal("a", list[0].PreviewText);
+    }
+
+    [Fact]
+    public void FullTextSearch_HonorsCancellationBeforeReading()
+    {
+        using var store = Open();
+        store.Add(ClipContent.FromText("a searchable clip"));
+        using var cancel = new CancellationTokenSource();
+        cancel.Cancel();
+        Assert.Throws<OperationCanceledException>(() => store.SearchFullText("clip", cancel.Token));
+        Assert.NotNull(store.Add(ClipContent.FromText("still writable")));
     }
 
     [Fact]

@@ -175,6 +175,8 @@ internal static class SelfTest
 
             await Check("last word is converted when nothing is selected", () => ConvertInTextBox(controller, platform,
                 "Привет ghbdtn", KeyboardLayouts.Russian, "Привет привет", selectAll: false), when: caps.SimulateInput);
+            await Check("last word includes punctuation that is a letter in the target layout", () => ConvertInTextBox(controller, platform,
+                "Привет htdm.dftim", KeyboardLayouts.Russian, "Привет ревьюваешь", selectAll: false), when: caps.SimulateInput);
 
             await Check("change case cycles lower → Title → UPPER in a text box", async () =>
                 await TransformInTextBox(platform, "hello world", controller.ChangeCaseAsync, "Hello World")
@@ -196,7 +198,7 @@ internal static class SelfTest
                     {
                         foreach (var key in new[] { "Semicolon", "H", "I" })
                         {
-                            platform.SendChord(KeyModifiers.None, key);
+                            UserKey(platform, key);
                             await Task.Delay(60);
                         }
                         await Task.Delay(1500);
@@ -237,7 +239,7 @@ internal static class SelfTest
                     await Task.Delay(200);
                     foreach (var key in new[] { "1", "2", "3" }) // digits: the same in every keyboard layout
                     {
-                        platform.SendChord(KeyModifiers.None, key);
+                        UserKey(platform, key);
                         await Task.Delay(40);
                     }
                     await Task.Delay(200);
@@ -255,6 +257,21 @@ internal static class SelfTest
                     var now = platform.ReadText();
                     if (now != "copied-before-paste") throw new InvalidOperationException($"clipboard is '{now}'");
                 }, "keep2"), when: caps.SimulateInput);
+
+            // X11 names the owner through X-Resource: copies are then checked like on Windows. Typlo's own writes go
+            // through xclip, a separate process, so they never count as the text box's copy.
+            await Check("the clipboard owner is known (X11)", () =>
+                TransformInTextBox(platform, "owner", async () =>
+                {
+                    var window = platform.ForegroundWindow;
+                    platform.SetText("written-by-xclip");
+                    if (platform.IsClipboardOwnedBy(window) is var before && before != false)
+                        throw new InvalidOperationException($"owned by the text box after an xclip write: {before?.ToString() ?? "unknown"}");
+                    platform.SendCopy();
+                    if (!await WaitFor(() => platform.ReadText() == "owner")) throw new InvalidOperationException("the copy did not arrive");
+                    if (platform.IsClipboardOwnedBy(window) is var after && after != true)
+                        throw new InvalidOperationException($"not owned by the text box after its copy: {after?.ToString() ?? "unknown"}");
+                }, "owner"), when: caps.SimulateInput && platform.Name == "Linux (X11)");
 
             await Check("a selected line with its line break is converted", () =>
                 TransformInTextBox(platform, "ghbdtn\n", () => controller.ConvertSelectionAsync(KeyboardLayouts.Russian),
@@ -398,6 +415,13 @@ internal static class SelfTest
         lines.Add(failures == 0 ? "ALL PASSED" : $"{failures} FAILED");
         await File.WriteAllLinesAsync(reportPath, lines);
         return failures == 0 ? 0 : 1;
+    }
+
+    /// <summary>A key press the typing hook must see as the user's (Typlo filters its own injected keys).</summary>
+    private static void UserKey(IPlatform platform, string key)
+    {
+        if (platform is HookPlatformBase hook) hook.SendChordAsUser(KeyModifiers.None, key);
+        else platform.SendChord(KeyModifiers.None, key); // Windows: accepted via TypingEvents.AcceptSimulated
     }
 
     private static HashSet<string> Placeholders(string text) =>
