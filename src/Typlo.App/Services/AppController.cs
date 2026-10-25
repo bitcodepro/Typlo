@@ -325,18 +325,23 @@ public sealed class AppController : IDisposable
         }
         SetOwnText(text);
         await Task.Delay(30);
-        if (!IsTargetActive(window))
+        // Clipboard, target, clipboard again, target again: the clipboard check can block (Linux runs xclip), so
+        // neither a copy made during the target check nor a focus/caret change during the clipboard check gets through.
+        for (var pass = 0; pass < 2; pass++)
         {
-            Log.Info("Paste skipped: the active window changed");
-            return false;
+            // If another app copied something since our write, that content would be pasted.
+            EnsureClipboardIsOurs();
+            if (!IsTargetActive(window))
+            {
+                Log.Info("Paste skipped: the active window changed");
+                return false;
+            }
+            if (!stillValid())
+            {
+                Log.Info("Paste skipped: the user typed or moved the caret meanwhile");
+                return false;
+            }
         }
-        if (!stillValid())
-        {
-            Log.Info("Paste skipped: the user typed or moved the caret meanwhile");
-            return false;
-        }
-        // Right before Ctrl+V: if another app copied something since our write, that content would be pasted.
-        EnsureClipboardIsOurs();
         _platform.SendPaste();
         // Give the target app time to read the clipboard before it changes again.
         await Task.Delay(300);
@@ -500,8 +505,15 @@ public sealed class AppController : IDisposable
             }
 
             var trigger = snippet.Trigger.Trim();
+            // Every destructive key is preceded by the clipboard check (which can block: Linux runs xclip) and then by
+            // the target/input check, so a focus or caret change during the clipboard check is still seen.
             for (var deleted = 0; deleted < trigger.Length; deleted++)
             {
+                if (paste && !ClipboardStillOurs())
+                {
+                    RetypeTrigger(trigger, deleted, StillValid);
+                    return;
+                }
                 if (!StillValid())
                 {
                     // The user typed, clicked or switched windows: the caret position is no longer known, so nothing is
@@ -509,28 +521,27 @@ public sealed class AppController : IDisposable
                     Log.Info("Snippet stopped half-way: the user moved on");
                     return;
                 }
-                if (paste && !ClipboardStillOurs())
-                {
-                    RetypeTrigger(trigger, deleted, StillValid);
-                    return;
-                }
                 _platform.SendChord(KeyModifiers.None, "Backspace");
             }
-            if (!StillValid())
+            // Never paste another app's copy. If one arrived while the trigger was deleted, keep it, and put the
+            // trigger back while the caret is still where Typlo left it. Checked twice around the target check, as in
+            // PasteTextAsync, so the last check before Ctrl+V is the target/input one.
+            for (var pass = 0; pass < (paste ? 2 : 1); pass++)
             {
-                Log.Info("Snippet stopped: the user moved on before the text was inserted");
-                return;
-            }
-
-            if (paste)
-            {
-                // Right before Ctrl+V: never paste another app's copy. If one arrived while the trigger was deleted,
-                // keep it, and put the trigger back while the caret is still where Typlo left it.
-                if (!ClipboardStillOurs())
+                if (paste && !ClipboardStillOurs())
                 {
                     RetypeTrigger(trigger, trigger.Length, StillValid);
                     return;
                 }
+                if (!StillValid())
+                {
+                    Log.Info("Snippet stopped: the user moved on before the text was inserted");
+                    return;
+                }
+            }
+
+            if (paste)
+            {
                 _platform.SendPaste();
                 await Task.Delay(300); // let the target read the clipboard before it is restored
             }
@@ -642,8 +653,8 @@ public sealed class AppController : IDisposable
         string? previous = null;
         for (var part = 0; part < 32; part++)
         {
-            if (!IsTargetActive(window)) return null;
             EnsureClipboardIsOurs();
+            if (!IsTargetActive(window)) return null;
             _platform.SendChord(modifiers, "Left");
             await Task.Delay(20);
             var selected = await CopySelectionAsync(window);
@@ -754,12 +765,15 @@ public sealed class AppController : IDisposable
             _platform.ActivateWindow(targetWindow);
             await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromMilliseconds(500));
             await Task.Delay(60);
-            if (targetWindow != 0 && _platform.ForegroundWindow != targetWindow)
+            for (var pass = 0; pass < 2; pass++) // clipboard and target, twice: see PasteTextAsync
             {
-                Log.Info("Paste skipped: the target window is not active");
-                return;
+                EnsureClipboardIsOurs();
+                if (targetWindow != 0 && _platform.ForegroundWindow != targetWindow)
+                {
+                    Log.Info("Paste skipped: the target window is not active");
+                    return;
+                }
             }
-            EnsureClipboardIsOurs();
             _platform.SendPaste();
         }
         catch (ClipboardTakenException) { Log.Info("Paste stopped: another app changed the clipboard meanwhile"); }

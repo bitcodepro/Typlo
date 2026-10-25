@@ -335,6 +335,41 @@ public sealed class AppControllerTests : IDisposable
         Assert.Equal("user copy", _platform.ClipboardText);
     }
 
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(3, 1)]
+    [InlineData(3, 2)]
+    public async Task Snippet_MultiLine_SelectionChangedDuringTheClipboardCheck_StopsBeforeTheNextKey(int atBackspace, int atRead)
+    {
+        // Review: the clipboard check can block (xclip). The user selects "keep" during it without copying anything:
+        // no further Backspace (1) and no paste (3; first or second check before Ctrl+V) at the new selection.
+        EnableSnippet();
+        _platform.Document.Text = "keep this ;hi";
+        _platform.Document.Caret = 13;
+        _platform.OnBackspace = () =>
+        {
+            if (_platform.BackspaceCount != atBackspace) return;
+            SelectOnSequenceRead(atRead, anchor: 0, caret: 4); // reads after this Backspace are the clipboard checks
+        };
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "line 1\nline 2" }, 1);
+        Assert.Equal("keep this ;hi"[..(13 - atBackspace)], _platform.Document.Text);
+        Assert.Equal(atBackspace, _platform.BackspaceCount);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal(0, _platform.TypedTextCount);
+    }
+
+    /// <summary>The user selects text with the mouse while Typlo reads the clipboard sequence for the n-th time.</summary>
+    private void SelectOnSequenceRead(int nth, int anchor, int caret)
+    {
+        var reads = 0;
+        _platform.OnSequenceRead = () =>
+        {
+            if (++reads != nth) return;
+            _platform.Document.Anchor = anchor;
+            _platform.UserMoveCaret(caret, keepAnchor: true);
+        };
+    }
+
     [Fact]
     public async Task Snippet_FocusChangeMidTyping_StopsTheRest()
     {
@@ -541,6 +576,39 @@ public sealed class AppControllerTests : IDisposable
         };
         await _controller.UndoLastTransformAsync();
         Assert.Equal("Abc Abc", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task Undo_SelectionChangedDuringTheClipboardCheckBeforeThePaste_DoesNotOverwriteIt(int atRead)
+    {
+        // Review: the shared paste helper's clipboard check can block; the selection changes during it.
+        _platform.Document.Text = "abc Abc";
+        _platform.Document.Anchor = 0;
+        _platform.Document.Caret = 3;
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc Abc", _platform.Document.Text);
+        // Our write of "abc" reads the sequence twice to verify itself; reads 3 and 4 are the checks before Ctrl+V.
+        _platform.AfterWrite = text => { if (text == "abc") SelectOnSequenceRead(atRead, anchor: 4, caret: 7); };
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("Abc Abc", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task Convert_SelectionChangedDuringTheClipboardCheckBeforeThePaste_DoesNotOverwriteIt(int atRead)
+    {
+        _platform.Document.Text = "abc def";
+        _platform.Document.Anchor = 0;
+        _platform.Document.Caret = 3;
+        _platform.AfterWrite = text => { if (text == "Abc") SelectOnSequenceRead(atRead, anchor: 4, caret: 7); };
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("abc def", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
         Assert.Equal("original clipboard", _platform.ClipboardText);
     }
 
