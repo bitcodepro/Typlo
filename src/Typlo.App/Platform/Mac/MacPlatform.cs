@@ -14,7 +14,7 @@ namespace Typlo.App.Platform.Mac;
 [SupportedOSPlatform("macos")]
 public sealed class MacPlatform : HookPlatformBase
 {
-    private const string TypeText = "public.utf8-plain-text";
+    private const string TypePlainText = "public.utf8-plain-text";
     private const string TypePng = "public.png";
     private const string TypeTiff = "public.tiff";
     private const string TypeHtml = "public.html";
@@ -67,7 +67,7 @@ public sealed class MacPlatform : HookPlatformBase
             var app = FrontmostAppName();
             if (types.Contains(TypeFileUrl) && ToStringList(Call(pb, "propertyListForType:", NSString(TypeFilenames))) is { Count: > 0 } files)
                 return new RawClip(null, null, false, app, Files: files);
-            if (types.Contains(TypeText) && ToStr(Call(pb, "stringForType:", NSString(TypeText))) is { Length: > 0 } text)
+            if (types.Contains(TypePlainText) && ToStr(Call(pb, "stringForType:", NSString(TypePlainText))) is { Length: > 0 } text)
             {
                 var html = types.Contains(TypeHtml) && ToBytes(Call(pb, "dataForType:", NSString(TypeHtml))) is { Length: > 0 } h
                     ? System.Text.Encoding.UTF8.GetString(h) : null;
@@ -104,7 +104,7 @@ public sealed class MacPlatform : HookPlatformBase
 
     public override string? ReadText()
     {
-        lock (_pbLock) return Pool(() => ToStr(Call(Pasteboard, "stringForType:", NSString(TypeText))));
+        lock (_pbLock) return Pool(() => ToStr(Call(Pasteboard, "stringForType:", NSString(TypePlainText))));
     }
 
     protected override void WriteText(string text)
@@ -113,7 +113,7 @@ public sealed class MacPlatform : HookPlatformBase
         {
             var pb = Pasteboard;
             Call(pb, "clearContents");
-            Call(pb, "setString:forType:", NSString(text), NSString(TypeText));
+            Call(pb, "setString:forType:", NSString(text), NSString(TypePlainText));
             return 0;
         });
     }
@@ -124,7 +124,7 @@ public sealed class MacPlatform : HookPlatformBase
         {
             var pb = Pasteboard;
             Call(pb, "clearContents");
-            Call(pb, "setString:forType:", NSString(text), NSString(TypeText));
+            Call(pb, "setString:forType:", NSString(text), NSString(TypePlainText));
             if (!string.IsNullOrEmpty(html)) Call(pb, "setData:forType:", NSData(System.Text.Encoding.UTF8.GetBytes(html)), NSString(TypeHtml));
             if (!string.IsNullOrEmpty(rtf)) Call(pb, "setData:forType:", NSData(System.Text.Encoding.Latin1.GetBytes(rtf)), NSString(TypeRtf));
             return 0;

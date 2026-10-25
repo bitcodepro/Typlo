@@ -198,7 +198,7 @@ internal static class SelfTest
                     {
                         foreach (var key in new[] { "Semicolon", "H", "I" })
                         {
-                            platform.SendChord(KeyModifiers.None, key);
+                            UserKey(platform, key);
                             await Task.Delay(60);
                         }
                         await Task.Delay(1500);
@@ -239,7 +239,7 @@ internal static class SelfTest
                     await Task.Delay(200);
                     foreach (var key in new[] { "1", "2", "3" }) // digits: the same in every keyboard layout
                     {
-                        platform.SendChord(KeyModifiers.None, key);
+                        UserKey(platform, key);
                         await Task.Delay(40);
                     }
                     await Task.Delay(200);
@@ -400,6 +400,13 @@ internal static class SelfTest
         lines.Add(failures == 0 ? "ALL PASSED" : $"{failures} FAILED");
         await File.WriteAllLinesAsync(reportPath, lines);
         return failures == 0 ? 0 : 1;
+    }
+
+    /// <summary>A key press the typing hook must see as the user's (Typlo filters its own injected keys).</summary>
+    private static void UserKey(IPlatform platform, string key)
+    {
+        if (platform is HookPlatformBase hook) hook.SendChordAsUser(KeyModifiers.None, key);
+        else platform.SendChord(KeyModifiers.None, key); // Windows: accepted via TypingEvents.AcceptSimulated
     }
 
     private static HashSet<string> Placeholders(string text) =>

@@ -49,7 +49,7 @@ public abstract class HookPlatformBase : IPlatform
             {
                 _hook = new SimpleGlobalHook();
                 _hook.KeyPressed += OnKeyPressed;
-                TypingEvents.Attach(_hook, key => { if (_typingWatch) KeyTyped?.Invoke(key); });
+                TypingEvents.Attach(_hook, key => { if (_typingWatch) KeyTyped?.Invoke(key); }, IsOwnKeyPress, () => Environment.TickCount64 < _ownTextUntil);
                 _hook.KeyReleased += (_, e) => _down.TryRemove(e.Data.KeyCode, out bool _);
                 _hook.MouseMoved += (_, e) =>
                 {
@@ -153,7 +153,38 @@ public abstract class HookPlatformBase : IPlatform
 
     private EventSimulator Simulator => _simulatorLazy.Value;
 
-    public void SendChord(KeyModifiers modifiers, string key)
+    // libuiohook does not flag our XTest/CGEvent input as simulated, so remember what we inject and drop it
+    // when the hook reports it back; real key presses in between are still seen.
+    private readonly ConcurrentQueue<(KeyCode Code, long At)> _ownPresses = new();
+    private long _ownTextUntil;
+
+    private bool IsOwnKeyPress(KeyCode code)
+    {
+        var now = Environment.TickCount64;
+        while (_ownPresses.TryPeek(out var head))
+        {
+            if (now - head.At > 1000) { _ownPresses.TryDequeue(out _); continue; } // never reported: forget it
+            if (head.Code != code) return false;
+            _ownPresses.TryDequeue(out _);
+            return true;
+        }
+        return false;
+    }
+
+    public void SendChord(KeyModifiers modifiers, string key) => SendChord(modifiers, key, own: true);
+
+    /// <summary>Self-test only: a key press the typing hook treats as coming from the user.</summary>
+    internal void SendChordAsUser(KeyModifiers modifiers, string key) => SendChord(modifiers, key, own: false);
+
+    public void TypeText(string text)
+    {
+        // Text entry produces keys we cannot predict one by one: ignore typing events for its short burst.
+        _ownTextUntil = Environment.TickCount64 + 150 + text.Length * 5L;
+        Simulator.SimulateTextEntry(text);
+        _ownTextUntil = Environment.TickCount64 + 150;
+    }
+
+    private void SendChord(KeyModifiers modifiers, string key, bool own)
     {
         if (KeyCodes.FromName(key) is not { } code) return;
         var mods = new List<KeyCode>();
@@ -161,6 +192,12 @@ public abstract class HookPlatformBase : IPlatform
         if (modifiers.HasFlag(KeyModifiers.Alt)) mods.Add(KeyCode.VcLeftAlt);
         if (modifiers.HasFlag(KeyModifiers.Shift)) mods.Add(KeyCode.VcLeftShift);
         if (modifiers.HasFlag(KeyModifiers.Win)) mods.Add(KeyCode.VcLeftMeta);
+        if (own)
+        {
+            var now = Environment.TickCount64;
+            foreach (var m in mods) _ownPresses.Enqueue((m, now));
+            _ownPresses.Enqueue((code, now));
+        }
         foreach (var m in mods) Simulator.SimulateKeyPress(m);
         Simulator.SimulateKeyPress(code);
         Simulator.SimulateKeyRelease(code);
@@ -205,6 +242,8 @@ public abstract class HookPlatformBase : IPlatform
 
     /// <summary>VS Code's "vscode-editor-data" clipboard type, as raw text, or null.</summary>
     protected abstract string? ReadEditorData();
+
+    public virtual bool? IsClipboardOwnedBy(nint window) => null;
 
     public bool IsEmptySelectionLineCopy() => ReadEditorData() is { } json && EditorClipboard.IsFromEmptySelection(json);
     public void Restore(ClipboardSnapshot snapshot) => OwnWrite(() => WriteSnapshot(snapshot));

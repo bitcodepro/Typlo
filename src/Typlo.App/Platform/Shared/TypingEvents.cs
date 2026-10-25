@@ -18,7 +18,10 @@ public readonly record struct TypedKey(char Char, bool Reset, bool Backspace)
 /// </summary>
 internal static class TypingEvents
 {
-    /// <summary>Self-test only: lets synthetic key presses count as typing.</summary>
+    /// <summary>
+    /// Self-test only: plain synthetic character keys count as typing (the test "types" through SendInput).
+    /// Synthetic shortcuts, Backspace and navigation keys stay ignored, so Typlo's own keys never count.
+    /// </summary>
     internal static bool AcceptSimulated { get; set; }
 
     private static readonly HashSet<KeyCode> ResetKeys =
@@ -37,7 +40,10 @@ internal static class TypingEvents
 
     private const string ShiftedDigits = ")!@#$%^&*(";
 
-    public static void Attach(IGlobalHook hook, Action<TypedKey> raise)
+    /// <param name="isOwnPress">Consumes a key press Typlo itself injected (platforms whose hook does not flag them).</param>
+    /// <param name="ownTextActive">True while Typlo injects a text burst.</param>
+    public static void Attach(IGlobalHook hook, Action<TypedKey> raise, Func<KeyCode, bool>? isOwnPress = null,
+        Func<bool>? ownTextActive = null)
     {
         var down = new HashSet<KeyCode>();
         hook.KeyReleased += (_, e) => { lock (down) down.Remove(e.Data.KeyCode); };
@@ -52,7 +58,8 @@ internal static class TypingEvents
                 shortcut = down.Overlaps([KeyCode.VcLeftControl, KeyCode.VcRightControl, KeyCode.VcLeftMeta, KeyCode.VcRightMeta,
                     KeyCode.VcLeftAlt, KeyCode.VcRightAlt]);
             }
-            if (e.IsEventSimulated && !AcceptSimulated) return;
+            if (isOwnPress?.Invoke(code) == true || ownTextActive?.Invoke() == true) return;
+            if (e.IsEventSimulated && !(AcceptSimulated && !shortcut && ToChar(code, shift) is not null)) return;
             if (code == KeyCode.VcBackspace) { raise(TypedKey.BackspaceKey); return; }
             if (ResetKeys.Contains(code)) { raise(TypedKey.ResetKey); return; }
             if (ToChar(code, shift) is not { } c) return;

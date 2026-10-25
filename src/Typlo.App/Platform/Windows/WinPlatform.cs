@@ -254,6 +254,16 @@ public sealed class WinPlatform : IPlatform
         if (_fmtDropEffect != 0) SetBytes(_fmtDropEffect, BitConverter.GetBytes(1)); // DROPEFFECT_COPY: paste copies, not moves
     }));
 
+    public bool? IsClipboardOwnedBy(nint window)
+    {
+        if (window == 0) return null;
+        var owner = GetClipboardOwner();
+        if (owner == 0) return null; // some apps copy without an owner window
+        GetWindowThreadProcessId(owner, out var ownerPid);
+        GetWindowThreadProcessId(window, out var windowPid);
+        return ownerPid == windowPid;
+    }
+
     public bool IsEmptySelectionLineCopy() => Invoke(() => WithClipboard(() =>
     {
         foreach (var tag in new[] { "VisualStudioEditorOperationsLineCutCopyClipboardTag", "MSDEVLineSelect" })
@@ -415,6 +425,32 @@ public sealed class WinPlatform : IPlatform
     private static bool IsDown(ushort vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
 
     public void SendCopy() => SendChord(KeyModifiers.Ctrl, "C");
+
+    // Injected input is flagged by Windows, and the typing hook drops flagged events.
+    public unsafe void TypeText(string text)
+    {
+        var inputs = new List<INPUT>(text.Length * 2);
+        void Key(ushort vk, ushort scan, uint flags)
+        {
+            var input = new INPUT { type = INPUT_KEYBOARD };
+            input.ki.wVk = vk;
+            input.ki.wScan = scan;
+            input.ki.dwFlags = flags;
+            inputs.Add(input);
+        }
+        foreach (var c in text)
+        {
+            switch (c)
+            {
+                case '\r': continue;
+                case '\n': Key(0x0D, 0, 0); Key(0x0D, 0, KEYEVENTF_KEYUP); break; // Enter
+                case '\t': Key(0x09, 0, 0); Key(0x09, 0, KEYEVENTF_KEYUP); break; // Tab
+                default: Key(0, c, KEYEVENTF_UNICODE); Key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP); break;
+            }
+        }
+        var array = inputs.ToArray();
+        fixed (INPUT* p = array) SendInput((uint)array.Length, p, sizeof(INPUT));
+    }
     public void SendPaste() => SendChord(KeyModifiers.Ctrl, "V");
 
     public void SendChord(KeyModifiers modifiers, string key)

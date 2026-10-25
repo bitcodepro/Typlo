@@ -195,16 +195,103 @@ public sealed class AppControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Snippet_OwnBackspacesSeenByTheHook_DoNotAbortTheExpansion()
+    public async Task Snippet_IsTypedWithoutTouchingTheClipboard()
     {
-        // A global hook may report Typlo's own synthetic Backspace as typing (it did on Windows).
-        EnableSnippet();
-        _platform.EchoOwnKeys = true;
+        _platform.Document.Text = "say ;hi";
+        _platform.Document.Caret = 7;
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "EXPANDED" }, 1);
+        Assert.Equal("say EXPANDED", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        Assert.Equal(1UL, _platform.ClipboardSequence); // never written
+        Assert.Equal(0, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task Snippet_ExternalCopyAfterDeletion_KeepsBothTheCopyAndTheText()
+    {
+        // Review #1: a copy by another app between deleting the trigger and inserting the text.
         _platform.Document.Text = ";hi";
         _platform.Document.Caret = 3;
+        _platform.OnBackspace = () => { if (_platform.BackspaceCount == 3) _platform.ExternalCopy("user copy"); };
         await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "EXPANDED" }, 1);
         Assert.Equal("EXPANDED", _platform.Document.Text);
-        Assert.Equal(3, _platform.BackspaceCount);
+        Assert.Equal("user copy", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task Snippet_RealTypingAfterPartialDeletion_RestoresTheTrigger()
+    {
+        // Review #3: real input during the expansion stops it instead of producing "XEXPANDED" or losing text.
+        EnableSnippet();
+        _platform.Document.Text = ";hi";
+        _platform.Document.Caret = 3;
+        _platform.OnBackspace = () => { if (_platform.BackspaceCount == 1) _platform.Type("X"); };
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "EXPANDED" }, 1);
+        // ";hi" -> ";h" (our Backspace) -> ";hX" (user) -> the deleted "i" is put back; no expansion.
+        Assert.Equal(";hXi", _platform.Document.Text);
+        Assert.Equal(1, _platform.BackspaceCount);
+    }
+
+    [Fact]
+    public async Task Copy_ExternalChangeWhileTheCopySettles_IsNotAdopted()
+    {
+        // Review #2: another app (another clipboard owner) copies after our copy was observed but before it is read.
+        _platform.Document.Text = "abc";
+        _platform.Document.SelectAll();
+        _platform.AfterCopy = () => _ = Task.Run(async () =>
+        {
+            await Task.Delay(5);
+            _platform.ExternalCopy("external copy", owner: 99);
+        });
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("abc", _platform.Document.Text);
+        Assert.Equal("external copy", _platform.ClipboardText);
+        Assert.Equal(0, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task Copy_TwoStepWriteByTheTargetApp_IsStillAdopted()
+    {
+        // OLE apps set the clipboard and flush it a moment later: two changes, same owner.
+        _platform.Document.Text = "abc";
+        _platform.Document.SelectAll();
+        _platform.AfterCopy = () => _ = Task.Run(async () =>
+        {
+            await Task.Delay(25);
+            _platform.ExternalCopy(_platform.ClipboardText, owner: _platform.Window); // the flush
+        });
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task Undo_RepeatedTextAfterCaretMove_DoesNotTouchTheOtherOccurrence()
+    {
+        // Review #4: convert the first "abc" of "abc Abc", move after the second, then Undo.
+        _platform.Document.Text = "abc Abc";
+        _platform.Document.Anchor = 0;
+        _platform.Document.Caret = 3;
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc Abc", _platform.Document.Text);
+        _platform.UserMoveCaret(7); // End key / click: reported by the hook
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("Abc Abc", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task Undo_IsInvalidatedByBackspaceAndClicks_EvenWithoutSnippets()
+    {
+        _platform.Document.Text = "abc";
+        _platform.Document.SelectAll();
+        await _controller.ChangeCaseAsync();
+        Assert.True(_platform.TypingWatch); // the hook runs while an undo is possible
+        _platform.UserKey(TypedKey.BackspaceKey);
+        _platform.Document.Backspace();
+        _platform.Document.Type("c");
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("Abc", _platform.Document.Text);
+        Assert.False(_platform.TypingWatch);
     }
 
     [Theory]
@@ -275,7 +362,8 @@ public sealed class AppControllerTests : IDisposable
         public Action<string>? AfterWrite;
         public Action? OnForegroundRead, AfterForegroundRead, AfterSnapshot;
         public Func<Task>? BeforeModifiers;
-        public bool CopyLineWhenUnselected, LastCopyWasLine, InTypingEvent, EchoOwnKeys;
+        public bool CopyLineWhenUnselected, LastCopyWasLine, InTypingEvent, TypingWatch;
+        public Action? OnBackspace, AfterCopy;
         public int PasteCount, BackspaceCount;
         public TaskCompletionSource ModifiersEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string Name => "Fake platform (no OS access)";
@@ -287,7 +375,9 @@ public sealed class AppControllerTests : IDisposable
         public void UnregisterAllHotkeys() { }
         public IDisposable SuspendCapture() => new Scope();
         public ulong ClipboardSequence { get; private set; } = 1;
-        public void ExternalCopy(string text) { ClipboardText = text; ClipboardSequence++; }
+        public nint ClipboardOwner;
+        public void ExternalCopy(string text, nint owner = 0) { ClipboardText = text; ClipboardSequence++; ClipboardOwner = owner; }
+        public bool? IsClipboardOwnedBy(nint window) => ClipboardOwner == 0 ? null : ClipboardOwner == window;
         public string? ReadText() => ClipboardText;
         public void SetText(string text) { ExternalCopy(text); AfterWrite?.Invoke(text); }
         public void SetRichText(string text, string? html, string? rtf) => SetText(text);
@@ -314,7 +404,7 @@ public sealed class AppControllerTests : IDisposable
             {
                 BackspaceCount++;
                 Document.Backspace();
-                if (EchoOwnKeys) KeyTyped?.Invoke(TypedKey.BackspaceKey);
+                OnBackspace?.Invoke();
             }
         }
         public void SendCopy()
@@ -322,6 +412,16 @@ public sealed class AppControllerTests : IDisposable
             LastCopyWasLine = Document.Selection.Length == 0 && CopyLineWhenUnselected;
             if (LastCopyWasLine) SetText(Document.Text + "\n");
             else if (Document.Selection.Length > 0) SetText(Document.Selection);
+            if (LastCopyWasLine || Document.Selection.Length > 0) ClipboardOwner = Window; // the target app copied
+            AfterCopy?.Invoke();
+        }
+        public void TypeText(string text) => Document.Type(text);
+        public void UserKey(TypedKey key) => KeyTyped?.Invoke(key);
+        public void UserMoveCaret(int caret)
+        {
+            Document.Caret = caret;
+            Document.Anchor = null;
+            KeyTyped?.Invoke(TypedKey.ResetKey);
         }
         public void SendPaste() { PasteCount++; Document.Type(ClipboardText); }
         public nint ForegroundWindow
@@ -330,7 +430,7 @@ public sealed class AppControllerTests : IDisposable
         }
         public void ActivateWindow(nint handle) => Window = handle;
         public (int X, int Y) CursorPosition => (0, 0);
-        public void SetTypingWatch(bool enabled) { }
+        public void SetTypingWatch(bool enabled) => TypingWatch = enabled;
         public void Type(string text)
         {
             InTypingEvent = true;
