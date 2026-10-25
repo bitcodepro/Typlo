@@ -254,6 +254,18 @@ public sealed class WinPlatform : IPlatform
         if (_fmtDropEffect != 0) SetBytes(_fmtDropEffect, BitConverter.GetBytes(1)); // DROPEFFECT_COPY: paste copies, not moves
     }));
 
+    public bool IsEmptySelectionLineCopy() => Invoke(() => WithClipboard(() =>
+    {
+        foreach (var tag in new[] { "VisualStudioEditorOperationsLineCutCopyClipboardTag", "MSDEVLineSelect" })
+        {
+            var f = RegisterClipboardFormatW(tag);
+            if (f != 0 && IsClipboardFormatAvailable(f)) return true;
+        }
+        var vscode = RegisterClipboardFormatW("vscode-editor-data");
+        return vscode != 0 && IsClipboardFormatAvailable(vscode) && ReadBytes(vscode) is { } data &&
+               Shared.EditorClipboard.IsFromEmptySelection(System.Text.Encoding.UTF8.GetString(data));
+    }));
+
     private string? ReadHtml() =>
         _fmtHtml != 0 && IsClipboardFormatAvailable(_fmtHtml) && ReadBytes(_fmtHtml) is { } b ? TrimNul(System.Text.Encoding.UTF8.GetString(b)) : null;
 

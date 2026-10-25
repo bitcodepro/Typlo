@@ -157,6 +157,8 @@ public static class UpdateInstaller
     public static void Swap(string staging, string installRoot)
     {
         var done = new List<(string Target, string? Backup)>();
+        // A unique suffix, so a user's own "something.old" next to the app is never overwritten or deleted.
+        var suffix = $".typlo-backup-{DateTime.UtcNow:yyyyMMddHHmmss}";
         try
         {
             foreach (var source in Directory.EnumerateFileSystemEntries(staging))
@@ -167,13 +169,15 @@ public static class UpdateInstaller
                 string? backup = null;
                 if (Exists(target))
                 {
-                    backup = target + OldSuffix;
-                    Delete(backup);
+                    backup = target + suffix;
                     Move(target, backup);
                 }
                 done.Add((target, backup));
                 Move(source, target);
             }
+            // Remember exactly what we created; cleanup on the next start removes only these.
+            var backups = done.Where(d => d.Backup is not null).Select(d => Path.GetFileName(d.Backup!));
+            File.WriteAllLines(Path.Combine(installRoot, ManifestName), backups);
         }
         catch
         {
@@ -191,13 +195,39 @@ public static class UpdateInstaller
         }
     }
 
-    /// <summary>Removes the "*.old" leftovers of a previous update (call on start).</summary>
+    /// <summary>Lists the backups made by the last update, one file or folder name per line.</summary>
+    public const string ManifestName = ".typlo-update-backups";
+
+    /// <summary>Top-level names of a Typlo release, for the backups of versions without a manifest (0.4.0 and older).</summary>
+    private static readonly string[] ReleaseEntries =
+        ["Typlo.exe", "Typlo", "Typlo.app", "LICENSE", "README.md", "THIRD-PARTY-NOTICES.txt", "THIRD-PARTY-NOTICES.md", "build-info.json", "licenses", "docs"];
+
+    /// <summary>
+    /// Removes the backups of a previous update (call on start): only the entries listed in the update manifest,
+    /// plus "&lt;release entry&gt;.old" left by versions before the manifest. Nothing else next to the app is touched.
+    /// </summary>
     public static void CleanupOld(string installRoot)
     {
         if (!Directory.Exists(installRoot)) return;
-        foreach (var entry in Directory.EnumerateFileSystemEntries(installRoot, "*" + OldSuffix))
+        var manifest = Path.Combine(installRoot, ManifestName);
+        var names = new List<string>();
+        if (File.Exists(manifest))
+            names.AddRange(File.ReadAllLines(manifest).Select(l => l.Trim())
+                // Only plain names with our suffix: a damaged manifest must not point anywhere else.
+                .Where(n => n.Contains(".typlo-backup-", StringComparison.Ordinal) && n == Path.GetFileName(n)));
+        names.AddRange(ReleaseEntries.Select(e => e + OldSuffix));
+
+        var allRemoved = true;
+        foreach (var name in names.Distinct())
         {
-            try { Delete(entry); }
+            var path = Path.Combine(installRoot, name);
+            if (!Exists(path)) continue;
+            try { Delete(path); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { allRemoved = false; }
+        }
+        if (allRemoved && File.Exists(manifest))
+        {
+            try { File.Delete(manifest); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
     }

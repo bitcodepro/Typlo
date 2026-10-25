@@ -193,6 +193,7 @@ public sealed class AppController : IDisposable
             var window = _platform.ForegroundWindow;
             using var _ = _platform.SuspendCapture();
             snapshot = _platform.Snapshot();
+            _expectedSequence = _platform.ClipboardSequence;
             var text = await CopySelectionAsync();
             if (text is null && Settings.ConvertLastWord)
             {
@@ -213,6 +214,10 @@ public sealed class AppController : IDisposable
             if (result != text && await PasteTextAsync(result, window))
                 _lastTransform = new TransformRecord(window, text, result, DateTime.UtcNow);
             if (switchTo is not null && Settings.SwitchSystemLayout) _platform.SwitchKeyboardLayout(window, switchTo.LangId);
+        }
+        catch (ClipboardTakenException)
+        {
+            Log.Info("Text tool stopped: another app changed the clipboard meanwhile");
         }
         catch (Exception e)
         {
@@ -247,8 +252,19 @@ public sealed class AppController : IDisposable
         catch (Exception e) { Log.Error("Clipboard restore failed", e); }
     }
 
+    /// <summary>Thrown to stop an operation when another app changed the clipboard while Typlo was using it.</summary>
+    private sealed class ClipboardTakenException() : Exception("The clipboard was changed by another app.");
+
+    /// <summary>Stops the operation if someone else wrote to the clipboard since our last change.</summary>
+    private void EnsureClipboardIsOurs()
+    {
+        if (_platform.ClipboardSequence != _expectedSequence) throw new ClipboardTakenException();
+    }
+
+    /// <summary>Writes the clipboard only if it still holds what we expect, so a fresh copy is never overwritten.</summary>
     private void SetOwnText(string text)
     {
+        EnsureClipboardIsOurs();
         _platform.SetText(text);
         _expectedSequence = _platform.ClipboardSequence;
     }
@@ -266,6 +282,8 @@ public sealed class AppController : IDisposable
             Log.Info("Paste skipped: the active window changed");
             return false;
         }
+        // Right before Ctrl+V: if another app copied something since our write, that content would be pasted.
+        EnsureClipboardIsOurs();
         _platform.SendPaste();
         // Give the target app time to read the clipboard before it changes again.
         await Task.Delay(300);
@@ -298,13 +316,24 @@ public sealed class AppController : IDisposable
             }
             using var _ = _platform.SuspendCapture();
             snapshot = _platform.Snapshot();
+            _expectedSequence = _platform.ClipboardSequence;
             // Editors move over a line break in one step, so count "\r\n" once.
-            var length = last.Result.Replace("\r\n", "\n").Length;
-            if (length > 2000) return;
-            for (var i = 0; i < length; i++) _platform.SendChord(KeyModifiers.Shift, "Left");
+            var expected = last.Result.Replace("\r\n", "\n");
+            if (expected.Length > 2000) return;
+            for (var i = 0; i < expected.Length; i++) _platform.SendChord(KeyModifiers.Shift, "Left");
             await Task.Delay(40);
+            // Only replace what Typlo inserted: if the user typed or moved since, the selection is different.
+            var selected = (await CopySelectionAsync())?.Replace("\r\n", "\n");
+            if (selected != expected)
+            {
+                _platform.SendChord(KeyModifiers.None, "Right"); // collapse the selection back to where the caret was
+                _lastTransform = null;
+                Log.Info("Undo skipped: the text before the caret is no longer the converted text");
+                return;
+            }
             if (await PasteTextAsync(last.Original, window)) _lastTransform = null;
         }
+        catch (ClipboardTakenException) { Log.Info("Undo stopped: another app changed the clipboard meanwhile"); }
         catch (Exception e) { Log.Error("Undo failed", e); }
         finally
         {
@@ -332,19 +361,31 @@ public sealed class AppController : IDisposable
             if (key.Backspace) { _snippets.Backspace(); return; }
             hit = _snippets.OnChar(key.Char);
         }
-        // Never block the hook thread: expand on the thread pool.
-        if (hit is not null) ThreadPool.QueueUserWorkItem(_ => _ = ExpandSnippetAsync(hit));
+        // New typing makes an older conversion impossible to undo safely.
+        _lastTransform = null;
+        // Never block the hook thread: expand on the thread pool, but remember the window right away.
+        if (hit is not null)
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                var window = _platform.ForegroundWindow;
+                _ = ExpandSnippetAsync(hit, window);
+            });
     }
 
     /// <summary>Deletes the typed trigger and pastes the snippet text in its place.</summary>
-    public async Task ExpandSnippetAsync(Snippet snippet)
+    /// <param name="window">The window that was active when the trigger was typed; nothing happens in any other.</param>
+    public async Task ExpandSnippetAsync(Snippet snippet, nint window)
     {
         if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(2))) return;
         ClipboardSnapshot? snapshot = null;
         try
         {
             await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromMilliseconds(500));
-            var window = _platform.ForegroundWindow;
+            if (window != 0 && _platform.ForegroundWindow != window)
+            {
+                Log.Info("Snippet skipped: the user switched to another window");
+                return;
+            }
             using var _ = _platform.SuspendCapture();
             snapshot = _platform.Snapshot();
             _expectedSequence = _platform.ClipboardSequence;
@@ -352,6 +393,7 @@ public sealed class AppController : IDisposable
             await Task.Delay(20);
             if (await PasteTextAsync(snippet.Text, window)) Log.Info("Snippet expanded");
         }
+        catch (ClipboardTakenException) { Log.Info("Snippet stopped: another app changed the clipboard meanwhile"); }
         catch (Exception e) { Log.Error("Snippet expansion failed", e); }
         finally
         {
@@ -372,8 +414,8 @@ public sealed class AppController : IDisposable
         _expectedSequence = _platform.ClipboardSequence; // the copy we triggered
         var text = _platform.ReadText();
         if (string.IsNullOrEmpty(text) || text.StartsWith('\u2063')) return null;
-        // Editors such as VS Code copy the whole current line (with its line break) when nothing is selected.
-        if (text.EndsWith('\n') && text.IndexOf('\n') == text.Length - 1) return null;
+        // VS Code and Visual Studio copy the whole current line when nothing is selected; they mark such copies.
+        if (_platform.IsEmptySelectionLineCopy()) return null;
         return text;
     }
 

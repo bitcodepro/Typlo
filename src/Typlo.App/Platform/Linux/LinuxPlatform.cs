@@ -99,6 +99,13 @@ public sealed class LinuxPlatform : HookPlatformBase
     {
         if (_wayland) Proc.Run("wl-copy", ["--type", target], data, captureOutput: false);
         else Proc.Run("xclip", ["-selection", "clipboard", "-t", target, "-i"], data, captureOutput: false);
+        // xclip/wl-copy hand the selection to a background process; wait until it serves our data, so the
+        // change token read right after a write already reflects it.
+        for (var i = 0; i < 20; i++)
+        {
+            if (data.Length == 0 || Read(target) is { } current && current.AsSpan().SequenceEqual(data)) return;
+            Thread.Sleep(15);
+        }
     }
 
     private static string? TextTargetOf(List<string> targets) =>
@@ -133,6 +140,9 @@ public sealed class LinuxPlatform : HookPlatformBase
             return new RawClip(null, png, true, app);
         return null;
     }
+
+    protected override string? ReadEditorData() =>
+        Targets().Contains("vscode-editor-data") && Read("vscode-editor-data") is { Length: > 0 } b ? System.Text.Encoding.UTF8.GetString(b) : null;
 
     public override string? ReadText()
     {

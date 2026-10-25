@@ -101,16 +101,37 @@ public sealed class UpdateTests : IDisposable
         UpdateInstaller.Swap(staging, install);
 
         Assert.Equal("new exe", File.ReadAllText(Path.Combine(install, "Typlo.exe")));
-        Assert.Equal("old exe", File.ReadAllText(Path.Combine(install, "Typlo.exe.old")));
+        var backup = Assert.Single(Directory.GetFiles(install, "Typlo.exe.typlo-backup-*"));
+        Assert.Equal("old exe", File.ReadAllText(backup));
         Assert.True(File.Exists(Path.Combine(install, "licenses", "b.txt")));
         Assert.False(File.Exists(Path.Combine(install, "licenses", "a.txt")));
         Assert.Equal("user data", File.ReadAllText(Path.Combine(install, "data", "history.db")));
         Assert.False(File.Exists(Path.Combine(install, "data", "should-not-overwrite.txt")));
 
         UpdateInstaller.CleanupOld(install);
-        Assert.False(File.Exists(Path.Combine(install, "Typlo.exe.old")));
-        Assert.False(Directory.Exists(Path.Combine(install, "licenses.old")));
+        Assert.Empty(Directory.GetFileSystemEntries(install, "*.typlo-backup-*"));
+        Assert.False(File.Exists(Path.Combine(install, UpdateInstaller.ManifestName)));
         Assert.True(File.Exists(Path.Combine(install, "data", "history.db")));
+    }
+
+    [Fact]
+    public void Cleanup_LeavesTheUsersOwnOldFilesAlone()
+    {
+        var install = Path.Combine(_dir, "install3");
+        Directory.CreateDirectory(Path.Combine(install, "personal-notes.old"));
+        File.WriteAllText(Path.Combine(install, "unrelated-report.old"), "mine");
+        File.WriteAllText(Path.Combine(install, "Typlo.exe.old"), "left by v0.4.0"); // legacy backup, no manifest
+        File.WriteAllText(Path.Combine(install, "LICENSE.old"), "left by v0.4.0");
+        File.WriteAllLines(Path.Combine(install, UpdateInstaller.ManifestName), ["..\\outside.typlo-backup-1", "notes.txt"]);
+        File.WriteAllText(Path.Combine(install, "notes.txt"), "mine");
+
+        UpdateInstaller.CleanupOld(install);
+
+        Assert.True(File.Exists(Path.Combine(install, "unrelated-report.old")));
+        Assert.True(Directory.Exists(Path.Combine(install, "personal-notes.old")));
+        Assert.True(File.Exists(Path.Combine(install, "notes.txt"))); // listed, but not a backup name
+        Assert.False(File.Exists(Path.Combine(install, "Typlo.exe.old")));
+        Assert.False(File.Exists(Path.Combine(install, "LICENSE.old")));
     }
 
     [Fact]
@@ -133,7 +154,7 @@ public sealed class UpdateTests : IDisposable
         }
         Assert.Equal("old A", File.ReadAllText(Path.Combine(install, "A")));
         Assert.Equal("old B", File.ReadAllText(Path.Combine(install, "B")));
-        Assert.False(File.Exists(Path.Combine(install, "A.old")));
+        Assert.Empty(Directory.GetFiles(install, "A.typlo-backup-*"));
     }
 
     public void Dispose()

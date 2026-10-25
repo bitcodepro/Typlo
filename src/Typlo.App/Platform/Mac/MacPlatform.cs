@@ -95,6 +95,13 @@ public sealed class MacPlatform : HookPlatformBase
         return ToBytes(data);
     }
 
+    protected override string? ReadEditorData()
+    {
+        lock (_pbLock) return Pool(() =>
+            ToBytes(Call(Pasteboard, "dataForType:", NSString("vscode-editor-data"))) is { Length: > 0 } b
+                ? System.Text.Encoding.UTF8.GetString(b) : null);
+    }
+
     public override string? ReadText()
     {
         lock (_pbLock) return Pool(() => ToStr(Call(Pasteboard, "stringForType:", NSString(TypeText))));
