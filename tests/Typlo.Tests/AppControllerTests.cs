@@ -238,11 +238,12 @@ public sealed class AppControllerTests : IDisposable
         // Review #2: another app (another clipboard owner) copies after our copy was observed but before it is read.
         _platform.Document.Text = "abc";
         _platform.Document.SelectAll();
-        _platform.AfterCopy = () => _ = Task.Run(async () =>
+        var reads = int.MinValue; // count only the reads after the copy
+        _platform.AfterCopy = () => reads = 0;
+        _platform.OnSequenceRead = () =>
         {
-            await Task.Delay(5);
-            _platform.ExternalCopy("external copy", owner: 99);
-        });
+            if (++reads == 2) _platform.ExternalCopy("external copy", owner: 99); // while our copy settles
+        };
         await _controller.ChangeCaseAsync();
         Assert.Equal("abc", _platform.Document.Text);
         Assert.Equal("external copy", _platform.ClipboardText);
@@ -255,11 +256,29 @@ public sealed class AppControllerTests : IDisposable
         // OLE apps set the clipboard and flush it a moment later: two changes, same owner.
         _platform.Document.Text = "abc";
         _platform.Document.SelectAll();
-        _platform.AfterCopy = () => _ = Task.Run(async () =>
+        var reads = int.MinValue; // count only the reads after the copy
+        _platform.AfterCopy = () => reads = 0;
+        _platform.OnSequenceRead = () =>
         {
-            await Task.Delay(25);
-            _platform.ExternalCopy(_platform.ClipboardText, owner: _platform.Window); // the flush
-        });
+            // The flush lands on the second poll after the copy, while the copy settles.
+            if (++reads == 2) _platform.ExternalCopy(_platform.ClipboardText, owner: _platform.Window);
+        };
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task Copy_LateFlushByTheTargetApp_AfterTheCopySettled_IsStillAccepted()
+    {
+        _platform.Document.Text = "abc";
+        _platform.Document.SelectAll();
+        var flushed = false;
+        _platform.BeforeWrite = text =>
+        {
+            // Right before Typlo writes the result, the target app flushes the copy (same owner, same text).
+            if (!flushed && text == "Abc") { flushed = true; _platform.ExternalCopy("abc", owner: _platform.Window); }
+        };
         await _controller.ChangeCaseAsync();
         Assert.Equal("Abc", _platform.Document.Text);
         Assert.Equal("original clipboard", _platform.ClipboardText);
@@ -374,12 +393,19 @@ public sealed class AppControllerTests : IDisposable
         public bool RegisterHotkey(int id, Hotkey hotkey) => true;
         public void UnregisterAllHotkeys() { }
         public IDisposable SuspendCapture() => new Scope();
-        public ulong ClipboardSequence { get; private set; } = 1;
+        private ulong _sequence = 1;
+        public Action? OnSequenceRead;
+        public Action<string>? BeforeWrite;
+        public ulong ClipboardSequence
+        {
+            get { OnSequenceRead?.Invoke(); return _sequence; }
+            private set => _sequence = value;
+        }
         public nint ClipboardOwner;
-        public void ExternalCopy(string text, nint owner = 0) { ClipboardText = text; ClipboardSequence++; ClipboardOwner = owner; }
+        public void ExternalCopy(string text, nint owner = 0) { ClipboardText = text; _sequence++; ClipboardOwner = owner; }
         public bool? IsClipboardOwnedBy(nint window) => ClipboardOwner == 0 ? null : ClipboardOwner == window;
         public string? ReadText() => ClipboardText;
-        public void SetText(string text) { ExternalCopy(text); AfterWrite?.Invoke(text); }
+        public void SetText(string text) { BeforeWrite?.Invoke(text); ExternalCopy(text); AfterWrite?.Invoke(text); }
         public void SetRichText(string text, string? html, string? rtf) => SetText(text);
         public void SetFiles(IReadOnlyList<string> paths) => SetText(string.Join('\n', paths));
         public void SetImage(byte[] png, byte[] bgra, int width, int height) => throw new NotSupportedException();

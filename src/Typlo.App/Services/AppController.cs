@@ -261,10 +261,22 @@ public sealed class AppController : IDisposable
     /// <summary>Thrown to stop an operation when another app changed the clipboard while Typlo was using it.</summary>
     private sealed class ClipboardTakenException() : Exception("The clipboard was changed by another app.");
 
+    /// <summary>The selection we copied and the window whose app wrote it (to recognise that app's late flush).</summary>
+    private (string Text, nint Window)? _adoptedCopy;
+
     /// <summary>Stops the operation if someone else wrote to the clipboard since our last change.</summary>
     private void EnsureClipboardIsOurs()
     {
-        if (_platform.ClipboardSequence != _expectedSequence) throw new ClipboardTakenException();
+        var now = _platform.ClipboardSequence;
+        if (now == _expectedSequence) return;
+        // OLE apps may flush the copy we triggered a moment later: same owner, same text. That is not a new copy.
+        if (_adoptedCopy is { } copy && _platform.IsClipboardOwnedBy(copy.Window) == true && _platform.ReadText() == copy.Text &&
+            _platform.ClipboardSequence == now)
+        {
+            _expectedSequence = now;
+            return;
+        }
+        throw new ClipboardTakenException();
     }
 
     /// <summary>Writes the clipboard only if it still holds what we expect, so a fresh copy is never overwritten.</summary>
@@ -274,6 +286,7 @@ public sealed class AppController : IDisposable
     private void WriteOwnClipboard(Action write, string? expectedText = null)
     {
         EnsureClipboardIsOurs();
+        _adoptedCopy = null; // our write replaces the adopted copy; a later change is no longer its flush
         write();
         var sequence = _platform.ClipboardSequence;
         // A write can be followed immediately by an external copy, before we read its sequence number.
@@ -468,7 +481,9 @@ public sealed class AppController : IDisposable
         var before = _platform.ClipboardSequence;
         if (!IsTargetActive(window)) return null;
         _platform.SendCopy();
-        if (await WaitForClipboardChange(before, TimeSpan.FromMilliseconds(600)) is not { } observed) return null;
+        // Generous: heavy apps (and the first clipboard use in a process) can take over half a second to copy, and a
+        // copy that arrives after we gave up would be mistaken for a later one.
+        if (await WaitForClipboardChange(before, TimeSpan.FromSeconds(2)) is not { } observed) return null;
         if (!IsTargetActive(window)) return null;
         // Adopt the copy only if the target app made it. Where the OS names the clipboard owner (Windows), a copy
         // by any other process is refused even if it landed in the same instant.
@@ -476,6 +491,7 @@ public sealed class AppController : IDisposable
             throw new ClipboardTakenException();
         _expectedSequence = observed; // the copy we triggered
         var text = _platform.ReadText();
+        if (text is not null && _platform.IsClipboardOwnedBy(window) == true) _adoptedCopy = (text, window);
         EnsureClipboardIsOurs();
         if (string.IsNullOrEmpty(text) || text == placeholder) return null;
         // VS Code and Visual Studio copy the whole current line when nothing is selected; they mark such copies.
