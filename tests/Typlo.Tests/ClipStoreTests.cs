@@ -139,6 +139,24 @@ public sealed class ClipStoreTests : IDisposable
     }
 
     [Fact]
+    public void FullTextSearch_SingleCjkCharacter_AndDoesNotBlockWrites()
+    {
+        using var store = Open(Roomy with { MaxItems = 2000, MaxTotalBytes = 100_000_000 });
+        var cat = store.Add(ClipContent.FromText(new string('a', 1000) + "猫"))!.Value;
+        for (var i = 0; i < 600; i++) store.Add(ClipContent.FromText($"{i} " + new string('x', 20_000)));
+        Assert.Equal(new HashSet<long> { cat }, store.SearchFullText("猫"));
+
+        // A write during a long search finishes quickly: the search holds the lock only per batch.
+        var search = Task.Run(() => { for (var i = 0; i < 5; i++) store.SearchFullText("absent"); });
+        Thread.Sleep(20);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        store.Add(ClipContent.FromText("written during search"));
+        sw.Stop();
+        search.Wait();
+        Assert.True(sw.ElapsedMilliseconds < 500, $"write waited {sw.ElapsedMilliseconds} ms");
+    }
+
+    [Fact]
     public void Duplicate_IsBumpedNotDuplicated()
     {
         using var store = Open();

@@ -74,17 +74,20 @@ public partial class ClipboardWindow : Window
         ShowItems(_all.Where(i => i.Matches(q)).ToList(), q);
 
         _searchCts?.Cancel();
-        if (q.Length < 2 || _controller is null) return;
+        // One character is enough: a single Chinese or Japanese character is a whole word.
+        if (q.Length == 0 || _controller is null) return;
         var cts = _searchCts = new CancellationTokenSource();
+        CountText.Text = $"{_items.Count} / {_all.Count} …"; // full-text search running
         _ = Task.Run(async () =>
         {
             await Task.Delay(150, cts.Token); // typing debounce
             var ids = _controller.Store.SearchFullText(q, cts.Token);
             Dispatcher.UIThread.Post(() =>
             {
-                if (cts.IsCancellationRequested || ids.Count == 0) return;
+                if (cts.IsCancellationRequested) return;
                 var matches = _all.Where(i => i.Matches(q) || ids.Contains(i.Entry.Id)).ToList();
                 if (matches.Count != _items.Count) ShowItems(matches, q, keepSelection: true);
+                else CountText.Text = $"{_items.Count} / {_all.Count}";
             });
         }, cts.Token).ContinueWith(_ => { }, TaskScheduler.Default);
     }

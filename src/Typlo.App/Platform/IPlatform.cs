@@ -53,6 +53,11 @@ public interface IPlatform : IDisposable
     /// <summary>Puts an image on the clipboard; <paramref name="bgra"/> is top-down 32-bit pixels.</summary>
     void SetImage(byte[] png, byte[] bgra, int width, int height);
     ClipboardSnapshot Snapshot();
+    /// <summary>
+    /// True if the clipboard holds an editor's "copy the current line" result made with nothing selected
+    /// (VS Code's isFromEmptySelection, Visual Studio's line-copy tag), not a real selection.
+    /// </summary>
+    bool IsEmptySelectionLineCopy();
     void Restore(ClipboardSnapshot snapshot);
 
     // Input & windows

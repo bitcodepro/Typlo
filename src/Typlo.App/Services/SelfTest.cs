@@ -230,6 +230,40 @@ internal static class SelfTest
                     if (now != "copied-meanwhile") throw new InvalidOperationException($"clipboard is '{now}'");
                 }, "keep"), when: caps.SimulateInput);
 
+            await Check("undo does nothing after the user typed more text", () =>
+                TransformInTextBox(platform, "abc", async () =>
+                {
+                    await controller.ChangeCaseAsync(); // abc -> Abc
+                    await Task.Delay(200);
+                    foreach (var key in new[] { "1", "2", "3" }) // digits: the same in every keyboard layout
+                    {
+                        platform.SendChord(KeyModifiers.None, key);
+                        await Task.Delay(40);
+                    }
+                    await Task.Delay(200);
+                    await controller.UndoLastTransformAsync();
+                }, "Abc123"), when: caps.SimulateInput);
+
+            await Check("nothing is pasted if another app copies right before the paste", () =>
+                TransformInTextBox(platform, "keep2", async () =>
+                {
+                    await controller.TransformSelectionAsync(text =>
+                    {
+                        platform.SetText("copied-before-paste"); // another app copies after Typlo read the selection
+                        return ("CHANGED", null);
+                    });
+                    var now = platform.ReadText();
+                    if (now != "copied-before-paste") throw new InvalidOperationException($"clipboard is '{now}'");
+                }, "keep2"), when: caps.SimulateInput);
+
+            await Check("a selected line with its line break is converted", () =>
+                TransformInTextBox(platform, "ghbdtn\n", () => controller.ConvertSelectionAsync(KeyboardLayouts.Russian),
+                    "привет\n", multiline: true), when: caps.SimulateInput);
+
+            await Check("a snippet does nothing if the window changed before it ran", () =>
+                TransformInTextBox(platform, "OTHER", () => controller.ExpandSnippetAsync(new Snippet { Trigger = ";zz", Text = "EXPANDED" }, 12345),
+                    "OTHER", select: false), when: caps.SimulateInput);
+
             await Check("diagnostic runs never change autostart", () =>
             {
                 var before = platform.AutostartEnabled;
@@ -415,13 +449,14 @@ internal static class SelfTest
     }).GetTask();
 
     /// <summary>Puts <paramref name="input"/> in a focused text box, runs <paramref name="action"/> and compares the result.</summary>
-    private static async Task<string?> TransformInTextBox(IPlatform platform, string input, Func<Task> action, string expected, bool select = true)
+    private static async Task<string?> TransformInTextBox(IPlatform platform, string input, Func<Task> action, string expected,
+        bool select = true, bool multiline = false)
     {
         Window? window = null;
         TextBox? box = null;
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
-            box = new TextBox { Text = input, AcceptsReturn = false };
+            box = new TextBox { Text = input, AcceptsReturn = multiline };
             window = new Window { Width = 400, Height = 120, Content = box, Title = "Typlo self-test", Topmost = true };
             window.Show();
             window.Activate();
@@ -440,7 +475,7 @@ internal static class SelfTest
             await Task.Delay(300);
             await action();
             await Task.Delay(300);
-            var text = await Dispatcher.UIThread.InvokeAsync(() => box!.Text);
+            var text = (await Dispatcher.UIThread.InvokeAsync(() => box!.Text))?.Replace("\r\n", "\n");
             return text == expected ? null : $"text box has '{text}', expected '{expected}'";
         }
         finally

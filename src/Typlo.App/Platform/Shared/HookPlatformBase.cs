@@ -202,6 +202,11 @@ public abstract class HookPlatformBase : IPlatform
     public void SetRichText(string text, string? html, string? rtf) => OwnWrite(() => WriteRichText(text, html, rtf));
     public void SetFiles(IReadOnlyList<string> paths) => OwnWrite(() => WriteFiles(paths));
     public ClipboardSnapshot Snapshot() => ReadSnapshot();
+
+    /// <summary>VS Code's "vscode-editor-data" clipboard type, as raw text, or null.</summary>
+    protected abstract string? ReadEditorData();
+
+    public bool IsEmptySelectionLineCopy() => ReadEditorData() is { } json && EditorClipboard.IsFromEmptySelection(json);
     public void Restore(ClipboardSnapshot snapshot) => OwnWrite(() => WriteSnapshot(snapshot));
 
     private void OwnWrite(Action write)

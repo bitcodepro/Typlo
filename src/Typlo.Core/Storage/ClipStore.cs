@@ -228,23 +228,34 @@ public sealed class ClipStore : IDisposable
     public HashSet<long> SearchFullText(string query, CancellationToken cancel = default)
     {
         var found = new HashSet<long>();
-        if (string.IsNullOrWhiteSpace(query)) return found;
-        lock (_lock)
+        if (string.IsNullOrEmpty(query)) return found;
+        const int batch = 32;
+        long lastId = 0;
+        while (true)
         {
-            using var cmd = Cmd("SELECT id, payload FROM clips WHERE kind IN ($t, $f)", ("$t", (int)ClipKind.Text), ("$f", (int)ClipKind.Files));
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
+            // Read a small batch under the lock, decrypt and search outside it: saving a new clip never waits
+            // for a whole search over a large history.
+            var rows = new List<(long Id, byte[] Payload)>(batch);
+            lock (_lock)
+            {
+                using var cmd = Cmd("SELECT id, payload FROM clips WHERE kind IN ($t, $f) AND id > $last ORDER BY id LIMIT $n",
+                    ("$t", (int)ClipKind.Text), ("$f", (int)ClipKind.Files), ("$last", lastId), ("$n", batch));
+                using var r = cmd.ExecuteReader();
+                while (r.Read()) rows.Add((r.GetInt64(0), (byte[])r[1]));
+            }
+            if (rows.Count == 0) return found;
+            foreach (var (id, payload) in rows)
             {
                 cancel.ThrowIfCancellationRequested();
                 try
                 {
-                    var text = Encoding.UTF8.GetString(_crypto.Decrypt((byte[])r[1]));
-                    if (text.Contains(query, StringComparison.CurrentCultureIgnoreCase)) found.Add(r.GetInt64(0));
+                    var text = Encoding.UTF8.GetString(_crypto.Decrypt(payload));
+                    if (text.Contains(query, StringComparison.CurrentCultureIgnoreCase)) found.Add(id);
                 }
                 catch (System.Security.Cryptography.CryptographicException) { }
             }
+            lastId = rows[^1].Id;
         }
-        return found;
     }
 
     /// <summary>Full decrypted content of a clip, or null if it no longer exists.</summary>
