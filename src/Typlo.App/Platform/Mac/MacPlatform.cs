@@ -48,6 +48,8 @@ public sealed class MacPlatform : HookPlatformBase
             : Services.Loc.T("note.mac.ax"));
 
     protected override KeyModifiers ShortcutModifier => KeyModifiers.Win; // Cmd
+    // Posted CGEvents carry the posting process ID, which libuiohook reports as simulated (dispatch_event.c).
+    protected override bool HookFlagsOwnInput => true;
     protected override TimeSpan PollInterval => TimeSpan.FromMilliseconds(300);
 
     private static nint Pasteboard => Call(Class("NSPasteboard"), "generalPasteboard");

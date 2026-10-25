@@ -213,14 +213,15 @@ public sealed class AppController : IDisposable
                 return;
             }
 
+            // From here on Typlo sends no keys of its own until Ctrl+V: any input means the user changed the selection
+            // or moved the caret, so the result must not be pasted (or recorded for Undo).
+            var inputVersion = Interlocked.Read(ref _typingVersion);
+            bool NoInputSince() => Interlocked.Read(ref _typingVersion) == inputVersion;
             var (result, switchTo) = transform(text);
-            var inputBeforePaste = Interlocked.Read(ref _typingVersion);
-            if (result != text && await PasteTextAsync(result, window))
+            if (result != text && await PasteTextAsync(result, window, NoInputSince))
             {
                 // Input during the paste's settling wait may have moved the caret: then the result cannot be located.
-                LastTransform = Interlocked.Read(ref _typingVersion) == inputBeforePaste
-                    ? new TransformRecord(window, text, result, DateTime.UtcNow)
-                    : null;
+                LastTransform = NoInputSince() ? new TransformRecord(window, text, result, DateTime.UtcNow) : null;
             }
             if (switchTo is not null && Settings.SwitchSystemLayout) _platform.SwitchKeyboardLayout(window, switchTo.LangId);
         }
@@ -311,16 +312,27 @@ public sealed class AppController : IDisposable
 
     /// <summary>
     /// Pastes text into <paramref name="window"/> through the clipboard (the caller restores the clipboard).
-    /// Nothing is pasted if the user switched to another window meanwhile.
+    /// Nothing is pasted if the user switched to another window meanwhile, or if <paramref name="stillValid"/> (the
+    /// operation's own guard, e.g. "no input since the selection was made") fails right before Ctrl+V.
     /// </summary>
-    private async Task<bool> PasteTextAsync(string text, nint window)
+    private async Task<bool> PasteTextAsync(string text, nint window, Func<bool> stillValid)
     {
         if (!IsTargetActive(window)) return false;
+        if (!stillValid())
+        {
+            Log.Info("Paste skipped: the user typed or moved the caret before it");
+            return false;
+        }
         SetOwnText(text);
         await Task.Delay(30);
         if (!IsTargetActive(window))
         {
             Log.Info("Paste skipped: the active window changed");
+            return false;
+        }
+        if (!stillValid())
+        {
+            Log.Info("Paste skipped: the user typed or moved the caret meanwhile");
             return false;
         }
         // Right before Ctrl+V: if another app copied something since our write, that content would be pasted.
@@ -392,7 +404,7 @@ public sealed class AppController : IDisposable
                 Log.Info("Undo skipped: the text before the caret is no longer the converted text");
                 return;
             }
-            if (await PasteTextAsync(last.Original, window)) LastTransform = null;
+            if (await PasteTextAsync(last.Original, window, StillValid)) LastTransform = null;
         }
         catch (ClipboardTakenException) { Log.Info("Undo stopped: another app changed the clipboard meanwhile"); }
         catch (Exception e) { Log.Error("Undo failed", e); }
@@ -479,14 +491,13 @@ public sealed class AppController : IDisposable
             // Line breaks and tabs typed as keys would act as Enter/Tab (submit a chat message, move to another field),
             // so such snippets are pasted as text. The clipboard is prepared before anything is deleted.
             var paste = snippet.Text.IndexOfAny(['\n', '\r', '\t']) >= 0;
-            IDisposable? suspend = null;
+            // Disposed on every path, including a failed snapshot or write below.
+            using var _ = paste ? _platform.SuspendCapture() : null;
             if (paste)
             {
-                suspend = _platform.SuspendCapture();
                 snapshot = CaptureClipboard();
                 SetOwnText(snippet.Text);
             }
-            using var _ = suspend;
 
             var trigger = snippet.Trigger.Trim();
             for (var deleted = 0; deleted < trigger.Length; deleted++)
@@ -496,6 +507,11 @@ public sealed class AppController : IDisposable
                     // The user typed, clicked or switched windows: the caret position is no longer known, so nothing is
                     // typed back (that could overwrite whatever the user selected). Only part of the trigger is gone.
                     Log.Info("Snippet stopped half-way: the user moved on");
+                    return;
+                }
+                if (paste && !ClipboardStillOurs())
+                {
+                    RetypeTrigger(trigger, deleted, StillValid);
                     return;
                 }
                 _platform.SendChord(KeyModifiers.None, "Backspace");
@@ -508,7 +524,13 @@ public sealed class AppController : IDisposable
 
             if (paste)
             {
-                EnsureClipboardIsOurs(); // right before Ctrl+V: never paste another app's copy
+                // Right before Ctrl+V: never paste another app's copy. If one arrived while the trigger was deleted,
+                // keep it, and put the trigger back while the caret is still where Typlo left it.
+                if (!ClipboardStillOurs())
+                {
+                    RetypeTrigger(trigger, trigger.Length, StillValid);
+                    return;
+                }
                 _platform.SendPaste();
                 await Task.Delay(300); // let the target read the clipboard before it is restored
             }
@@ -528,6 +550,26 @@ public sealed class AppController : IDisposable
         }
     }
 
+    private bool ClipboardStillOurs()
+    {
+        try
+        {
+            EnsureClipboardIsOurs();
+            return true;
+        }
+        catch (ClipboardTakenException) { return false; }
+    }
+
+    /// <summary>
+    /// Another app copied while a multi-line snippet was being inserted: its copy stays, so the snippet cannot be
+    /// pasted. The deleted part of the trigger is typed back, only while no user input has moved the caret.
+    /// </summary>
+    private void RetypeTrigger(string trigger, int deleted, Func<bool> stillValid)
+    {
+        Log.Info("Snippet stopped: another app changed the clipboard meanwhile");
+        if (deleted > 0 && stillValid()) _platform.TypeText(trigger[^deleted..], stillValid);
+    }
+
     /// <summary>Sends Copy and returns the selected text, or null when nothing is selected.</summary>
     private async Task<string?> CopySelectionAsync(nint window)
     {
@@ -544,11 +586,12 @@ public sealed class AppController : IDisposable
         if (await WaitForClipboardChange(before, TimeSpan.FromSeconds(2)) is not { } change) return null;
         var observed = change.Sequence;
         if (!IsTargetActive(window)) return null;
-        // Adopt the copy only if the target app made it. Where the OS names the clipboard owner (Windows), a copy by
-        // any other process is refused. Where it does not (macOS, Linux), a further change while the copy settled is
-        // ambiguous (a second write by the app or another app's copy), so it is refused too.
+        // Adopt the copy only if the target app made it. Where the OS names the clipboard owner (Windows, X11), a copy
+        // by any other process is refused. Where it does not (macOS, Wayland), a further change while the copy settled
+        // is ambiguous (a second write by the app or another app's copy, even after an empty first state), so it is
+        // refused too.
         var owned = _platform.IsClipboardOwnedBy(window);
-        if (owned == false || (owned is null && change.TextReplaced) || _platform.ClipboardSequence != observed)
+        if (owned == false || (owned is null && change.ChangedAgain) || _platform.ClipboardSequence != observed)
             throw new ClipboardTakenException();
         _expectedSequence = observed; // the copy we triggered
         var text = _platform.ReadText();
@@ -564,13 +607,9 @@ public sealed class AppController : IDisposable
 
     /// <summary>
     /// Waits for the copy we triggered and until the clipboard stops changing (OLE apps write in two steps: set,
-    /// then flush); returns the final sequence, or null if nothing was copied.
+    /// then flush); returns the final sequence and whether it changed more than once, or null if nothing was copied.
     /// </summary>
-    /// <returns>
-    /// The final sequence, and whether the text was replaced by different text while settling: a copy completing in
-    /// steps (formats first, data later; set then flush) keeps its text, another app's copy brings other text.
-    /// </returns>
-    private async Task<(ulong Sequence, bool TextReplaced)?> WaitForClipboardChange(ulong before, TimeSpan timeout)
+    private async Task<(ulong Sequence, bool ChangedAgain)?> WaitForClipboardChange(ulong before, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
@@ -578,7 +617,6 @@ public sealed class AppController : IDisposable
             var now = _platform.ClipboardSequence;
             if (now != before)
             {
-                var firstText = _platform.ReadText();
                 var changedAgain = false;
                 var settleDeadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(400);
                 while (DateTime.UtcNow < settleDeadline)
@@ -589,8 +627,7 @@ public sealed class AppController : IDisposable
                     now = later;
                     changedAgain = true;
                 }
-                var replaced = changedAgain && !string.IsNullOrEmpty(firstText) && _platform.ReadText() != firstText;
-                return (now, replaced);
+                return (now, changedAgain);
             }
             await Task.Delay(10);
         }

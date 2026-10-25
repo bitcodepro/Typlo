@@ -274,6 +274,67 @@ public sealed class AppControllerTests : IDisposable
         Assert.Equal("user copy", _platform.ClipboardText);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Snippet_MultiLine_FailedPreparation_ReleasesTheCaptureSuspension(bool failSnapshot)
+    {
+        // Review: the suspension was taken before a snapshot or write that can throw, and only disposed afterwards.
+        _platform.Document.Text = ";hi";
+        _platform.Document.Caret = 3;
+        if (failSnapshot) _platform.AfterSnapshot = () => _platform.ExternalCopy("user copy");
+        else _platform.AfterWrite = text => { if (text.StartsWith("line")) _platform.ExternalCopy("user copy"); };
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "line 1\nline 2" }, 1);
+        Assert.Equal(1, _platform.SuspendCalls);
+        Assert.Equal(0, _platform.SuspendDepth); // capture is not left disabled until restart
+        Assert.Equal(";hi", _platform.Document.Text);
+        Assert.Equal("user copy", _platform.ClipboardText);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    public async Task Snippet_MultiLine_ExternalCopyDuringDeletion_KeepsTheCopyAndPutsTheTriggerBack(int atBackspace)
+    {
+        // Review: another app copies while the trigger is deleted (3 = on the last Backspace). Its copy must not be
+        // pasted or overwritten, and the deleted trigger comes back since the caret did not move.
+        _platform.Document.Text = "say ;hi";
+        _platform.Document.Caret = 7;
+        _platform.OnBackspace = () => { if (_platform.BackspaceCount == atBackspace) _platform.ExternalCopy("user copy"); };
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "line 1\nline 2" }, 1);
+        Assert.Equal("say ;hi", _platform.Document.Text);
+        Assert.Equal("user copy", _platform.ClipboardText);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal(atBackspace, _platform.BackspaceCount);
+        Assert.Equal(0, _platform.SuspendDepth);
+    }
+
+    [Fact]
+    public async Task Snippet_MultiLine_ExternalCopyAndUserInputDuringDeletion_TypesNothingBack()
+    {
+        // The user selects text while Typlo finds the clipboard taken: the trigger is not typed back over the selection.
+        EnableSnippet();
+        _platform.Document.Text = "keep this ;hi";
+        _platform.Document.Caret = 13;
+        _platform.OnBackspace = () =>
+        {
+            if (_platform.BackspaceCount != 3) return;
+            _platform.ExternalCopy("user copy");
+            var armed = true;
+            _platform.OnSequenceRead = () =>
+            {
+                if (!armed) return;
+                armed = false; // during the clipboard check right before the paste
+                _platform.Document.Anchor = 0;
+                _platform.UserMoveCaret(4, keepAnchor: true);
+            };
+        };
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "line 1\nline 2" }, 1);
+        Assert.Equal("keep this ", _platform.Document.Text);
+        Assert.Equal(0, _platform.TypedTextCount);
+        Assert.Equal("user copy", _platform.ClipboardText);
+    }
+
     [Fact]
     public async Task Snippet_FocusChangeMidTyping_StopsTheRest()
     {
@@ -325,10 +386,9 @@ public sealed class AppControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Copy_UnknownOwner_FormatsFirstThenData_IsStillAdopted()
+    public async Task Copy_KnownOwner_FormatsFirstThenData_IsStillAdopted()
     {
-        // X11: the copy first shows up without readable text, then with it. Same copy, not an external one.
-        _platform.OwnerKnown = false;
+        // X11 (owner known through X-Resource): the copy first shows up without readable text, then with it.
         _platform.Document.Text = "abc";
         _platform.Document.SelectAll();
         var reads = int.MinValue;
@@ -337,12 +397,32 @@ public sealed class AppControllerTests : IDisposable
         {
             reads = 0;
             selection = _platform.ClipboardText;
-            _platform.ExternalCopy(""); // formats announced, data not readable yet
+            _platform.ExternalCopy("", owner: _platform.Window); // formats announced, data not readable yet
         };
-        _platform.OnSequenceRead = () => { if (++reads == 2) _platform.ExternalCopy(selection); };
+        _platform.OnSequenceRead = () => { if (++reads == 2) _platform.ExternalCopy(selection, owner: _platform.Window); };
         await _controller.ChangeCaseAsync();
         Assert.Equal("Abc", _platform.Document.Text);
         Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task Copy_UnknownOwner_EmptyFirstStateThenOtherText_IsNotAdopted()
+    {
+        // Review: with no owner to check, an empty first state followed by text may be another app's copy.
+        _platform.OwnerKnown = false;
+        _platform.Document.Text = "abc";
+        _platform.Document.SelectAll();
+        var reads = int.MinValue;
+        _platform.AfterCopy = () =>
+        {
+            reads = 0;
+            _platform.ExternalCopy("");
+        };
+        _platform.OnSequenceRead = () => { if (++reads == 2) _platform.ExternalCopy("external copy"); };
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("abc", _platform.Document.Text);
+        Assert.Equal("external copy", _platform.ClipboardText); // neither pasted nor overwritten by the restore
+        Assert.Equal(0, _platform.PasteCount);
     }
 
     [Fact]
@@ -441,6 +521,45 @@ public sealed class AppControllerTests : IDisposable
         _platform.AfterPaste = null;
         await _controller.UndoLastTransformAsync();
         Assert.Equal("Abc Abc", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task Undo_SelectionChangedDuringTheFinalPasteWait_DoesNotOverwriteIt()
+    {
+        // Review: convert the first "abc" of "abc Abc"; while Undo writes "abc" to the clipboard, the user selects
+        // the second "Abc".
+        _platform.Document.Text = "abc Abc";
+        _platform.Document.Anchor = 0;
+        _platform.Document.Caret = 3;
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc Abc", _platform.Document.Text);
+        _platform.AfterWrite = text =>
+        {
+            if (text != "abc") return;
+            _platform.Document.Anchor = 4;
+            _platform.UserMoveCaret(7, keepAnchor: true);
+        };
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("Abc Abc", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task Convert_SelectionChangedBeforeThePaste_DoesNotOverwriteIt()
+    {
+        _platform.Document.Text = "abc def";
+        _platform.Document.Anchor = 0;
+        _platform.Document.Caret = 3;
+        _platform.AfterWrite = text =>
+        {
+            if (text != "Abc") return;
+            _platform.Document.Anchor = 4;
+            _platform.UserMoveCaret(7, keepAnchor: true);
+        };
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("abc def", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
     }
 
     private static async Task WaitUntil(Func<bool> condition)
@@ -553,7 +672,13 @@ public sealed class AppControllerTests : IDisposable
         public event Action<TypedKey>? KeyTyped;
         public bool RegisterHotkey(int id, Hotkey hotkey) { _hotkeys[hotkey] = id; return true; }
         public void UnregisterAllHotkeys() => _hotkeys.Clear();
-        public IDisposable SuspendCapture() => new Scope();
+        public int SuspendDepth, SuspendCalls;
+        public IDisposable SuspendCapture()
+        {
+            SuspendCalls++;
+            SuspendDepth++;
+            return new Scope(() => SuspendDepth--);
+        }
         private ulong _sequence = 1;
         public Action? OnSequenceRead;
         public ulong ClipboardSequence
@@ -639,6 +764,10 @@ public sealed class AppControllerTests : IDisposable
         public void SignalUserActivity() { }
         public bool AutostartEnabled { get; set; }
         public void Dispose() { }
-        private sealed class Scope : IDisposable { public void Dispose() { } }
+        private sealed class Scope(Action onDispose) : IDisposable
+        {
+            private Action? _onDispose = onDispose;
+            public void Dispose() { _onDispose?.Invoke(); _onDispose = null; }
+        }
     }
 }

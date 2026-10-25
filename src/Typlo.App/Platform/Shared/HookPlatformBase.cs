@@ -50,7 +50,7 @@ public abstract class HookPlatformBase : IPlatform
                 _hook = new SimpleGlobalHook();
                 _hook.KeyPressed += OnKeyPressed;
                 TypingEvents.Attach(_hook, key => { if (_typingWatch) KeyTyped?.Invoke(key); },
-                    code => _ownInput.Consume(code, Environment.TickCount64));
+                    HookFlagsOwnInput ? null : (code, raw) => _ownInput.Consume(code, raw, Environment.TickCount64));
                 _hook.KeyReleased += (_, e) => _down.TryRemove(e.Data.KeyCode, out bool _);
                 _hook.MouseMoved += (_, e) =>
                 {
@@ -154,8 +154,17 @@ public abstract class HookPlatformBase : IPlatform
 
     private EventSimulator Simulator => _simulatorLazy.Value;
 
-    // libuiohook does not flag our XTest/CGEvent input as simulated, so remember what we inject and drop exactly
-    // those events when the hook reports them back; real key presses in between are still seen.
+    /// <summary>
+    /// True where the hook marks injected events as simulated, so the typing hook drops them without tracking.
+    /// macOS: libuiohook flags every event that carries a source process ID (all posted events, none from hardware).
+    /// </summary>
+    protected virtual bool HookFlagsOwnInput => false;
+
+    /// <summary>The raw key code text entry will be reported with, or null if it cannot be known.</summary>
+    protected virtual ushort? TextEntryKeycode() => null;
+
+    // X11: libuiohook does not flag our XTest input as simulated, so remember what we inject and drop exactly those
+    // events when the hook reports them back; real key presses in between are still seen.
     private readonly OwnInputTracker _ownInput = new();
 
     public void SendChord(KeyModifiers modifiers, string key) => SendChord(modifiers, key, own: true);
@@ -170,7 +179,18 @@ public abstract class HookPlatformBase : IPlatform
         foreach (var element in System.Globalization.StringInfo.GetTextElementEnumerator(text).AsEnumerable())
         {
             if (keepGoing?.Invoke() == false) return false;
-            foreach (var _ in element) _ownInput.TextCharacter(Environment.TickCount64);
+            if (!HookFlagsOwnInput)
+            {
+                // Without the exact key the hook will report, our text would look like user input (or be confused
+                // with it), so nothing is typed.
+                if (TextEntryKeycode() is not { } raw)
+                {
+                    Log.Info("Text entry skipped: its key code cannot be determined");
+                    return false;
+                }
+                var now = Environment.TickCount64;
+                for (var i = OwnInputTracker.X11KeyEvents(element); i > 0; i--) _ownInput.TextKey(raw, now);
+            }
             Simulator.SimulateTextEntry(element);
         }
         return true;
@@ -184,7 +204,7 @@ public abstract class HookPlatformBase : IPlatform
         if (modifiers.HasFlag(KeyModifiers.Alt)) mods.Add(KeyCode.VcLeftAlt);
         if (modifiers.HasFlag(KeyModifiers.Shift)) mods.Add(KeyCode.VcLeftShift);
         if (modifiers.HasFlag(KeyModifiers.Win)) mods.Add(KeyCode.VcLeftMeta);
-        if (own) _ownInput.Press(code, Environment.TickCount64); // modifiers are ignored by the typing hook anyway
+        if (own && !HookFlagsOwnInput) _ownInput.Press(code, Environment.TickCount64); // modifiers are ignored by the typing hook anyway
         foreach (var m in mods) Simulator.SimulateKeyPress(m);
         Simulator.SimulateKeyPress(code);
         Simulator.SimulateKeyRelease(code);

@@ -44,7 +44,7 @@ the old files on the next start. "Check for updates…" (tray menu or Settings) 
 | Autostart | HKCU Run | LaunchAgent | `~/.config/autostart` | same |
 | Verified by self-test | yes | **not yet (no Mac available)** | yes (Ubuntu 24.04, Xvfb, `tests/linux`) | no |
 
-Linux packages: `xclip xdotool` (X11) or `wl-clipboard` (Wayland); optional `clipnotify`, `libsecret-tools`.
+Linux packages: `xclip xdotool libxres1` (X11) or `wl-clipboard` (Wayland); optional `clipnotify`, `libsecret-tools`.
 
 macOS: the build is unsigned. Build/package on a Mac (`scripts/package-macos.sh` ad-hoc signs it), then
 right click → Open, and allow Typlo in System Settings → Privacy & Security → Accessibility.

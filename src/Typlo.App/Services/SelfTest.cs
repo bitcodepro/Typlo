@@ -258,6 +258,21 @@ internal static class SelfTest
                     if (now != "copied-before-paste") throw new InvalidOperationException($"clipboard is '{now}'");
                 }, "keep2"), when: caps.SimulateInput);
 
+            // X11 names the owner through X-Resource: copies are then checked like on Windows. Typlo's own writes go
+            // through xclip, a separate process, so they never count as the text box's copy.
+            await Check("the clipboard owner is known (X11)", () =>
+                TransformInTextBox(platform, "owner", async () =>
+                {
+                    var window = platform.ForegroundWindow;
+                    platform.SetText("written-by-xclip");
+                    if (platform.IsClipboardOwnedBy(window) is var before && before != false)
+                        throw new InvalidOperationException($"owned by the text box after an xclip write: {before?.ToString() ?? "unknown"}");
+                    platform.SendCopy();
+                    if (!await WaitFor(() => platform.ReadText() == "owner")) throw new InvalidOperationException("the copy did not arrive");
+                    if (platform.IsClipboardOwnedBy(window) is var after && after != true)
+                        throw new InvalidOperationException($"not owned by the text box after its copy: {after?.ToString() ?? "unknown"}");
+                }, "owner"), when: caps.SimulateInput && platform.Name == "Linux (X11)");
+
             await Check("a selected line with its line break is converted", () =>
                 TransformInTextBox(platform, "ghbdtn\n", () => controller.ConvertSelectionAsync(KeyboardLayouts.Russian),
                     "привет\n", multiline: true), when: caps.SimulateInput);

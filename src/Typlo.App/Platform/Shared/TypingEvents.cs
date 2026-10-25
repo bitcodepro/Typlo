@@ -42,8 +42,10 @@ internal static class TypingEvents
 
     private const string ShiftedDigits = ")!@#$%^&*(";
 
-    /// <param name="isOwnPress">Consumes a key press Typlo itself injected (platforms whose hook does not flag them).</param>
-    public static void Attach(IGlobalHook hook, Action<TypedKey> raise, Func<KeyCode, bool>? isOwnPress = null)
+    /// <param name="isOwnPress">
+    /// Consumes a key press (key code, raw code) Typlo itself injected, on platforms whose hook does not flag them.
+    /// </param>
+    public static void Attach(IGlobalHook hook, Action<TypedKey> raise, Func<KeyCode, ushort, bool>? isOwnPress = null)
     {
         var down = new HashSet<KeyCode>();
         hook.KeyReleased += (_, e) => { lock (down) down.Remove(e.Data.KeyCode); };
@@ -64,17 +66,18 @@ internal static class TypingEvents
             }
             // Modifier presses are never typing; they are also not tracked as own input (text entry may add a Shift).
             if (IsModifier(code)) return;
-            if (isOwnPress?.Invoke(code) == true) return;
+            if (isOwnPress?.Invoke(code, e.Data.RawCode) == true) return;
             if (e.IsEventSimulated && !(AcceptSimulated && !shortcut && ToChar(code, shift) is not null)) return;
-            if (code == KeyCode.VcBackspace) { raise(TypedKey.BackspaceKey); return; }
-            if (ResetKeys.Contains(code)) { raise(TypedKey.ResetKey); return; }
             if (shortcut)
             {
                 // Not typing, and the caret may have moved, unless the controller recognises it as its own hotkey.
+                // Checked before Backspace and navigation keys, so a hotkey such as Ctrl+Alt+Shift+End is recognised.
                 var name = KeyCodes.ToName(code);
                 raise(TypedKey.ForShortcut(name is null ? null : new Typlo.Core.Hotkeys.Hotkey(mods, name)));
                 return;
             }
+            if (code == KeyCode.VcBackspace) { raise(TypedKey.BackspaceKey); return; }
+            if (ResetKeys.Contains(code)) { raise(TypedKey.ResetKey); return; }
             if (ToChar(code, shift) is not { } c) return;
             raise(TypedKey.ForChar(c));
         };
