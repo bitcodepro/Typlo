@@ -4,11 +4,13 @@ using SharpHook.Data;
 namespace Typlo.App.Platform.Shared;
 
 /// <summary>One typed character, or a signal that the typed text so far no longer leads up to the caret.</summary>
-public readonly record struct TypedKey(char Char, bool Reset, bool Backspace)
+public readonly record struct TypedKey(char Char, bool Reset, bool Backspace, Typlo.Core.Hotkeys.Hotkey? Shortcut = null)
 {
     public static TypedKey ForChar(char c) => new(c, false, false);
     public static readonly TypedKey ResetKey = new('\0', true, false);
     public static readonly TypedKey BackspaceKey = new('\0', false, true);
+    /// <summary>A key combination such as Ctrl+V or Ctrl+Alt+Shift+Z; it may move the caret (unless it is Typlo's own hotkey).</summary>
+    public static TypedKey ForShortcut(Typlo.Core.Hotkeys.Hotkey? shortcut) => new('\0', true, false, shortcut);
 }
 
 /// <summary>
@@ -41,9 +43,7 @@ internal static class TypingEvents
     private const string ShiftedDigits = ")!@#$%^&*(";
 
     /// <param name="isOwnPress">Consumes a key press Typlo itself injected (platforms whose hook does not flag them).</param>
-    /// <param name="ownTextActive">True while Typlo injects a text burst.</param>
-    public static void Attach(IGlobalHook hook, Action<TypedKey> raise, Func<KeyCode, bool>? isOwnPress = null,
-        Func<bool>? ownTextActive = null)
+    public static void Attach(IGlobalHook hook, Action<TypedKey> raise, Func<KeyCode, bool>? isOwnPress = null)
     {
         var down = new HashSet<KeyCode>();
         hook.KeyReleased += (_, e) => { lock (down) down.Remove(e.Data.KeyCode); };
@@ -51,26 +51,41 @@ internal static class TypingEvents
         {
             var code = e.Data.KeyCode;
             bool shift, shortcut;
+            var mods = Typlo.Core.Hotkeys.KeyModifiers.None;
             lock (down)
             {
                 down.Add(code);
                 shift = down.Contains(KeyCode.VcLeftShift) || down.Contains(KeyCode.VcRightShift);
-                shortcut = down.Overlaps([KeyCode.VcLeftControl, KeyCode.VcRightControl, KeyCode.VcLeftMeta, KeyCode.VcRightMeta,
-                    KeyCode.VcLeftAlt, KeyCode.VcRightAlt]);
+                if (down.Contains(KeyCode.VcLeftControl) || down.Contains(KeyCode.VcRightControl)) mods |= Typlo.Core.Hotkeys.KeyModifiers.Ctrl;
+                if (down.Contains(KeyCode.VcLeftAlt) || down.Contains(KeyCode.VcRightAlt)) mods |= Typlo.Core.Hotkeys.KeyModifiers.Alt;
+                if (down.Contains(KeyCode.VcLeftMeta) || down.Contains(KeyCode.VcRightMeta)) mods |= Typlo.Core.Hotkeys.KeyModifiers.Win;
+                shortcut = mods != Typlo.Core.Hotkeys.KeyModifiers.None;
+                if (shift) mods |= Typlo.Core.Hotkeys.KeyModifiers.Shift;
             }
-            if (isOwnPress?.Invoke(code) == true || ownTextActive?.Invoke() == true) return;
+            // Modifier presses are never typing; they are also not tracked as own input (text entry may add a Shift).
+            if (IsModifier(code)) return;
+            if (isOwnPress?.Invoke(code) == true) return;
             if (e.IsEventSimulated && !(AcceptSimulated && !shortcut && ToChar(code, shift) is not null)) return;
             if (code == KeyCode.VcBackspace) { raise(TypedKey.BackspaceKey); return; }
             if (ResetKeys.Contains(code)) { raise(TypedKey.ResetKey); return; }
+            if (shortcut)
+            {
+                // Not typing, and the caret may have moved, unless the controller recognises it as its own hotkey.
+                var name = KeyCodes.ToName(code);
+                raise(TypedKey.ForShortcut(name is null ? null : new Typlo.Core.Hotkeys.Hotkey(mods, name)));
+                return;
+            }
             if (ToChar(code, shift) is not { } c) return;
-            // A shortcut (Ctrl+C, Alt+Tab…) is not typing, and the caret may have moved.
-            raise(shortcut ? TypedKey.ResetKey : TypedKey.ForChar(c));
+            raise(TypedKey.ForChar(c));
         };
         hook.MousePressed += (_, e) =>
         {
             if (!e.IsEventSimulated) raise(TypedKey.ResetKey); // the caret may have moved
         };
     }
+
+    private static bool IsModifier(KeyCode code) => code is KeyCode.VcLeftControl or KeyCode.VcRightControl or KeyCode.VcLeftAlt
+        or KeyCode.VcRightAlt or KeyCode.VcLeftShift or KeyCode.VcRightShift or KeyCode.VcLeftMeta or KeyCode.VcRightMeta;
 
     /// <summary>The character of a physical key in the US layout, or null for non-character keys.</summary>
     internal static char? ToChar(KeyCode code, bool shift)

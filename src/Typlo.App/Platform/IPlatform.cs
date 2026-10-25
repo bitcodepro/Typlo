@@ -73,10 +73,11 @@ public interface IPlatform : IDisposable
     /// <summary>The platform's copy shortcut (Ctrl+C, or Cmd+C on macOS).</summary>
     void SendCopy();
     /// <summary>
-    /// Types text into the focused app as Unicode key input, without touching the clipboard.
+    /// Types single-line text into the focused app as Unicode key input, without touching the clipboard.
+    /// Stops (returning false) as soon as <paramref name="keepGoing"/> says the target is no longer valid.
     /// Typlo's own injected keys never come back as <see cref="KeyTyped"/> events.
     /// </summary>
-    void TypeText(string text);
+    bool TypeText(string text, Func<bool>? keepGoing = null);
     void SendPaste();
     /// <summary>Opaque handle of the focused window/app (HWND, PID or X11 window id); 0 if unknown.</summary>
     nint ForegroundWindow { get; }

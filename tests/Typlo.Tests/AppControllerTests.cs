@@ -219,17 +219,72 @@ public sealed class AppControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Snippet_RealTypingAfterPartialDeletion_RestoresTheTrigger()
+    public async Task Snippet_RealTypingAfterPartialDeletion_StopsWithoutTypingAnything()
     {
-        // Review #3: real input during the expansion stops it instead of producing "XEXPANDED" or losing text.
+        // Real input during the expansion stops it: no "XEXPANDED", and nothing is typed back at a caret that moved.
         EnableSnippet();
         _platform.Document.Text = ";hi";
         _platform.Document.Caret = 3;
         _platform.OnBackspace = () => { if (_platform.BackspaceCount == 1) _platform.Type("X"); };
         await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "EXPANDED" }, 1);
-        // ";hi" -> ";h" (our Backspace) -> ";hX" (user) -> the deleted "i" is put back; no expansion.
-        Assert.Equal(";hXi", _platform.Document.Text);
+        // ";hi" -> ";h" (our Backspace) -> ";hX" (user); then Typlo stops.
+        Assert.Equal(";hX", _platform.Document.Text);
         Assert.Equal(1, _platform.BackspaceCount);
+        Assert.Equal(0, _platform.TypedTextCount);
+    }
+
+    [Fact]
+    public async Task Snippet_ClickElsewhereInTheSameWindow_DuringDeletion_DoesNotOverwriteTheNewSelection()
+    {
+        EnableSnippet();
+        _platform.Document.Text = "keep this ;hi";
+        _platform.Document.Caret = 13;
+        _platform.OnBackspace = () =>
+        {
+            if (_platform.BackspaceCount != 1) return;
+            _platform.Document.Anchor = 0; // the user selects "keep" with the mouse
+            _platform.UserMoveCaret(4, keepAnchor: true);
+        };
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "EXPANDED" }, 1);
+        Assert.Equal("keep this ;h", _platform.Document.Text);
+        Assert.Equal(0, _platform.TypedTextCount);
+    }
+
+    [Fact]
+    public async Task Snippet_MultiLine_IsPastedAsText_NotTypedAsEnterKeys()
+    {
+        _platform.Document.Text = ";hi";
+        _platform.Document.Caret = 3;
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "line 1\nline 2\tend" }, 1);
+        Assert.Equal("line 1\nline 2\tend", _platform.Document.Text);
+        Assert.Equal(1, _platform.PasteCount);
+        Assert.Equal(0, _platform.TypedTextCount); // never as Enter/Tab keystrokes
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task Snippet_MultiLine_ClipboardTakenBeforeDeletion_DeletesNothing()
+    {
+        _platform.Document.Text = ";hi";
+        _platform.Document.Caret = 3;
+        _platform.AfterWrite = text => { if (text.StartsWith("line")) _platform.ExternalCopy("user copy"); };
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "line 1\nline 2" }, 1);
+        Assert.Equal(";hi", _platform.Document.Text);
+        Assert.Equal(0, _platform.BackspaceCount);
+        Assert.Equal("user copy", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task Snippet_FocusChangeMidTyping_StopsTheRest()
+    {
+        // Review #6: the target is checked before every character of a long snippet.
+        _platform.Document.Text = ";hi";
+        _platform.Document.Caret = 3;
+        _platform.OnTypeChar = typed => { if (typed == 3) _platform.Window = 2; };
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "abcdefghij" }, 1);
+        Assert.Equal("", _platform.Document.Text); // window 2 (now active) received nothing
+        _platform.Window = 1;
+        Assert.Equal("abc", _platform.Document.Text); // window 1 got only the part typed before the switch
     }
 
     [Fact]
@@ -248,6 +303,46 @@ public sealed class AppControllerTests : IDisposable
         Assert.Equal("abc", _platform.Document.Text);
         Assert.Equal("external copy", _platform.ClipboardText);
         Assert.Equal(0, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task Copy_ExternalChangeWithUnknownOwner_WhileTheCopySettles_IsNotAdopted()
+    {
+        // Review (unknown owner): on macOS/Linux the OS does not name the owner, so a second change is ambiguous.
+        _platform.OwnerKnown = false;
+        _platform.Document.Text = "abc";
+        _platform.Document.SelectAll();
+        var reads = int.MinValue;
+        _platform.AfterCopy = () => reads = 0;
+        _platform.OnSequenceRead = () =>
+        {
+            if (++reads == 2) _platform.ExternalCopy("external copy");
+        };
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("abc", _platform.Document.Text);
+        Assert.Equal("external copy", _platform.ClipboardText);
+        Assert.Equal(0, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task Copy_UnknownOwner_FormatsFirstThenData_IsStillAdopted()
+    {
+        // X11: the copy first shows up without readable text, then with it. Same copy, not an external one.
+        _platform.OwnerKnown = false;
+        _platform.Document.Text = "abc";
+        _platform.Document.SelectAll();
+        var reads = int.MinValue;
+        var selection = "";
+        _platform.AfterCopy = () =>
+        {
+            reads = 0;
+            selection = _platform.ClipboardText;
+            _platform.ExternalCopy(""); // formats announced, data not readable yet
+        };
+        _platform.OnSequenceRead = () => { if (++reads == 2) _platform.ExternalCopy(selection); };
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
     }
 
     [Fact]
@@ -273,13 +368,13 @@ public sealed class AppControllerTests : IDisposable
     {
         _platform.Document.Text = "abc";
         _platform.Document.SelectAll();
-        var flushed = false;
-        _platform.BeforeWrite = text =>
+        // After the copy settled and was adopted, the target app flushes it (same owner, same text) before Typlo
+        // writes the result: the write guard must recognise the flush instead of aborting.
+        await _controller.TransformSelectionAsync(text =>
         {
-            // Right before Typlo writes the result, the target app flushes the copy (same owner, same text).
-            if (!flushed && text == "Abc") { flushed = true; _platform.ExternalCopy("abc", owner: _platform.Window); }
-        };
-        await _controller.ChangeCaseAsync();
+            _platform.ExternalCopy(text, owner: _platform.Window);
+            return ("Abc", null);
+        });
         Assert.Equal("Abc", _platform.Document.Text);
         Assert.Equal("original clipboard", _platform.ClipboardText);
     }
@@ -299,6 +394,61 @@ public sealed class AppControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Undo_ThroughTheRealHotkey_IsNotInvalidatedByItsOwnKeyPress()
+    {
+        // Review: the hook reports Ctrl+Alt+Shift+Z as a shortcut before the hotkey handler runs.
+        _platform.Document.Text = "abc";
+        _platform.Document.SelectAll();
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc", _platform.Document.Text);
+        _platform.PressHotkey("Ctrl+Alt+Shift+Z");
+        await WaitUntil(() => _platform.Document.Text == "abc");
+        Assert.Equal("abc", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task Undo_UnrelatedShortcut_InvalidatesIt()
+    {
+        _platform.Document.Text = "abc";
+        _platform.Document.SelectAll();
+        await _controller.ChangeCaseAsync();
+        _platform.UserKey(TypedKey.ForShortcut(Hotkey.TryParse("Ctrl+V"))); // the user pastes something
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("Abc", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task Undo_CaretMovedWhileUndoWaits_DoesNotTouchTheOtherOccurrence()
+    {
+        _platform.Document.Text = "abc Abc";
+        _platform.Document.Anchor = 0;
+        _platform.Document.Caret = 3;
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc Abc", _platform.Document.Text);
+        _platform.BeforeModifiers = () => { _platform.UserMoveCaret(7); return Task.CompletedTask; };
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("Abc Abc", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task Undo_CaretMovedDuringThePasteSettle_IsNotRecorded()
+    {
+        _platform.Document.Text = "abc Abc";
+        _platform.Document.Anchor = 0;
+        _platform.Document.Caret = 3;
+        _platform.AfterPaste = () => _platform.UserMoveCaret(7);
+        await _controller.ChangeCaseAsync();
+        _platform.AfterPaste = null;
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("Abc Abc", _platform.Document.Text);
+    }
+
+    private static async Task WaitUntil(Func<bool> condition)
+    {
+        for (var i = 0; i < 100 && !condition(); i++) await Task.Delay(30);
+    }
+
+    [Fact]
     public async Task Undo_IsInvalidatedByBackspaceAndClicks_EvenWithoutSnippets()
     {
         _platform.Document.Text = "abc";
@@ -310,7 +460,6 @@ public sealed class AppControllerTests : IDisposable
         _platform.Document.Type("c");
         await _controller.UndoLastTransformAsync();
         Assert.Equal("Abc", _platform.Document.Text);
-        Assert.False(_platform.TypingWatch);
     }
 
     [Theory]
@@ -387,15 +536,26 @@ public sealed class AppControllerTests : IDisposable
         public TaskCompletionSource ModifiersEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string Name => "Fake platform (no OS access)";
         public PlatformCapabilities Capabilities { get; } = new(true, true, true, true);
-        public event Action<int>? HotkeyPressed { add { } remove { } }
+        public event Action<int>? HotkeyPressed;
+        private readonly Dictionary<Hotkey, int> _hotkeys = [];
+        public bool OwnerKnown = true;
+        public int TypedTextCount;
+        public Action<int>? OnTypeChar;
+        public Action? AfterPaste;
+        /// <summary>The user presses a hotkey: the hook sees the shortcut first, then the OS delivers the hotkey.</summary>
+        public void PressHotkey(string text)
+        {
+            var hotkey = Hotkey.TryParse(text)!;
+            KeyTyped?.Invoke(TypedKey.ForShortcut(hotkey));
+            if (_hotkeys.TryGetValue(hotkey, out var id)) HotkeyPressed?.Invoke(id);
+        }
         public event Action<RawClip>? ClipboardCaptured { add { } remove { } }
         public event Action<TypedKey>? KeyTyped;
-        public bool RegisterHotkey(int id, Hotkey hotkey) => true;
-        public void UnregisterAllHotkeys() { }
+        public bool RegisterHotkey(int id, Hotkey hotkey) { _hotkeys[hotkey] = id; return true; }
+        public void UnregisterAllHotkeys() => _hotkeys.Clear();
         public IDisposable SuspendCapture() => new Scope();
         private ulong _sequence = 1;
         public Action? OnSequenceRead;
-        public Action<string>? BeforeWrite;
         public ulong ClipboardSequence
         {
             get { OnSequenceRead?.Invoke(); return _sequence; }
@@ -403,9 +563,9 @@ public sealed class AppControllerTests : IDisposable
         }
         public nint ClipboardOwner;
         public void ExternalCopy(string text, nint owner = 0) { ClipboardText = text; _sequence++; ClipboardOwner = owner; }
-        public bool? IsClipboardOwnedBy(nint window) => ClipboardOwner == 0 ? null : ClipboardOwner == window;
+        public bool? IsClipboardOwnedBy(nint window) => !OwnerKnown || ClipboardOwner == 0 ? null : ClipboardOwner == window;
         public string? ReadText() => ClipboardText;
-        public void SetText(string text) { BeforeWrite?.Invoke(text); ExternalCopy(text); AfterWrite?.Invoke(text); }
+        public void SetText(string text) { ExternalCopy(text); AfterWrite?.Invoke(text); }
         public void SetRichText(string text, string? html, string? rtf) => SetText(text);
         public void SetFiles(IReadOnlyList<string> paths) => SetText(string.Join('\n', paths));
         public void SetImage(byte[] png, byte[] bgra, int width, int height) => throw new NotSupportedException();
@@ -441,15 +601,26 @@ public sealed class AppControllerTests : IDisposable
             if (LastCopyWasLine || Document.Selection.Length > 0) ClipboardOwner = Window; // the target app copied
             AfterCopy?.Invoke();
         }
-        public void TypeText(string text) => Document.Type(text);
+        public bool TypeText(string text, Func<bool>? keepGoing = null)
+        {
+            TypedTextCount++;
+            var typed = 0;
+            foreach (var c in text)
+            {
+                if (keepGoing?.Invoke() == false) return false;
+                Document.Type(c.ToString());
+                OnTypeChar?.Invoke(++typed);
+            }
+            return true;
+        }
         public void UserKey(TypedKey key) => KeyTyped?.Invoke(key);
-        public void UserMoveCaret(int caret)
+        public void UserMoveCaret(int caret, bool keepAnchor = false)
         {
             Document.Caret = caret;
-            Document.Anchor = null;
+            if (!keepAnchor) Document.Anchor = null;
             KeyTyped?.Invoke(TypedKey.ResetKey);
         }
-        public void SendPaste() { PasteCount++; Document.Type(ClipboardText); }
+        public void SendPaste() { PasteCount++; Document.Type(ClipboardText); AfterPaste?.Invoke(); }
         public nint ForegroundWindow
         {
             get { OnForegroundRead?.Invoke(); var window = Window; AfterForegroundRead?.Invoke(); return window; }

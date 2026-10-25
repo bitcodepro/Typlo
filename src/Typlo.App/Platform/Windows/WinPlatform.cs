@@ -426,9 +426,13 @@ public sealed class WinPlatform : IPlatform
 
     public void SendCopy() => SendChord(KeyModifiers.Ctrl, "C");
 
-    // Injected input is flagged by Windows, and the typing hook drops flagged events.
-    public unsafe void TypeText(string text)
+    // Injected input is flagged by Windows, and the typing hook drops flagged events. One SendInput call puts the
+    // whole text into the input stream atomically, so it cannot interleave with a later window switch.
+    public unsafe bool TypeText(string text, Func<bool>? keepGoing = null)
     {
+        if (text.IndexOfAny(['\n', '\r', '\t']) >= 0)
+            throw new ArgumentException("Line breaks and tabs would act as Enter/Tab keys; paste such text instead.");
+        if (keepGoing?.Invoke() == false) return false;
         var inputs = new List<INPUT>(text.Length * 2);
         void Key(ushort vk, ushort scan, uint flags)
         {
@@ -440,16 +444,12 @@ public sealed class WinPlatform : IPlatform
         }
         foreach (var c in text)
         {
-            switch (c)
-            {
-                case '\r': continue;
-                case '\n': Key(0x0D, 0, 0); Key(0x0D, 0, KEYEVENTF_KEYUP); break; // Enter
-                case '\t': Key(0x09, 0, 0); Key(0x09, 0, KEYEVENTF_KEYUP); break; // Tab
-                default: Key(0, c, KEYEVENTF_UNICODE); Key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP); break;
-            }
+            Key(0, c, KEYEVENTF_UNICODE);
+            Key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
         }
         var array = inputs.ToArray();
         fixed (INPUT* p = array) SendInput((uint)array.Length, p, sizeof(INPUT));
+        return true;
     }
     public void SendPaste() => SendChord(KeyModifiers.Ctrl, "V");
 
