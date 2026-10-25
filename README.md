@@ -6,6 +6,7 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
    - `Ctrl+Alt+Shift+Space` – toggle between the pair (EN ⇄ RU by default)
    - `Ctrl+Alt+Shift+E` / `Ctrl+Alt+Shift+R` – convert into English / Russian (Ukrainian available)
    - Nothing selected? The word left of the caret is converted (can be turned off).
+     Punctuation inside a wrong-layout word is included: `htdm.dftim` → `ревьюваешь`.
    - The clipboard is restored afterwards; the system layout is switched too (Windows, Linux X11).
    - `Ctrl+Alt+Shift+C` cycles the case (lower → Title → UPPER); `Ctrl+Alt+Shift+T` transliterates (Привет ⇄ Privet).
    - Snippets: typing a trigger such as `;addr` replaces it with saved text, in any keyboard layout.

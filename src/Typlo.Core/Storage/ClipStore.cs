@@ -231,17 +231,34 @@ public sealed class ClipStore : IDisposable
         if (string.IsNullOrEmpty(query)) return found;
         const int batch = 32;
         long lastId = 0;
+        long lastSearchId;
+        cancel.ThrowIfCancellationRequested();
+        lock (_lock)
+        {
+            using var max = Cmd("SELECT COALESCE(MAX(id),0) FROM clips");
+            lastSearchId = (long)max.ExecuteScalar()!;
+        }
         while (true)
         {
+            cancel.ThrowIfCancellationRequested();
             // Read a small batch under the lock, decrypt and search outside it: saving a new clip never waits
             // for a whole search over a large history.
             var rows = new List<(long Id, byte[] Payload)>(batch);
             lock (_lock)
             {
-                using var cmd = Cmd("SELECT id, payload FROM clips WHERE kind IN ($t, $f) AND id > $last ORDER BY id LIMIT $n",
-                    ("$t", (int)ClipKind.Text), ("$f", (int)ClipKind.Files), ("$last", lastId), ("$n", batch));
+                cancel.ThrowIfCancellationRequested();
+                using var cmd = Cmd("SELECT id, payload FROM clips WHERE kind IN ($t, $f) AND id > $last AND id <= $max ORDER BY id LIMIT $n",
+                    ("$t", (int)ClipKind.Text), ("$f", (int)ClipKind.Files), ("$last", lastId), ("$max", lastSearchId), ("$n", batch));
                 using var r = cmd.ExecuteReader();
-                while (r.Read()) rows.Add((r.GetInt64(0), (byte[])r[1]));
+                long bytes = 0;
+                while (r.Read())
+                {
+                    cancel.ThrowIfCancellationRequested();
+                    var payload = (byte[])r[1];
+                    rows.Add((r.GetInt64(0), payload));
+                    bytes += payload.LongLength;
+                    if (bytes >= 4 * 1024 * 1024) break;
+                }
             }
             if (rows.Count == 0) return found;
             foreach (var (id, payload) in rows)

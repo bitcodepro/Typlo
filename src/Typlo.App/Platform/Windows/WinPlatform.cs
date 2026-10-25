@@ -297,7 +297,7 @@ public sealed class WinPlatform : IPlatform
             if (ReadBytes(fmt) is { } data) list.Add((fmt.ToString(System.Globalization.CultureInfo.InvariantCulture), data));
         }
         return new ClipboardSnapshot(list);
-    }) ?? new ClipboardSnapshot([]));
+    }) ?? throw new IOException("Clipboard is locked by another application."));
 
     public void Restore(ClipboardSnapshot snapshot) => Invoke(() => WriteClipboard(() =>
     {

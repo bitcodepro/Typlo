@@ -8,5 +8,6 @@
   <ItemGroup>
     <Using Include="Xunit" />
     <ProjectReference Include="..\..\src\Typlo.Core\Typlo.Core.csproj" />
+    <ProjectReference Include="..\..\src\Typlo.App\Typlo.App.csproj" />
   </ItemGroup>
 </Project>

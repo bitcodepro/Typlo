@@ -175,6 +175,8 @@ internal static class SelfTest
 
             await Check("last word is converted when nothing is selected", () => ConvertInTextBox(controller, platform,
                 "Привет ghbdtn", KeyboardLayouts.Russian, "Привет привет", selectAll: false), when: caps.SimulateInput);
+            await Check("last word includes punctuation that is a letter in the target layout", () => ConvertInTextBox(controller, platform,
+                "Привет htdm.dftim", KeyboardLayouts.Russian, "Привет ревьюваешь", selectAll: false), when: caps.SimulateInput);
 
             await Check("change case cycles lower → Title → UPPER in a text box", async () =>
                 await TransformInTextBox(platform, "hello world", controller.ChangeCaseAsync, "Hello World")

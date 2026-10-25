@@ -189,19 +189,14 @@ public sealed class AppController : IDisposable
         ClipboardSnapshot? snapshot = null;
         try
         {
-            await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromSeconds(1));
             var window = _platform.ForegroundWindow;
+            await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromSeconds(1));
+            if (!IsTargetActive(window)) return;
             using var _ = _platform.SuspendCapture();
-            snapshot = _platform.Snapshot();
-            _expectedSequence = _platform.ClipboardSequence;
-            var text = await CopySelectionAsync();
+            snapshot = CaptureClipboard();
+            var text = await CopySelectionAsync(window);
             if (text is null && Settings.ConvertLastWord)
-            {
-                // Nothing selected: select the word left of the caret and try again.
-                _platform.SendChord(OperatingSystem.IsMacOS() ? KeyModifiers.Alt | KeyModifiers.Shift : KeyModifiers.Ctrl | KeyModifiers.Shift, "Left");
-                await Task.Delay(40);
-                text = await CopySelectionAsync();
-            }
+                text = await SelectLastTokenAsync(window);
             if (string.IsNullOrEmpty(text))
             {
                 Log.Info("Text tools: nothing selected");
@@ -234,6 +229,17 @@ public sealed class AppController : IDisposable
     /// <summary>Clipboard sequence right after our last own write or triggered copy.</summary>
     private ulong _expectedSequence;
 
+    private bool IsTargetActive(nint window) => window != 0 && _platform.ForegroundWindow == window;
+
+    private ClipboardSnapshot CaptureClipboard()
+    {
+        var sequence = _platform.ClipboardSequence;
+        var snapshot = _platform.Snapshot();
+        if (_platform.ClipboardSequence != sequence) throw new ClipboardTakenException();
+        _expectedSequence = sequence;
+        return snapshot;
+    }
+
     /// <summary>
     /// Restores the user's clipboard, unless something else was copied since our last change
     /// (the user copied a new item meanwhile: keep it).
@@ -263,10 +269,17 @@ public sealed class AppController : IDisposable
 
     /// <summary>Writes the clipboard only if it still holds what we expect, so a fresh copy is never overwritten.</summary>
     private void SetOwnText(string text)
+        => WriteOwnClipboard(() => _platform.SetText(text), text);
+
+    private void WriteOwnClipboard(Action write, string? expectedText = null)
     {
         EnsureClipboardIsOurs();
-        _platform.SetText(text);
-        _expectedSequence = _platform.ClipboardSequence;
+        write();
+        var sequence = _platform.ClipboardSequence;
+        // A write can be followed immediately by an external copy, before we read its sequence number.
+        if ((expectedText is not null && _platform.ReadText() != expectedText) || _platform.ClipboardSequence != sequence)
+            throw new ClipboardTakenException();
+        _expectedSequence = sequence;
     }
 
     /// <summary>
@@ -275,9 +288,10 @@ public sealed class AppController : IDisposable
     /// </summary>
     private async Task<bool> PasteTextAsync(string text, nint window)
     {
+        if (!IsTargetActive(window)) return false;
         SetOwnText(text);
         await Task.Delay(30);
-        if (window != 0 && _platform.ForegroundWindow != window)
+        if (!IsTargetActive(window))
         {
             Log.Info("Paste skipped: the active window changed");
             return false;
@@ -309,24 +323,28 @@ public sealed class AppController : IDisposable
         {
             await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromSeconds(1));
             var window = _platform.ForegroundWindow;
-            if (last.Window != 0 && window != last.Window)
+            if (last.Window == 0 || window != last.Window)
             {
                 Log.Info("Undo skipped: another window is active");
                 return;
             }
             using var _ = _platform.SuspendCapture();
-            snapshot = _platform.Snapshot();
-            _expectedSequence = _platform.ClipboardSequence;
+            snapshot = CaptureClipboard();
             // Editors move over a line break in one step, so count "\r\n" once.
             var expected = last.Result.Replace("\r\n", "\n");
-            if (expected.Length > 2000) return;
-            for (var i = 0; i < expected.Length; i++) _platform.SendChord(KeyModifiers.Shift, "Left");
+            var steps = System.Globalization.StringInfo.ParseCombiningCharacters(expected).Length;
+            if (steps > 2000) return;
+            for (var i = 0; i < steps; i++)
+            {
+                if (!IsTargetActive(window)) { _lastTransform = null; return; }
+                _platform.SendChord(KeyModifiers.Shift, "Left");
+            }
             await Task.Delay(40);
             // Only replace what Typlo inserted: if the user typed or moved since, the selection is different.
-            var selected = (await CopySelectionAsync())?.Replace("\r\n", "\n");
+            var selected = (await CopySelectionAsync(window))?.Replace("\r\n", "\n");
             if (selected != expected)
             {
-                _platform.SendChord(KeyModifiers.None, "Right"); // collapse the selection back to where the caret was
+                if (IsTargetActive(window)) _platform.SendChord(KeyModifiers.None, "Right");
                 _lastTransform = null;
                 Log.Info("Undo skipped: the text before the caret is no longer the converted text");
                 return;
@@ -345,6 +363,7 @@ public sealed class AppController : IDisposable
     // ---------------------------------------------------------------- snippets
 
     private readonly SnippetMatcher _snippets = new();
+    private long _typingVersion;
 
     private void ApplySnippets()
     {
@@ -352,8 +371,13 @@ public sealed class AppController : IDisposable
         _platform.SetTypingWatch(_snippets.HasSnippets && _platform.Capabilities.SimulateInput);
     }
 
+    /// <summary>True while Typlo itself sends Backspace/paste for a snippet: those keys are not user typing.</summary>
+    private volatile bool _sendingOwnKeys;
+
     private void OnKeyTyped(TypedKey key)
     {
+        if (_sendingOwnKeys) return;
+        var version = Interlocked.Increment(ref _typingVersion);
         Snippet? hit;
         lock (_snippets)
         {
@@ -363,35 +387,52 @@ public sealed class AppController : IDisposable
         }
         // New typing makes an older conversion impossible to undo safely.
         _lastTransform = null;
-        // Never block the hook thread: expand on the thread pool, but remember the window right away.
+        // Expand on the thread pool, but remember the source window before dispatching.
         if (hit is not null)
-            ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
             {
                 var window = _platform.ForegroundWindow;
-                _ = ExpandSnippetAsync(hit, window);
-            });
+                if (window == 0) return;
+                ThreadPool.QueueUserWorkItem(_ => _ = ExpandSnippetAsync(hit, window, version));
+            }
+            catch (Exception e) { Log.Error("Cannot capture snippet target", e); }
+        }
     }
 
     /// <summary>Deletes the typed trigger and pastes the snippet text in its place.</summary>
     /// <param name="window">The window that was active when the trigger was typed; nothing happens in any other.</param>
-    public async Task ExpandSnippetAsync(Snippet snippet, nint window)
+    public Task ExpandSnippetAsync(Snippet snippet, nint window) =>
+        ExpandSnippetAsync(snippet, window, Interlocked.Read(ref _typingVersion));
+
+    private async Task ExpandSnippetAsync(Snippet snippet, nint window, long typingVersion)
     {
         if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(2))) return;
         ClipboardSnapshot? snapshot = null;
         try
         {
             await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromMilliseconds(500));
-            if (window != 0 && _platform.ForegroundWindow != window)
+            if (!IsTargetActive(window) || Interlocked.Read(ref _typingVersion) != typingVersion)
             {
                 Log.Info("Snippet skipped: the user switched to another window");
                 return;
             }
             using var _ = _platform.SuspendCapture();
-            snapshot = _platform.Snapshot();
-            _expectedSequence = _platform.ClipboardSequence;
-            for (var i = 0; i < snippet.Trigger.Trim().Length; i++) _platform.SendChord(KeyModifiers.None, "Backspace");
-            await Task.Delay(20);
-            if (await PasteTextAsync(snippet.Text, window)) Log.Info("Snippet expanded");
+            snapshot = CaptureClipboard();
+            _lastTransform = null;
+            _sendingOwnKeys = true;
+            try
+            {
+                for (var i = 0; i < snippet.Trigger.Trim().Length; i++)
+                {
+                    if (!IsTargetActive(window) || Interlocked.Read(ref _typingVersion) != typingVersion) return;
+                    _platform.SendChord(KeyModifiers.None, "Backspace");
+                }
+                await Task.Delay(20);
+                if (Interlocked.Read(ref _typingVersion) != typingVersion) return;
+                if (await PasteTextAsync(snippet.Text, window)) Log.Info("Snippet expanded");
+            }
+            finally { _sendingOwnKeys = false; }
         }
         catch (ClipboardTakenException) { Log.Info("Snippet stopped: another app changed the clipboard meanwhile"); }
         catch (Exception e) { Log.Error("Snippet expansion failed", e); }
@@ -403,19 +444,26 @@ public sealed class AppController : IDisposable
     }
 
     /// <summary>Sends Copy and returns the selected text, or null when nothing is selected.</summary>
-    private async Task<string?> CopySelectionAsync()
+    private async Task<string?> CopySelectionAsync(nint window)
     {
+        if (!IsTargetActive(window)) return null;
         // A unique placeholder guarantees the copy is visible as a change even when the selection
         // equals what was already on the clipboard (content-hashing platforms such as Linux).
-        SetOwnText("\u2063typlo-" + Guid.NewGuid().ToString("N"));
+        var placeholder = "\u2063typlo-" + Guid.NewGuid().ToString("N");
+        SetOwnText(placeholder);
         var before = _platform.ClipboardSequence;
+        if (!IsTargetActive(window)) return null;
         _platform.SendCopy();
         if (!await WaitForClipboardChange(before, TimeSpan.FromMilliseconds(600))) return null;
+        if (!IsTargetActive(window)) return null;
         _expectedSequence = _platform.ClipboardSequence; // the copy we triggered
         var text = _platform.ReadText();
-        if (string.IsNullOrEmpty(text) || text.StartsWith('\u2063')) return null;
+        EnsureClipboardIsOurs();
+        if (string.IsNullOrEmpty(text) || text == placeholder) return null;
         // VS Code and Visual Studio copy the whole current line when nothing is selected; they mark such copies.
-        if (_platform.IsEmptySelectionLineCopy()) return null;
+        var lineCopy = _platform.IsEmptySelectionLineCopy();
+        EnsureClipboardIsOurs();
+        if (lineCopy) return null;
         return text;
     }
 
@@ -428,6 +476,46 @@ public sealed class AppController : IDisposable
             await Task.Delay(10);
         }
         return false;
+    }
+
+    private async Task<string?> SelectLastTokenAsync(nint window)
+    {
+        // Editors split words at '.' and ';', which are letters in another keyboard layout.
+        // Extend to a whitespace boundary, then narrow the selection to the complete token.
+        var modifiers = (OperatingSystem.IsMacOS() ? KeyModifiers.Alt : KeyModifiers.Ctrl) | KeyModifiers.Shift;
+        string? previous = null;
+        for (var part = 0; part < 32; part++)
+        {
+            if (!IsTargetActive(window)) return null;
+            EnsureClipboardIsOurs();
+            _platform.SendChord(modifiers, "Left");
+            await Task.Delay(20);
+            var selected = await CopySelectionAsync(window);
+            if (string.IsNullOrEmpty(selected) || selected.Length > 4096) break;
+            var end = selected.Length;
+            while (end > 0 && char.IsWhiteSpace(selected[end - 1])) end--;
+            var start = end;
+            while (start > 0 && !char.IsWhiteSpace(selected[start - 1])) start--;
+            if (start > 0 || selected == previous)
+            {
+                if (start == end) break;
+                var token = selected[start..]; // retain any spaces that were after the word
+                if (start == 0) return token;
+                _platform.SendChord(KeyModifiers.None, "Right");
+                var steps = System.Globalization.StringInfo.ParseCombiningCharacters(token.Replace("\r\n", "\n")).Length;
+                if (steps > 2000) return null;
+                for (var i = 0; i < steps; i++)
+                {
+                    if (!IsTargetActive(window)) return null;
+                    _platform.SendChord(KeyModifiers.Shift, "Left");
+                }
+                if (await CopySelectionAsync(window) == token) return token;
+                break;
+            }
+            previous = selected;
+        }
+        if (IsTargetActive(window)) _platform.SendChord(KeyModifiers.None, "Right");
+        return null;
     }
 
     /// <summary>When set, nothing is stored until this moment (<see cref="DateTimeOffset.MaxValue"/> = until restart).</summary>
@@ -487,20 +575,22 @@ public sealed class AppController : IDisposable
         {
             var content = Store.Get(id);
             if (content is null) return;
+            _lastTransform = null;
+            _expectedSequence = _platform.ClipboardSequence;
             switch (content.Kind)
             {
                 case ClipKind.Text when content.HasFormatting && !plainText:
-                    _platform.SetRichText(content.Text!, content.Html, content.Rtf);
+                    WriteOwnClipboard(() => _platform.SetRichText(content.Text!, content.Html, content.Rtf), content.Text);
                     break;
                 case ClipKind.Text:
-                    _platform.SetText(content.Text!);
+                    SetOwnText(content.Text!);
                     break;
                 case ClipKind.Files:
-                    _platform.SetFiles(content.Files);
+                    WriteOwnClipboard(() => _platform.SetFiles(content.Files));
                     break;
                 default:
                     var (bgra, w, h) = ImageCodec.DecodeBgra(content.ImagePng!);
-                    _platform.SetImage(content.ImagePng!, bgra, w, h);
+                    WriteOwnClipboard(() => _platform.SetImage(content.ImagePng!, bgra, w, h));
                     break;
             }
             Store.Touch(id);
@@ -513,8 +603,10 @@ public sealed class AppController : IDisposable
                 Log.Info("Paste skipped: the target window is not active");
                 return;
             }
+            EnsureClipboardIsOurs();
             _platform.SendPaste();
         }
+        catch (ClipboardTakenException) { Log.Info("Paste stopped: another app changed the clipboard meanwhile"); }
         catch (Exception e) { Log.Error("Paste failed", e); }
         finally { _convertGate.Release(); }
     }

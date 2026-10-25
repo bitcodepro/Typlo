@@ -10,7 +10,8 @@ internal static class EditorClipboard
         try
         {
             using var doc = JsonDocument.Parse(json.TrimEnd('\0'));
-            return doc.RootElement.TryGetProperty("isFromEmptySelection", out var v) && v.ValueKind == JsonValueKind.True;
+            return doc.RootElement.ValueKind == JsonValueKind.Object &&
+                   doc.RootElement.TryGetProperty("isFromEmptySelection", out var v) && v.ValueKind == JsonValueKind.True;
         }
         catch (JsonException) { return false; }
     }

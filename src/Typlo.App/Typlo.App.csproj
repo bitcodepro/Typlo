@@ -16,5 +16,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Typlo.Core\Typlo.Core.csproj" />
+    <InternalsVisibleTo Include="Typlo.Tests" />
   </ItemGroup>
 </Project>
