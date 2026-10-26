@@ -18,6 +18,10 @@ internal static partial class X11Clients
     [LibraryImport(LibX11, StringMarshalling = StringMarshalling.Utf8)] private static partial nint XOpenDisplay(string? name);
     [LibraryImport(LibX11, StringMarshalling = StringMarshalling.Utf8)] private static partial nuint XInternAtom(nint display, string name, [MarshalAs(UnmanagedType.Bool)] bool onlyIfExists);
     [LibraryImport(LibX11)] private static partial nuint XGetSelectionOwner(nint display, nuint selection);
+    [LibraryImport(LibX11)] private static partial nuint XDefaultRootWindow(nint display);
+    [LibraryImport(LibX11)] private static partial int XGetWindowProperty(nint display, nuint window, nuint property,
+        nint offset, nint length, [MarshalAs(UnmanagedType.Bool)] bool delete, nuint requestedType,
+        out nuint actualType, out int format, out nuint count, out nuint remaining, out nint data);
     [LibraryImport(LibX11)] private static partial int XDisplayKeycodes(nint display, out int min, out int max);
     [LibraryImport(LibX11)] private static partial nint XGetKeyboardMapping(nint display, byte first, int count, out int keysymsPerKeycode);
     [LibraryImport(LibX11)] private static partial int XFree(nint data);
@@ -48,6 +52,26 @@ internal static partial class X11Clients
             catch (Exception e) { Log.Error("Cannot open the X display", e); }
         }
         return _display;
+    }
+
+    /// <summary>The EWMH active window, without starting an xdotool process for every typed character.</summary>
+    public static nint ActiveWindow()
+    {
+        lock (Gate)
+        {
+            var display = Display();
+            if (display == 0) return 0;
+            var atom = XInternAtom(display, "_NET_ACTIVE_WINDOW", true);
+            if (atom == 0) return 0;
+            var status = XGetWindowProperty(display, XDefaultRootWindow(display), atom, 0, 1, false, 0,
+                out _, out var format, out var count, out _, out var data);
+            try
+            {
+                // Xlib represents a format-32 property as native longs, padded to 64 bits on a 64-bit host.
+                return status == 0 && format == 32 && count == 1 && data != 0 ? Marshal.ReadIntPtr(data) : 0;
+            }
+            finally { if (data != 0) XFree(data); }
+        }
     }
 
     /// <summary>

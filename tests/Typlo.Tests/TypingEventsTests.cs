@@ -8,14 +8,14 @@ namespace Typlo.Tests;
 /// <summary>Runs key sequences through the real hook translator (no native hook is started).</summary>
 public class TypingEventsTests
 {
-    private sealed class FakeHook() : GlobalHookBase(SharpHook.Providers.UioHookProvider.Instance)
+    internal sealed class FakeHook() : GlobalHookBase(SharpHook.Providers.UioHookProvider.Instance)
     {
-        public void Press(KeyCode code, ushort raw = 0) => Raise(EventType.KeyPressed, code, raw);
-        public void Release(KeyCode code) => Raise(EventType.KeyReleased, code, 0);
+        public void Press(KeyCode code, ushort raw = 0, bool simulated = false) => Raise(EventType.KeyPressed, code, raw, simulated);
+        public void Release(KeyCode code, bool simulated = false) => Raise(EventType.KeyReleased, code, 0, simulated);
 
-        private void Raise(EventType type, KeyCode code, ushort raw)
+        private void Raise(EventType type, KeyCode code, ushort raw, bool simulated)
         {
-            var e = new UioHookEvent { Type = type, Mask = EventMask.None };
+            var e = new UioHookEvent { Type = type, Mask = simulated ? EventMask.SimulatedEvent : EventMask.None };
             e.Keyboard.KeyCode = code;
             e.Keyboard.RawCode = raw;
             DispatchEvent(ref e);
@@ -52,6 +52,86 @@ public class TypingEventsTests
         _hook.Release(KeyCode.VcEnd);
         _hook.Press(KeyCode.VcBackspace);
         Assert.Equal([TypedKey.ResetKey, TypedKey.BackspaceKey], _raised);
+    }
+
+    [Theory]
+    [InlineData(KeyCode.VcLeftAlt)]
+    [InlineData(KeyCode.VcLeftControl)]
+    public void ModifierOnlyLayoutSwitch_IsAnInputBoundary(KeyCode modifier)
+    {
+        _hook.Press(modifier);
+        _hook.Press(KeyCode.VcLeftShift);
+        _hook.Release(KeyCode.VcLeftShift);
+        _hook.Release(modifier);
+        Assert.Equal([TypedKey.ResetKey], _raised);
+    }
+
+    [Fact]
+    public void FullTyploShortcut_DoesNotProduceAnExtraLayoutReset()
+    {
+        _hook.Press(KeyCode.VcLeftControl);
+        _hook.Press(KeyCode.VcLeftAlt);
+        _hook.Press(KeyCode.VcLeftShift);
+        _hook.Press(KeyCode.VcSpace);
+        _hook.Release(KeyCode.VcSpace);
+        _hook.Release(KeyCode.VcLeftShift);
+        _hook.Release(KeyCode.VcLeftAlt);
+        _hook.Release(KeyCode.VcLeftControl);
+        Assert.Equal(Hotkey.TryParse("Ctrl+Alt+Shift+Space"), Assert.Single(_raised).Shortcut);
+    }
+
+    [Fact]
+    public void HeldDefaultShortcut_SyntheticCtrlTapAndForcedReleases_DoNotResetInput()
+    {
+        _hook.Press(KeyCode.VcLeftControl);
+        _hook.Press(KeyCode.VcLeftAlt);
+        _hook.Press(KeyCode.VcLeftShift);
+        _hook.Press(KeyCode.VcSpace);
+        _hook.Release(KeyCode.VcSpace);
+        // WinPlatform.WaitForModifiersReleasedAsync taps Ctrl, then releases the held modifiers.
+        _hook.Press(KeyCode.VcLeftControl, simulated: true);
+        _hook.Release(KeyCode.VcLeftControl, simulated: true);
+        _hook.Release(KeyCode.VcLeftControl, simulated: true);
+        _hook.Release(KeyCode.VcLeftShift, simulated: true);
+        _hook.Release(KeyCode.VcLeftAlt, simulated: true);
+        _hook.Release(KeyCode.VcLeftControl);
+        _hook.Release(KeyCode.VcLeftShift);
+        _hook.Release(KeyCode.VcLeftAlt);
+        Assert.Equal(Hotkey.TryParse("Ctrl+Alt+Shift+Space"), Assert.Single(_raised).Shortcut);
+        _hook.Press(KeyCode.VcA);
+        Assert.Equal(TypedKey.ForChar('a'), _raised[^1]); // no modifier remains logically stuck
+    }
+
+    [Fact]
+    public void SyntheticReleases_DoNotCompleteAPhysicalLayoutSwitch()
+    {
+        _hook.Press(KeyCode.VcLeftControl);
+        _hook.Press(KeyCode.VcLeftShift);
+        _hook.Release(KeyCode.VcLeftShift, simulated: true);
+        _hook.Release(KeyCode.VcLeftControl, simulated: true);
+        Assert.Empty(_raised);
+        _hook.Release(KeyCode.VcLeftShift);
+        _hook.Release(KeyCode.VcLeftControl);
+        Assert.Equal([TypedKey.ResetKey], _raised);
+    }
+
+    [Fact]
+    public void InjectedCopy_DoesNotCancelAPhysicalLayoutSwitch()
+    {
+        _hook.Press(KeyCode.VcLeftControl);
+        _hook.Press(KeyCode.VcLeftShift);
+        _hook.Press(KeyCode.VcC, simulated: true);
+        _hook.Release(KeyCode.VcC, simulated: true);
+        _hook.Release(KeyCode.VcLeftShift);
+        _hook.Release(KeyCode.VcLeftControl);
+        Assert.Equal([TypedKey.ResetKey], _raised);
+    }
+
+    [Fact]
+    public void BareFunctionKeyIsReportedSoItsOwnHotkeyCanBeRecognized()
+    {
+        _hook.Press(KeyCode.VcF9);
+        Assert.Equal(Hotkey.TryParse("F9"), Assert.Single(_raised).Shortcut);
     }
 
     [Fact]

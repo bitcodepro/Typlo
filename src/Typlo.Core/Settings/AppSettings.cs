@@ -65,7 +65,7 @@ public sealed class AppSettings
     /// <summary>Typed triggers replaced by text (";addr" → address). Stored in settings.json, not encrypted.</summary>
     public List<Snippet> Snippets { get; set; } = [];
 
-    /// <summary>With nothing selected, convert the word left of the caret (like Punto Switcher).</summary>
+    /// <summary>With nothing selected, convert only the recently typed input run; never include older adjacent text.</summary>
     public bool ConvertLastWord { get; set; } = true;
 
     /// <summary>Also switch the system keyboard layout to the target after converting.</summary>

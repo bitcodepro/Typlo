@@ -35,6 +35,14 @@ public class LayoutConverterTests
     }
 
     [Fact]
+    public void PunctuationUsesTheSourceKnownFromTypedKeys()
+    {
+        Assert.Equal(",", _conv.Toggle("?", English).Text);
+        Assert.Equal("/", _conv.Toggle(".", Russian).Text);
+        Assert.Equal("?", _conv.ConvertTo("?", English, English).Text);
+    }
+
+    [Fact]
     public void AlreadyInTarget_ReportsUnchanged()
     {
         var r = _conv.ConvertTo("hello world", English);

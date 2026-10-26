@@ -177,14 +177,22 @@ internal static class SelfTest
                 "Привет ghbdtn", KeyboardLayouts.Russian, "Привет привет", selectAll: false), when: caps.SimulateInput);
             await Check("last word includes punctuation that is a letter in the target layout", () => ConvertInTextBox(controller, platform,
                 "Привет htdm.dftim", KeyboardLayouts.Russian, "Привет ревьюваешь", selectAll: false), when: caps.SimulateInput);
+            await Check("only newly typed punctuation is converted next to an existing word", () => ConvertInTextBox(controller, platform,
+                "готовое?", KeyboardLayouts.Russian, "готовое,", selectAll: false, typedSuffix: "?"), when: caps.SimulateInput);
 
-            await Check("change case cycles lower → Title → UPPER in a text box", async () =>
-                await TransformInTextBox(platform, "hello world", controller.ChangeCaseAsync, "Hello World")
-                ?? await TransformInTextBox(platform, "Hello World", controller.ChangeCaseAsync, "HELLO WORLD"), when: caps.SimulateInput);
+            await Check("consecutive case commands cycle in the same text box without reselection", () =>
+                TransformSequenceInTextBox(platform, "hello world",
+                    [(controller.ChangeCaseAsync, "Hello World"), (controller.ChangeCaseAsync, "HELLO WORLD"),
+                     (controller.ChangeCaseAsync, "hello world")]), when: caps.SimulateInput);
 
-            await Check("transliteration Привет ⇄ Privet in a text box", async () =>
-                await TransformInTextBox(platform, "Привет, мир", controller.TransliterateAsync, "Privet, mir")
-                ?? await TransformInTextBox(platform, "Privet", controller.TransliterateAsync, "Привет"), when: caps.SimulateInput);
+            await Check("consecutive transliteration commands reselect results with different lengths", () =>
+                TransformSequenceInTextBox(platform, "щука",
+                    [(controller.TransliterateAsync, "shchuka"), (controller.TransliterateAsync, "щука")]), when: caps.SimulateInput);
+
+            await Check("consecutive layout commands toggle in the same text box without reselection", () =>
+                TransformSequenceInTextBox(platform, "ghbdtn",
+                    [(() => controller.ConvertSelectionAsync(null), "привет"),
+                     (() => controller.ConvertSelectionAsync(null), "ghbdtn")]), when: caps.SimulateInput);
 
             await Check("snippet trigger typed in a text box is replaced", async () =>
             {
@@ -418,10 +426,26 @@ internal static class SelfTest
     }
 
     /// <summary>A key press the typing hook must see as the user's (Typlo filters its own injected keys).</summary>
-    private static void UserKey(IPlatform platform, string key)
+    private static void UserKey(IPlatform platform, string key, KeyModifiers modifiers = KeyModifiers.None)
     {
-        if (platform is HookPlatformBase hook) hook.SendChordAsUser(KeyModifiers.None, key);
-        else platform.SendChord(KeyModifiers.None, key); // Windows: accepted via TypingEvents.AcceptSimulated
+        if (platform is HookPlatformBase hook) hook.SendChordAsUser(modifiers, key);
+        else platform.SendChord(modifiers, key); // Windows: accepted via TypingEvents.AcceptSimulated
+    }
+
+    private static void UserChar(IPlatform platform, char c)
+    {
+        if (c == ' ') { UserKey(platform, "Space"); return; }
+        var layout = KeyboardLayouts.English;
+        var code = layout.CodeOf(c);
+        if (code < 0) throw new ArgumentException("The self-test types physical US keys only.");
+        var normal = layout.Normal[code % layout.Normal.Length];
+        var name = char.IsAsciiLetterOrDigit(normal) ? char.ToUpperInvariant(normal).ToString() : normal switch
+        {
+            '.' => "Period", ',' => "Comma", '/' => "Slash", ';' => "Semicolon", '\'' => "Quote",
+            '[' => "OpenBracket", ']' => "CloseBracket", '\\' => "Backslash", '`' => "Tilde",
+            '-' => "Minus", '=' => "Plus", _ => throw new ArgumentException("Unknown physical key."),
+        };
+        UserKey(platform, name, code >= layout.Normal.Length ? KeyModifiers.Shift : KeyModifiers.None);
     }
 
     private static HashSet<string> Placeholders(string text) =>
@@ -473,8 +497,12 @@ internal static class SelfTest
     }).GetTask();
 
     /// <summary>Puts <paramref name="input"/> in a focused text box, runs <paramref name="action"/> and compares the result.</summary>
-    private static async Task<string?> TransformInTextBox(IPlatform platform, string input, Func<Task> action, string expected,
-        bool select = true, bool multiline = false)
+    private static Task<string?> TransformInTextBox(IPlatform platform, string input, Func<Task> action, string expected,
+        bool select = true, bool multiline = false) =>
+        TransformSequenceInTextBox(platform, input, [(action, expected)], select, multiline);
+
+    private static async Task<string?> TransformSequenceInTextBox(IPlatform platform, string input,
+        (Func<Task> Action, string Expected)[] steps, bool select = true, bool multiline = false)
     {
         Window? window = null;
         TextBox? box = null;
@@ -497,10 +525,14 @@ internal static class SelfTest
                 else box.CaretIndex = input.Length;
             });
             await Task.Delay(300);
-            await action();
-            await Task.Delay(300);
-            var text = (await Dispatcher.UIThread.InvokeAsync(() => box!.Text))?.Replace("\r\n", "\n");
-            return text == expected ? null : $"text box has '{text}', expected '{expected}'";
+            for (var i = 0; i < steps.Length; i++)
+            {
+                await steps[i].Action();
+                await Task.Delay(300);
+                var text = (await Dispatcher.UIThread.InvokeAsync(() => box!.Text))?.Replace("\r\n", "\n");
+                if (text != steps[i].Expected) return $"step {i + 1}: text box has '{text}', expected '{steps[i].Expected}'";
+            }
+            return null;
         }
         finally
         {
@@ -509,13 +541,20 @@ internal static class SelfTest
     }
 
     private static async Task<string?> ConvertInTextBox(AppController controller, IPlatform platform,
-        string input, KeyboardLayout target, string expected, bool selectAll = true)
+        string input, KeyboardLayout target, string expected, bool selectAll = true, string? typedSuffix = null)
     {
+        if (!selectAll && typedSuffix is null)
+        {
+            var start = input.Length;
+            while (start > 0 && !char.IsWhiteSpace(input[start - 1])) start--;
+            typedSuffix = input[start..];
+        }
+        var initial = selectAll ? input : input[..^typedSuffix!.Length];
         Window? window = null;
         TextBox? box = null;
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
-            box = new TextBox { Text = input, AcceptsReturn = false };
+            box = new TextBox { Text = initial, AcceptsReturn = false };
             window = new Window { Width = 400, Height = 120, Content = box, Title = "Typlo self-test", Topmost = true };
             window.Show();
             window.Activate();
@@ -532,10 +571,15 @@ internal static class SelfTest
                 else
                 {
                     box.ClearSelection();
-                    box.CaretIndex = input.Length;
+                    box.CaretIndex = initial.Length;
                 }
             });
             await Task.Delay(300);
+            if (!selectAll)
+            {
+                foreach (var c in typedSuffix!) { UserChar(platform, c); await Task.Delay(20); }
+                await Task.Delay(100); // let the hook report the user's input before issuing the command
+            }
             await controller.ConvertSelectionAsync(target);
             await Task.Delay(300);
             var text = await Dispatcher.UIThread.InvokeAsync(() => box!.Text);

@@ -70,6 +70,21 @@ public interface IPlatform : IDisposable
     Task WaitForModifiersReleasedAsync(TimeSpan timeout);
     /// <summary>Presses and releases a key combination in the focused app.</summary>
     void SendChord(KeyModifiers modifiers, string key);
+    /// <summary>
+    /// Selects the given number of characters immediately left of the caret. Checks the caller's
+    /// clipboard/focus/input guard before each key, or once before an atomic input batch.
+    /// </summary>
+    async Task<bool> SelectPreviousCharactersAsync(int count, Func<bool> keepGoing)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        for (var i = 0; i < count; i++)
+        {
+            if (!keepGoing()) return false;
+            SendChord(KeyModifiers.Shift, "Left");
+        }
+        if (count > 0) await Task.Delay(20);
+        return keepGoing();
+    }
     /// <summary>The platform's copy shortcut (Ctrl+C, or Cmd+C on macOS).</summary>
     void SendCopy();
     /// <summary>

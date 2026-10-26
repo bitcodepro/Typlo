@@ -26,21 +26,23 @@ public sealed class LayoutConverter
     public IReadOnlyList<KeyboardLayout> Layouts => _layouts;
 
     /// <summary>Converts text into <paramref name="target"/>; unchanged if it is already there.</summary>
-    public ConversionResult ConvertTo(string text, KeyboardLayout target)
+    public ConversionResult ConvertTo(string text, KeyboardLayout target, KeyboardLayout? sourceHint = null)
     {
+        if (DetectLayout(text) is null && sourceHint == target)
+            return new ConversionResult(text, null, target);
         // Without letters (e.g. "`" or "?") there is nothing to detect: assume the first other layout.
         var source = DetectSource(text, target)
-            ?? (DetectLayout(text) is null ? _layouts.First(l => l != target) : null);
+            ?? (DetectLayout(text) is null ? sourceHint ?? _layouts.First(l => l != target) : null);
         if (source is null) return new ConversionResult(text, null, target);
         return new ConversionResult(Convert(text, source, target), source, target);
     }
 
     /// <summary>Converts text to the "other" layout: the first candidate that is not the detected one.</summary>
-    public ConversionResult Toggle(string text)
+    public ConversionResult Toggle(string text, KeyboardLayout? sourceHint = null)
     {
-        var current = DetectLayout(text) ?? _layouts[0];
+        var current = DetectLayout(text) ?? sourceHint ?? _layouts[0];
         var target = _layouts.First(l => l != current);
-        return ConvertTo(text, target);
+        return ConvertTo(text, target, sourceHint);
     }
 
     /// <summary>Layout whose letters dominate the text, or null if there are no known letters.</summary>
