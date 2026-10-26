@@ -48,6 +48,10 @@ internal static class TypingEvents
     public static void Attach(IGlobalHook hook, Action<TypedKey> raise, Func<KeyCode, ushort, bool>? isOwnPress = null)
     {
         var down = new HashSet<KeyCode>();
+        // Effective key state also follows injected releases (otherwise Shift/Ctrl can get stuck).
+        // Layout-switch detection uses only physical events: our Ctrl tap and forced releases must
+        // neither start nor complete a modifier-only layout chord.
+        var physicalModifiers = new HashSet<KeyCode>();
         var layoutChordPending = false;
         hook.KeyReleased += (_, e) =>
         {
@@ -55,7 +59,8 @@ internal static class TypingEvents
             lock (down)
             {
                 down.Remove(e.Data.KeyCode);
-                reset = layoutChordPending && !down.Any(IsModifier);
+                if (!e.IsEventSimulated) physicalModifiers.Remove(e.Data.KeyCode);
+                reset = !e.IsEventSimulated && layoutChordPending && physicalModifiers.Count == 0;
                 if (reset) layoutChordPending = false;
             }
             // Modifier-only Alt+Shift / Ctrl+Shift commonly changes the input layout. A full hotkey
@@ -65,6 +70,8 @@ internal static class TypingEvents
         hook.KeyPressed += (_, e) =>
         {
             var code = e.Data.KeyCode;
+            var modifier = IsModifier(code);
+            var own = !modifier && isOwnPress?.Invoke(code, e.Data.RawCode) == true;
             bool shift, shortcut;
             var mods = Typlo.Core.Hotkeys.KeyModifiers.None;
             lock (down)
@@ -76,13 +83,21 @@ internal static class TypingEvents
                 if (down.Contains(KeyCode.VcLeftMeta) || down.Contains(KeyCode.VcRightMeta)) mods |= Typlo.Core.Hotkeys.KeyModifiers.Win;
                 shortcut = mods != Typlo.Core.Hotkeys.KeyModifiers.None;
                 if (shift) mods |= Typlo.Core.Hotkeys.KeyModifiers.Shift;
-                if (!IsModifier(code)) layoutChordPending = false;
-                else if (shift && (mods & (Typlo.Core.Hotkeys.KeyModifiers.Ctrl | Typlo.Core.Hotkeys.KeyModifiers.Alt)) != 0)
-                    layoutChordPending = true;
+                if (!e.IsEventSimulated && !own)
+                {
+                    if (!modifier) layoutChordPending = false;
+                    else
+                    {
+                        physicalModifiers.Add(code);
+                        var physicalShift = physicalModifiers.Contains(KeyCode.VcLeftShift) || physicalModifiers.Contains(KeyCode.VcRightShift);
+                        var physicalCtrlAlt = physicalModifiers.Any(key => key is KeyCode.VcLeftControl or KeyCode.VcRightControl
+                            or KeyCode.VcLeftAlt or KeyCode.VcRightAlt);
+                        if (physicalShift && physicalCtrlAlt) layoutChordPending = true;
+                    }
+                }
             }
             // Modifier presses are never typing; they are also not tracked as own input (text entry may add a Shift).
-            if (IsModifier(code)) return;
-            if (isOwnPress?.Invoke(code, e.Data.RawCode) == true) return;
+            if (modifier || own) return;
             if (e.IsEventSimulated && !(AcceptSimulated && !shortcut && ToChar(code, shift) is not null)) return;
             if (shortcut)
             {

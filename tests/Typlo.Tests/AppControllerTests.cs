@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Diagnostics;
 using System.Text;
+using SharpHook.Data;
 using Typlo.App.Platform;
 using Typlo.App.Platform.Shared;
 using Typlo.App.Services;
@@ -45,6 +46,206 @@ public sealed class AppControllerTests : IDisposable
         Assert.Equal("original clipboard", _platform.ClipboardText);
         Assert.NotNull(untilPaste);
         Assert.True(untilPaste.Value < TimeSpan.FromMilliseconds(600), $"Replacement took {untilPaste.Value.TotalMilliseconds:F0} ms");
+    }
+
+    [Fact]
+    public async Task HeldDefaultShortcut_ActualInjectedModifierSequence_PreservesConversionAndUndo()
+    {
+        using var hook = new TypingEventsTests.FakeHook();
+        TypingEvents.Attach(hook, _platform.UserKey);
+        _platform.CopyLineWhenUnselected = true;
+        _platform.Type("ghbdtn");
+        hook.Press(KeyCode.VcLeftControl);
+        hook.Press(KeyCode.VcLeftAlt);
+        hook.Press(KeyCode.VcLeftShift);
+        hook.Press(KeyCode.VcSpace);
+        hook.Release(KeyCode.VcSpace);
+        _platform.BeforeModifiers = () =>
+        {
+            hook.Press(KeyCode.VcLeftControl, simulated: true);
+            hook.Release(KeyCode.VcLeftControl, simulated: true);
+            hook.Release(KeyCode.VcLeftControl, simulated: true);
+            hook.Release(KeyCode.VcLeftShift, simulated: true);
+            hook.Release(KeyCode.VcLeftAlt, simulated: true);
+            return Task.CompletedTask;
+        };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("привет", _platform.Document.Text);
+        hook.Release(KeyCode.VcLeftControl);
+        hook.Release(KeyCode.VcLeftShift);
+        hook.Release(KeyCode.VcLeftAlt);
+        // Repeat the same forced-release path while Undo already has a valid result to preserve.
+        hook.Press(KeyCode.VcLeftControl);
+        hook.Press(KeyCode.VcLeftAlt);
+        hook.Press(KeyCode.VcLeftShift);
+        hook.Press(KeyCode.VcZ);
+        hook.Release(KeyCode.VcZ);
+        await _controller.UndoLastTransformAsync();
+        hook.Release(KeyCode.VcLeftControl);
+        hook.Release(KeyCode.VcLeftShift);
+        hook.Release(KeyCode.VcLeftAlt);
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConsecutiveCaseCommands_CycleTheSameRangeWithoutReselection(bool explicitSelection)
+    {
+        _platform.Document.Text = "keep ";
+        _platform.Document.Caret = 5;
+        if (explicitSelection)
+        {
+            _platform.Document.Text += "hello";
+            _platform.Document.Anchor = 5;
+            _platform.Document.Caret = 10;
+        }
+        else _platform.Type("hello");
+        foreach (var expected in new[] { "keep Hello", "keep HELLO", "keep hello" })
+        {
+            await _controller.ChangeCaseAsync();
+            Assert.Equal(expected, _platform.Document.Text);
+            Assert.Empty(_platform.Document.Selection);
+        }
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("keep HELLO", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task ConsecutiveLayoutCommands_ToggleTheSameRangeWithoutReselection()
+    {
+        _platform.Document.Text = "keep ";
+        _platform.Document.Caret = 5;
+        _platform.Type("ghbdtn");
+        foreach (var expected in new[] { "keep привет", "keep ghbdtn", "keep привет" })
+        {
+            await _controller.ConvertSelectionAsync(null);
+            Assert.Equal(expected, _platform.Document.Text);
+        }
+    }
+
+    [Fact]
+    public async Task ConsecutiveTransliterationCommands_UseTheChangedLengthOfTheResult()
+    {
+        _platform.Document.Text = "keep щука";
+        _platform.Document.Anchor = 5;
+        _platform.Document.Caret = _platform.Document.Text.Length;
+        foreach (var expected in new[] { "keep shchuka", "keep щука", "keep shchuka" })
+        {
+            await _controller.TransliterateAsync();
+            Assert.Equal(expected, _platform.Document.Text);
+        }
+    }
+
+    [Fact]
+    public async Task ConsecutivePunctuationCommands_PreserveTheKnownSourceLayout()
+    {
+        _platform.Document.Text = "ready";
+        _platform.Document.Caret = 5;
+        _platform.Type("?");
+        foreach (var expected in new[] { "ready,", "ready?", "ready," })
+        {
+            await _controller.ConvertSelectionAsync(null);
+            Assert.Equal(expected, _platform.Document.Text);
+        }
+    }
+
+    [Fact]
+    public async Task ConsecutiveCommand_RevalidatesTheResultBeforeReplacingIt()
+    {
+        _platform.Type("abc");
+        await _controller.ChangeCaseAsync();
+        _platform.Document.Text = "xyz"; // editor changed text without a keyboard event
+        await _controller.ChangeCaseAsync();
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("xyz", _platform.Document.Text);
+        Assert.Equal(1, _platform.PasteCount);
+        Assert.Empty(_platform.Document.Selection);
+    }
+
+    [Fact]
+    public async Task ConsecutiveCommand_UserSelectionDuringRevalidation_IsNotOverwritten()
+    {
+        _platform.Document.Text = "abc keep";
+        _platform.Document.Anchor = 0;
+        _platform.Document.Caret = 3;
+        await _controller.ChangeCaseAsync();
+        _platform.OnLeft = () =>
+        {
+            _platform.OnLeft = null;
+            _platform.Document.Anchor = 4;
+            _platform.UserMoveCaret(8, keepAnchor: true);
+        };
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc keep", _platform.Document.Text);
+        Assert.Equal("keep", _platform.Document.Selection);
+        Assert.Equal(1, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task ConsecutiveCommand_ExternalCopyDuringRevalidation_IsKept()
+    {
+        _platform.Type("abc");
+        await _controller.ChangeCaseAsync();
+        _platform.OnLeft = () => _platform.ExternalCopy("user copy", owner: 99);
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc", _platform.Document.Text);
+        Assert.Equal("user copy", _platform.ClipboardText);
+        Assert.Equal(1, _platform.PasteCount);
+        Assert.Empty(_platform.Document.Selection);
+    }
+
+    [Fact]
+    public async Task ConsecutiveCommand_NoChangePreservesTheRangeForTheNextCommand()
+    {
+        _platform.Type("ghbdtn");
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian); // already in Russian
+        await _controller.ConvertSelectionAsync(null);
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(2, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task ConsecutiveCommand_GraphemesAndLineBreaksDoNotExtendTheRange()
+    {
+        _platform.Document.Text = "keep 😀abc\r\ndef";
+        _platform.Document.Anchor = 5;
+        _platform.Document.Caret = _platform.Document.Text.Length;
+        await _controller.ChangeCaseAsync();
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("keep 😀ABC\r\nDEF", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task ConsecutiveCommand_CaretMovementInvalidatesTheOldRange()
+    {
+        _platform.Type("abc");
+        await _controller.ChangeCaseAsync();
+        _platform.UserMoveCaret(3);
+        _platform.CopyLineWhenUnselected = true;
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc", _platform.Document.Text);
+        Assert.Equal(1, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task ConsecutiveCommand_WindowChangeInvalidatesTheOldRange()
+    {
+        _platform.Type("abc");
+        await _controller.ChangeCaseAsync();
+        _platform.Window = 2;
+        _platform.Document.Text = "Abc";
+        _platform.Document.Caret = 3;
+        _platform.CopyLineWhenUnselected = true;
+        await _controller.ChangeCaseAsync();
+        _platform.Window = 1;
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc", _platform.Document.Text);
+        Assert.Equal(1, _platform.PasteCount);
     }
 
     [Fact]

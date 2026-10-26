@@ -213,6 +213,7 @@ public sealed class AppController : IDisposable
             var inputVersion = Interlocked.Read(ref _typingVersion);
             bool NoInputSince() => Interlocked.Read(ref _typingVersion) == inputVersion;
             var run = _recentTyping.Capture(window);
+            var last = CaptureLastTransform(window);
             using var _ = _platform.SuspendCapture();
             snapshot = CaptureClipboard();
             timing.Mark("clipboard snapshot");
@@ -230,6 +231,20 @@ public sealed class AppController : IDisposable
                     source = run.MatchSource(text, _converter.Layouts);
                     automaticSelection = true;
                 }
+            }
+            else if (Settings.ConvertLastWord && last is not null)
+            {
+                // The previous replacement is separate from newly typed input. Keep its exact range
+                // available for another case/layout/transliteration command, but copy and verify it
+                // again before every use. User-made selections invalidate this record through the hook.
+                bool RangeStillValid() => NoInputSince() && ReferenceEquals(_lastTransform, last);
+                text = await SelectTransformResultAsync(last, RangeStillValid);
+                if (text is not null)
+                {
+                    source = last.ResultLayout;
+                    automaticSelection = true;
+                }
+                else if (ReferenceEquals(_lastTransform, last)) LastTransform = null;
             }
             else text = await CopySelectionAsync(window);
             timing.Mark("selection/copy");
@@ -254,7 +269,8 @@ public sealed class AppController : IDisposable
                 }))
             {
                 // Input during the paste's settling wait may have moved the caret: then the result cannot be located.
-                LastTransform = NoInputSince() ? new TransformRecord(window, text, result, DateTime.UtcNow) : null;
+                LastTransform = NoInputSince() ? new TransformRecord(window, text, result, DateTime.UtcNow,
+                    _converter.DetectLayout(result) ?? switchTo ?? source) : null;
             }
             if (switchTo is not null && Settings.SwitchSystemLayout) _platform.SwitchKeyboardLayout(window, switchTo.LangId);
         }
@@ -407,13 +423,12 @@ public sealed class AppController : IDisposable
 
     // ---------------------------------------------------------------- undo
 
-    private sealed record TransformRecord(nint Window, string Original, string Result, DateTime At);
+    private sealed record TransformRecord(nint Window, string Original, string Result, DateTime At, KeyboardLayout? ResultLayout);
 
     private TransformRecord? _lastTransform;
 
     /// <summary>
-    /// The conversion Undo can revert. While one exists the typing hook runs even without snippets, so that any
-    /// user input can invalidate it.
+    /// The exact last replacement, used by Undo and consecutive conversion commands. Genuine input invalidates it.
     /// </summary>
     private TransformRecord? LastTransform
     {
@@ -423,6 +438,17 @@ public sealed class AppController : IDisposable
             _lastTransform = value;
             UpdateTypingWatch();
         }
+    }
+
+    private TransformRecord? CaptureLastTransform(nint window)
+    {
+        var last = _lastTransform;
+        if (last is null) return null;
+        // Repeat commands keep their verified range until genuine input or a context change.
+        // The two-minute limit applies only to Undo, not to repeated conversion.
+        if (last.Window == window) return last;
+        LastTransform = null;
+        return null;
     }
 
     /// <summary>
@@ -447,20 +473,10 @@ public sealed class AppController : IDisposable
             }
             using var _ = _platform.SuspendCapture();
             snapshot = CaptureClipboard();
-            // Editors move over a line break in one step, so count "\r\n" once.
-            var expected = last.Result.Replace("\r\n", "\n");
-            var steps = System.Globalization.StringInfo.ParseCombiningCharacters(expected).Length;
-            if (steps > 2000) return;
-            if (!await _platform.SelectPreviousCharactersAsync(steps, StillValid))
-            {
-                Collapse(window);
-                return;
-            }
             // Only replace what Typlo inserted: if the user typed or moved since, the selection is different.
-            var selected = StillValid() ? (await CopySelectionAsync(window))?.Replace("\r\n", "\n") : null;
-            if (selected != expected || !StillValid())
+            var selected = await SelectTransformResultAsync(last, StillValid);
+            if (selected is null || !StillValid())
             {
-                Collapse(window);
                 LastTransform = null;
                 Log.Info("Undo skipped: the text before the caret is no longer the converted text");
                 return;
@@ -722,28 +738,42 @@ public sealed class AppController : IDisposable
         return null;
     }
 
-    private async Task<string?> SelectRecentInputAsync(RecentTyping.Run run, Func<bool> stillValid)
+    private Task<string?> SelectRecentInputAsync(RecentTyping.Run run, Func<bool> stillValid) =>
+        SelectAndVerifyAsync(run.Window, run.Keys.Length, stillValid,
+            text => run.MatchSource(text, _converter.Layouts) is not null);
+
+    private Task<string?> SelectTransformResultAsync(TransformRecord last, Func<bool> stillValid)
     {
+        // Editors move over CRLF in one step, and over a whole grapheme (including surrogate pairs).
+        var expected = last.Result.Replace("\r\n", "\n");
+        var steps = System.Globalization.StringInfo.ParseCombiningCharacters(expected).Length;
+        return SelectAndVerifyAsync(last.Window, steps, stillValid,
+            text => text.Replace("\r\n", "\n") == expected);
+    }
+
+    private async Task<string?> SelectAndVerifyAsync(nint window, int steps, Func<bool> stillValid, Func<string, bool> matches)
+    {
+        if (steps is < 1 or > 2000) return null;
         var selectedByUs = false;
         try
         {
             bool BeforeSelectionKey()
             {
                 EnsureClipboardIsOurs();
-                if (!stillValid() || !IsTargetActive(run.Window)) return false;
+                if (!stillValid() || !IsTargetActive(window)) return false;
                 selectedByUs = true;
                 return true;
             }
-            if (!await _platform.SelectPreviousCharactersAsync(run.Keys.Length, BeforeSelectionKey)) return null;
-            if (!stillValid() || !IsTargetActive(run.Window)) return null;
-            var text = await CopySelectionAsync(run.Window);
-            if (text is null || !stillValid() || run.MatchSource(text, _converter.Layouts) is null) return null;
+            if (!await _platform.SelectPreviousCharactersAsync(steps, BeforeSelectionKey)) return null;
+            if (!stillValid() || !IsTargetActive(window)) return null;
+            var text = await CopySelectionAsync(window);
+            if (text is null || !stillValid() || !matches(text)) return null;
             selectedByUs = false; // keep this verified selection for the replacement
             return text;
         }
         finally
         {
-            if (selectedByUs && stillValid()) Collapse(run.Window);
+            if (selectedByUs && stillValid()) Collapse(window);
         }
     }
 

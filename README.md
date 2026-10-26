@@ -14,6 +14,8 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
      Hotkey modifiers get an 80 ms release grace period; Windows selects recent input in one input batch.
      `data/typlo.log` records operation phase timings without text or keystrokes to help diagnose slow editors.
    - `Ctrl+Alt+Shift+C` cycles the case (lower → Title → UPPER); `Ctrl+Alt+Shift+T` transliterates (Привет ⇄ Privet).
+     Consecutive text-tool commands reuse the last replaced range without reselection, verifying its contents each time.
+     New typing, caret movement and other input invalidate that range; a newly typed symbol is handled on its own.
    - Snippets: typing a trigger such as `;addr` replaces it with saved text, in any keyboard layout.
    - `Ctrl+Alt+Shift+Z` undoes the last layout fix, case change or transliteration (within 2 minutes, same window).
 2. **Clipboard history** – `Ctrl+Shift+V` opens a popup near the cursor with text and image previews.
