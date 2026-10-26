@@ -187,15 +187,7 @@ public sealed class LinuxPlatform : HookPlatformBase
 
     // ---------------------------------------------------------------- windows
 
-    public override nint ForegroundWindow
-    {
-        get
-        {
-            if (_wayland || !Proc.Has("xdotool")) return 0;
-            var r = Proc.Run("xdotool", ["getactivewindow"]);
-            return r.Ok && long.TryParse(r.Text.Trim(), out var id) ? (nint)id : 0;
-        }
-    }
+    public override nint ForegroundWindow => _wayland ? 0 : X11Clients.ActiveWindow();
 
     public override void ActivateWindow(nint handle)
     {

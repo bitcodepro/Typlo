@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Diagnostics;
 using System.Text;
 using Typlo.App.Platform;
 using Typlo.App.Platform.Shared;
@@ -13,12 +14,78 @@ namespace Typlo.Tests;
 
 public sealed class AppControllerTests : IDisposable
 {
+    private readonly Xunit.Abstractions.ITestOutputHelper _output;
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "typlo-controller-" + Guid.NewGuid().ToString("N"));
     private readonly FakePlatform _platform = new();
     private readonly AppController _controller;
 
-    public AppControllerTests() =>
+    public AppControllerTests(Xunit.Abstractions.ITestOutputHelper output)
+    {
+        _output = output;
         _controller = new(_platform, new AppPaths(_dir), new PlainKeyProtector(), diagnostic: true);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecentConversion_DoesNotWaitASecondForTheHotkeyModifiers(bool modifiersHeld)
+    {
+        _platform.Document.Text = "existing ";
+        _platform.Document.Caret = 9;
+        _platform.Type("ghbdtn");
+        _platform.ModifiersHeld = modifiersHeld;
+        var watch = Stopwatch.StartNew();
+        TimeSpan? untilPaste = null;
+        _platform.AfterPaste = () => untilPaste = watch.Elapsed;
+
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+
+        _output.WriteLine($"Hotkey to replacement: {untilPaste?.TotalMilliseconds:F0} ms; completed: {watch.Elapsed.TotalMilliseconds:F0} ms; modifiers held: {modifiersHeld}");
+        Assert.Equal("existing привет", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        Assert.NotNull(untilPaste);
+        Assert.True(untilPaste.Value < TimeSpan.FromMilliseconds(600), $"Replacement took {untilPaste.Value.TotalMilliseconds:F0} ms");
+    }
+
+    [Fact]
+    public async Task RecentSelection_UserInputDuringSelection_StopsBeforeCopyOrPaste()
+    {
+        _platform.Type("ghbdtn");
+        _platform.OnLeft = () => _platform.Type("X");
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("ghbdtX", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task RecentSelection_ExternalCopyDuringSelection_IsKeptAndStopsTheReplacement()
+    {
+        _platform.Type("ghbdtn");
+        _platform.OnLeft = () => _platform.ExternalCopy("new user copy", owner: 99);
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Empty(_platform.Document.Selection);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal("new user copy", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task RecentSelection_FocusChangeDuringSelection_LeavesTheOtherWindowAlone()
+    {
+        _platform.Type("ghbdtn");
+        _platform.OnLeft = () =>
+        {
+            _platform.Window = 2;
+            _platform.Document.Text = "other window";
+            _platform.Document.SelectAll();
+        };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("other window", _platform.Document.Text);
+        Assert.Equal("other window", _platform.Document.Selection);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
 
     [Theory]
     [InlineData("abc", "Abc")]
@@ -40,11 +107,16 @@ public sealed class AppControllerTests : IDisposable
     [InlineData("Привет ;bpym", "Привет жизнь")]
     [InlineData("Привет [kt,", "Привет хлеб")]
     [InlineData("first\nhtdm.dftim", "first\nревьюваешь")]
-    public async Task LastWord_IncludesPunctuationInsideTheWrongLayoutWord(string input, string expected)
+    public async Task RecentInput_IncludesPunctuationInsideTheWrongLayoutWord(string input, string expected)
     {
-        _platform.Document.Text = input;
-        _platform.Document.Caret = input.Length;
+        var end = input.Length;
+        while (end > 0 && char.IsWhiteSpace(input[end - 1])) end--;
+        var start = end;
+        while (start > 0 && !char.IsWhiteSpace(input[start - 1])) start--;
+        _platform.Document.Text = input[..start];
+        _platform.Document.Caret = start;
         _platform.CopyLineWhenUnselected = true;
+        _platform.Type(input[start..]);
         await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
         Assert.Equal(expected, _platform.Document.Text);
         Assert.Equal("original clipboard", _platform.ClipboardText);
@@ -59,6 +131,144 @@ public sealed class AppControllerTests : IDisposable
         Assert.Equal("😀Abc", _platform.Document.Text);
         await _controller.UndoLastTransformAsync();
         Assert.Equal("😀abc", _platform.Document.Text);
+    }
+
+    [Theory]
+    [InlineData("готовое", "?", "?", "готовое,")]
+    [InlineData("готовое", ",", "б", "готовое,")]
+    [InlineData("готовое", "/", ".", "готовое/")]
+    public async Task PunctuationOnly_LeavesTheExistingWordAlone(string existing, string keys, string inserted, string expected)
+    {
+        _platform.Document.Text = existing;
+        _platform.Document.Caret = existing.Length;
+        _platform.CopyLineWhenUnselected = true;
+        _platform.TypeAs(keys, inserted);
+        await _controller.ConvertSelectionAsync(null);
+        Assert.Equal(expected, _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task PreviouslyTypedWord_AfterCaretMove_IsNotPartOfTheNewInput()
+    {
+        _platform.Type("ready");
+        _platform.UserMoveCaret(5);
+        _platform.Type("?");
+        _platform.CopyLineWhenUnselected = true;
+        await _controller.ConvertSelectionAsync(null);
+        Assert.Equal("ready,", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task UnmarkedCopyWholeLineBehavior_CannotEnlargeTheTrackedRange()
+    {
+        _platform.Document.Text = "ready";
+        _platform.Document.Caret = 5;
+        _platform.CopyLineWhenUnselected = true;
+        _platform.ReportLineCopyTag = false;
+        _platform.Type("?");
+        await _controller.ConvertSelectionAsync(null);
+        Assert.Equal("ready,", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task ExplicitUserSelectionStillConvertsTheWholeSelection()
+    {
+        _platform.Type("ghbdtn vbh");
+        _platform.UserKey(TypedKey.ForShortcut(Hotkey.TryParse("Ctrl+A")));
+        _platform.Document.SelectAll();
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("привет мир", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task NoTrackedInput_DoesNotConvertExistingText()
+    {
+        _platform.Document.Text = "existingword?";
+        _platform.Document.Caret = 13;
+        _platform.CopyLineWhenUnselected = true;
+        await _controller.ConvertSelectionAsync(null);
+        Assert.Equal("existingword?", _platform.Document.Text);
+        Assert.Empty(_platform.Document.Selection);
+        Assert.Equal(0, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task TrackedKeysThatDidNotInsertMatchingText_DoNotReplaceOlderText()
+    {
+        _platform.Document.Text = "existingword";
+        _platform.Document.Caret = 12;
+        _platform.CopyLineWhenUnselected = true;
+        _platform.UserKey(TypedKey.ForChar('?'));
+        await _controller.ConvertSelectionAsync(null);
+        Assert.Equal("existingword", _platform.Document.Text);
+        Assert.Empty(_platform.Document.Selection);
+        Assert.Equal(0, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task BackspacePastTheNewInput_DoesNotMakeTheOlderWordEligible()
+    {
+        _platform.Document.Text = "ready";
+        _platform.Document.Caret = 5;
+        _platform.Type("x");
+        for (var i = 0; i < 2; i++)
+        {
+            _platform.UserKey(TypedKey.BackspaceKey);
+            _platform.Document.Backspace();
+        }
+        _platform.Type("?");
+        _platform.CopyLineWhenUnselected = true;
+        await _controller.ConvertSelectionAsync(null);
+        Assert.Equal("read,", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task UnrelatedShortcutStartsANewInputRun()
+    {
+        _platform.Type("ready");
+        _platform.UserKey(TypedKey.ForShortcut(Hotkey.TryParse("Ctrl+V")));
+        _platform.Document.Type("pasted");
+        _platform.Type("?");
+        _platform.CopyLineWhenUnselected = true;
+        await _controller.ConvertSelectionAsync(null);
+        Assert.Equal("readypasted,", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task SuccessfulConversionStartsANewInputRun()
+    {
+        _platform.CopyLineWhenUnselected = true;
+        _platform.Type("ghbdtn");
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        _platform.Type("?");
+        await _controller.ConvertSelectionAsync(null);
+        Assert.Equal("привет,", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task OwnHotkeyKeepsTheTypedRunUntilTheCommandConsumesIt()
+    {
+        _platform.Document.Text = "ready";
+        _platform.Document.Caret = 5;
+        _platform.CopyLineWhenUnselected = true;
+        _platform.Type("?");
+        _platform.PressHotkey("Ctrl+Alt+Shift+Space");
+        await WaitUntil(() => _platform.Document.Text == "ready,");
+        Assert.Equal("ready,", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task WindowChangeKeepsTheOtherWindowsWordOutOfTheRun()
+    {
+        _platform.Type("old");
+        _platform.Window = 2;
+        _platform.Document.Text = "ready";
+        _platform.Document.Caret = 5;
+        _platform.CopyLineWhenUnselected = true;
+        _platform.Type("?");
+        await _controller.ConvertSelectionAsync(null);
+        Assert.Equal("ready,", _platform.Document.Text);
     }
 
     [Fact]
@@ -165,6 +375,7 @@ public sealed class AppControllerTests : IDisposable
         var capturedOnEvent = false;
         _platform.AfterForegroundRead = () =>
         {
+            if (_platform.Document.Text != ";hi") return;
             capturedOnEvent |= _platform.InTypingEvent;
             _platform.Window = 2;
             _platform.Document.Text = "OTHER";
@@ -717,8 +928,9 @@ public sealed class AppControllerTests : IDisposable
         public Action<string>? AfterWrite;
         public Action? OnForegroundRead, AfterForegroundRead, AfterSnapshot;
         public Func<Task>? BeforeModifiers;
-        public bool CopyLineWhenUnselected, LastCopyWasLine, InTypingEvent, TypingWatch;
-        public Action? OnBackspace, AfterCopy;
+        public bool CopyLineWhenUnselected, LastCopyWasLine, InTypingEvent, TypingWatch, ModifiersHeld;
+        public bool ReportLineCopyTag = true;
+        public Action? OnBackspace, OnLeft, AfterCopy;
         public int PasteCount, BackspaceCount;
         public TaskCompletionSource ModifiersEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string Name => "Fake platform (no OS access)";
@@ -768,16 +980,21 @@ public sealed class AppControllerTests : IDisposable
             AfterSnapshot?.Invoke();
             return snapshot;
         }
-        public bool IsEmptySelectionLineCopy() => LastCopyWasLine;
+        public bool IsEmptySelectionLineCopy() => LastCopyWasLine && ReportLineCopyTag;
         public void Restore(ClipboardSnapshot snapshot) => ExternalCopy(Encoding.UTF8.GetString(snapshot.Formats[0].Data));
-        public Task WaitForModifiersReleasedAsync(TimeSpan timeout)
+        public async Task WaitForModifiersReleasedAsync(TimeSpan timeout)
         {
             ModifiersEntered.TrySetResult();
-            return BeforeModifiers?.Invoke() ?? Task.CompletedTask;
+            if (BeforeModifiers is not null) await BeforeModifiers();
+            else if (ModifiersHeld) await Task.Delay(timeout);
         }
         public void SendChord(KeyModifiers modifiers, string key)
         {
-            if (key == "Left") Document.Left(modifiers.HasFlag(KeyModifiers.Shift), (modifiers & (KeyModifiers.Ctrl | KeyModifiers.Alt)) != 0);
+            if (key == "Left")
+            {
+                Document.Left(modifiers.HasFlag(KeyModifiers.Shift), (modifiers & (KeyModifiers.Ctrl | KeyModifiers.Alt)) != 0);
+                OnLeft?.Invoke();
+            }
             else if (key == "Right") Document.Right();
             else if (key == "Backspace")
             {
@@ -822,9 +1039,19 @@ public sealed class AppControllerTests : IDisposable
         public (int X, int Y) CursorPosition => (0, 0);
         public void SetTypingWatch(bool enabled) => TypingWatch = enabled;
         public void Type(string text)
+            => TypeAs(text, text);
+
+        public void TypeAs(string physicalKeys, string text)
         {
             InTypingEvent = true;
-            try { foreach (var c in text) { Document.Type(c.ToString()); KeyTyped?.Invoke(TypedKey.ForChar(c)); } }
+            try
+            {
+                for (var i = 0; i < text.Length; i++)
+                {
+                    Document.Type(text[i].ToString());
+                    KeyTyped?.Invoke(TypedKey.ForChar(physicalKeys[i]));
+                }
+            }
             finally { InTypingEvent = false; }
         }
         public bool SwitchKeyboardLayout(nint window, int langId) => true;

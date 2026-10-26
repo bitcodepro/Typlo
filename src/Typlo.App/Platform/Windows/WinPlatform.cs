@@ -453,6 +453,31 @@ public sealed class WinPlatform : IPlatform
     }
     public void SendPaste() => SendChord(KeyModifiers.Ctrl, "V");
 
+    public Task<bool> SelectPreviousCharactersAsync(int count, Func<bool> keepGoing)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(count, 2000);
+        var keys = new List<(ushort, bool)>(count * 2 + 2);
+        keys.Add((VK_SHIFT, false));
+        var left = (ushort)VirtualKeys.FromName("Left");
+        for (var i = 0; i < count; i++)
+        {
+            keys.Add((left, false));
+            keys.Add((left, true));
+        }
+        keys.Add((VK_SHIFT, true));
+        if (!keepGoing()) return Task.FromResult(false);
+        // SendInput queues the entire batch in order, without interleaved hardware input. A subsequent
+        // Copy is queued after these arrows, so no timer is needed to wait for the selection to render.
+        if (count > 0 && !Send(keys))
+        {
+            // Do not copy or replace a partially selected range, or leave Shift held after a partial send.
+            Send([(left, true), (VK_SHIFT, true)]);
+            throw new IOException("Windows could not send the complete text selection.");
+        }
+        return Task.FromResult(true);
+    }
+
     public void SendChord(KeyModifiers modifiers, string key)
     {
         var mods = new List<ushort>();
@@ -466,7 +491,7 @@ public sealed class WinPlatform : IPlatform
         Send(seq);
     }
 
-    private static unsafe void Send(IReadOnlyList<(ushort Vk, bool Up)> keys)
+    private static unsafe bool Send(IReadOnlyList<(ushort Vk, bool Up)> keys)
     {
         var inputs = stackalloc INPUT[keys.Count];
         for (var i = 0; i < keys.Count; i++)
@@ -476,7 +501,7 @@ public sealed class WinPlatform : IPlatform
             inputs[i].ki.wVk = keys[i].Vk;
             inputs[i].ki.dwFlags = keys[i].Up ? KEYEVENTF_KEYUP : 0;
         }
-        SendInput((uint)keys.Count, inputs, sizeof(INPUT));
+        return SendInput((uint)keys.Count, inputs, sizeof(INPUT)) == keys.Count;
     }
 
     public nint ForegroundWindow => GetForegroundWindow();

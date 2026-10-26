@@ -177,6 +177,8 @@ internal static class SelfTest
                 "Привет ghbdtn", KeyboardLayouts.Russian, "Привет привет", selectAll: false), when: caps.SimulateInput);
             await Check("last word includes punctuation that is a letter in the target layout", () => ConvertInTextBox(controller, platform,
                 "Привет htdm.dftim", KeyboardLayouts.Russian, "Привет ревьюваешь", selectAll: false), when: caps.SimulateInput);
+            await Check("only newly typed punctuation is converted next to an existing word", () => ConvertInTextBox(controller, platform,
+                "готовое?", KeyboardLayouts.Russian, "готовое,", selectAll: false, typedSuffix: "?"), when: caps.SimulateInput);
 
             await Check("change case cycles lower → Title → UPPER in a text box", async () =>
                 await TransformInTextBox(platform, "hello world", controller.ChangeCaseAsync, "Hello World")
@@ -418,10 +420,26 @@ internal static class SelfTest
     }
 
     /// <summary>A key press the typing hook must see as the user's (Typlo filters its own injected keys).</summary>
-    private static void UserKey(IPlatform platform, string key)
+    private static void UserKey(IPlatform platform, string key, KeyModifiers modifiers = KeyModifiers.None)
     {
-        if (platform is HookPlatformBase hook) hook.SendChordAsUser(KeyModifiers.None, key);
-        else platform.SendChord(KeyModifiers.None, key); // Windows: accepted via TypingEvents.AcceptSimulated
+        if (platform is HookPlatformBase hook) hook.SendChordAsUser(modifiers, key);
+        else platform.SendChord(modifiers, key); // Windows: accepted via TypingEvents.AcceptSimulated
+    }
+
+    private static void UserChar(IPlatform platform, char c)
+    {
+        if (c == ' ') { UserKey(platform, "Space"); return; }
+        var layout = KeyboardLayouts.English;
+        var code = layout.CodeOf(c);
+        if (code < 0) throw new ArgumentException("The self-test types physical US keys only.");
+        var normal = layout.Normal[code % layout.Normal.Length];
+        var name = char.IsAsciiLetterOrDigit(normal) ? char.ToUpperInvariant(normal).ToString() : normal switch
+        {
+            '.' => "Period", ',' => "Comma", '/' => "Slash", ';' => "Semicolon", '\'' => "Quote",
+            '[' => "OpenBracket", ']' => "CloseBracket", '\\' => "Backslash", '`' => "Tilde",
+            '-' => "Minus", '=' => "Plus", _ => throw new ArgumentException("Unknown physical key."),
+        };
+        UserKey(platform, name, code >= layout.Normal.Length ? KeyModifiers.Shift : KeyModifiers.None);
     }
 
     private static HashSet<string> Placeholders(string text) =>
@@ -509,13 +527,20 @@ internal static class SelfTest
     }
 
     private static async Task<string?> ConvertInTextBox(AppController controller, IPlatform platform,
-        string input, KeyboardLayout target, string expected, bool selectAll = true)
+        string input, KeyboardLayout target, string expected, bool selectAll = true, string? typedSuffix = null)
     {
+        if (!selectAll && typedSuffix is null)
+        {
+            var start = input.Length;
+            while (start > 0 && !char.IsWhiteSpace(input[start - 1])) start--;
+            typedSuffix = input[start..];
+        }
+        var initial = selectAll ? input : input[..^typedSuffix!.Length];
         Window? window = null;
         TextBox? box = null;
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
-            box = new TextBox { Text = input, AcceptsReturn = false };
+            box = new TextBox { Text = initial, AcceptsReturn = false };
             window = new Window { Width = 400, Height = 120, Content = box, Title = "Typlo self-test", Topmost = true };
             window.Show();
             window.Activate();
@@ -532,10 +557,15 @@ internal static class SelfTest
                 else
                 {
                     box.ClearSelection();
-                    box.CaretIndex = input.Length;
+                    box.CaretIndex = initial.Length;
                 }
             });
             await Task.Delay(300);
+            if (!selectAll)
+            {
+                foreach (var c in typedSuffix!) { UserChar(platform, c); await Task.Delay(20); }
+                await Task.Delay(100); // let the hook report the user's input before issuing the command
+            }
             await controller.ConvertSelectionAsync(target);
             await Task.Delay(300);
             var text = await Dispatcher.UIThread.InvokeAsync(() => box!.Text);

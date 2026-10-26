@@ -5,9 +5,14 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
 1. **Layout fix** – select text typed in the wrong layout and press a hotkey: `ghbdtn` → `привет`.
    - `Ctrl+Alt+Shift+Space` – toggle between the pair (EN ⇄ RU by default)
    - `Ctrl+Alt+Shift+E` / `Ctrl+Alt+Shift+R` – convert into English / Russian (Ukrainian available)
-   - Nothing selected? The word left of the caret is converted (can be turned off).
-     Punctuation inside a wrong-layout word is included: `htdm.dftim` → `ревьюваешь`.
+   - Nothing selected? Only the recently typed input is converted (can be turned off).
+     Typing a single punctuation character beside an existing word changes only that character.
+     Typing a whole wrong-layout word still includes its punctuation: `htdm.dftim` → `ревьюваешь`.
+     Cursor movement, clicks, other shortcuts, window/layout changes and a 2-second pause between keystrokes start a new input run.
+     To convert older text, select it explicitly.
    - The clipboard is restored afterwards; the system layout is switched too (Windows, Linux X11).
+     Hotkey modifiers get an 80 ms release grace period; Windows selects recent input in one input batch.
+     `data/typlo.log` records operation phase timings without text or keystrokes to help diagnose slow editors.
    - `Ctrl+Alt+Shift+C` cycles the case (lower → Title → UPPER); `Ctrl+Alt+Shift+T` transliterates (Привет ⇄ Privet).
    - Snippets: typing a trigger such as `;addr` replaces it with saved text, in any keyboard layout.
    - `Ctrl+Alt+Shift+Z` undoes the last layout fix, case change or transliteration (within 2 minutes, same window).
@@ -24,7 +29,7 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
    it never touches the mouse and sends nothing while you work.
 
 All hotkeys are configurable in Settings (tray icon → right click); "Keyboard shortcuts…" in the tray lists every shortcut.
-With nothing selected, the text tools (layout, case, transliteration) work on the word left of the caret.
+With nothing selected, the text tools (layout, case, transliteration) work only on the tracked recent input.
 
 **Updates** – Typlo checks GitHub Releases once, 20 s after it starts (no periodic checks), and never
 pops up a window. When a newer stable release exists, the tray menu shows “⬆ Update to vX.Y.Z”: it downloads

@@ -54,6 +54,39 @@ public class TypingEventsTests
         Assert.Equal([TypedKey.ResetKey, TypedKey.BackspaceKey], _raised);
     }
 
+    [Theory]
+    [InlineData(KeyCode.VcLeftAlt)]
+    [InlineData(KeyCode.VcLeftControl)]
+    public void ModifierOnlyLayoutSwitch_IsAnInputBoundary(KeyCode modifier)
+    {
+        _hook.Press(modifier);
+        _hook.Press(KeyCode.VcLeftShift);
+        _hook.Release(KeyCode.VcLeftShift);
+        _hook.Release(modifier);
+        Assert.Equal([TypedKey.ResetKey], _raised);
+    }
+
+    [Fact]
+    public void FullTyploShortcut_DoesNotProduceAnExtraLayoutReset()
+    {
+        _hook.Press(KeyCode.VcLeftControl);
+        _hook.Press(KeyCode.VcLeftAlt);
+        _hook.Press(KeyCode.VcLeftShift);
+        _hook.Press(KeyCode.VcSpace);
+        _hook.Release(KeyCode.VcSpace);
+        _hook.Release(KeyCode.VcLeftShift);
+        _hook.Release(KeyCode.VcLeftAlt);
+        _hook.Release(KeyCode.VcLeftControl);
+        Assert.Equal(Hotkey.TryParse("Ctrl+Alt+Shift+Space"), Assert.Single(_raised).Shortcut);
+    }
+
+    [Fact]
+    public void BareFunctionKeyIsReportedSoItsOwnHotkeyCanBeRecognized()
+    {
+        _hook.Press(KeyCode.VcF9);
+        Assert.Equal(Hotkey.TryParse("F9"), Assert.Single(_raised).Shortcut);
+    }
+
     [Fact]
     public void RealNavigationBeforeInjectedText_IsUserInput_AndTheInjectedCharacterIsNot()
     {

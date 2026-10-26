@@ -48,7 +48,20 @@ internal static class TypingEvents
     public static void Attach(IGlobalHook hook, Action<TypedKey> raise, Func<KeyCode, ushort, bool>? isOwnPress = null)
     {
         var down = new HashSet<KeyCode>();
-        hook.KeyReleased += (_, e) => { lock (down) down.Remove(e.Data.KeyCode); };
+        var layoutChordPending = false;
+        hook.KeyReleased += (_, e) =>
+        {
+            bool reset;
+            lock (down)
+            {
+                down.Remove(e.Data.KeyCode);
+                reset = layoutChordPending && !down.Any(IsModifier);
+                if (reset) layoutChordPending = false;
+            }
+            // Modifier-only Alt+Shift / Ctrl+Shift commonly changes the input layout. A full hotkey
+            // clears the pending chord on its main key, so Typlo's own shortcuts preserve the input run.
+            if (reset) raise(TypedKey.ResetKey);
+        };
         hook.KeyPressed += (_, e) =>
         {
             var code = e.Data.KeyCode;
@@ -63,6 +76,9 @@ internal static class TypingEvents
                 if (down.Contains(KeyCode.VcLeftMeta) || down.Contains(KeyCode.VcRightMeta)) mods |= Typlo.Core.Hotkeys.KeyModifiers.Win;
                 shortcut = mods != Typlo.Core.Hotkeys.KeyModifiers.None;
                 if (shift) mods |= Typlo.Core.Hotkeys.KeyModifiers.Shift;
+                if (!IsModifier(code)) layoutChordPending = false;
+                else if (shift && (mods & (Typlo.Core.Hotkeys.KeyModifiers.Ctrl | Typlo.Core.Hotkeys.KeyModifiers.Alt)) != 0)
+                    layoutChordPending = true;
             }
             // Modifier presses are never typing; they are also not tracked as own input (text entry may add a Shift).
             if (IsModifier(code)) return;
@@ -78,7 +94,12 @@ internal static class TypingEvents
             }
             if (code == KeyCode.VcBackspace) { raise(TypedKey.BackspaceKey); return; }
             if (ResetKeys.Contains(code)) { raise(TypedKey.ResetKey); return; }
-            if (ToChar(code, shift) is not { } c) return;
+            if (ToChar(code, shift) is not { } c)
+            {
+                var name = KeyCodes.ToName(code);
+                raise(TypedKey.ForShortcut(name is null ? null : new Typlo.Core.Hotkeys.Hotkey(mods, name)));
+                return;
+            }
             raise(TypedKey.ForChar(c));
         };
         hook.MousePressed += (_, e) =>
