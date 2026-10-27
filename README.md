@@ -16,6 +16,12 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
      After focus returns, an interrupted selection continues only from a verified nonempty suffix.
      Typing, clicking, an external copy or an unverified/collapsed selection stops the operation;
      Typlo never activates the original window to take focus away from the user.
+     Windows also records queued foreground events: a complete away/return cycle during Copy's
+     clipboard-settle wait invalidates the copied range, even if polling only sees the original window.
+     Typlo makes a new verification copy; a second interruption aborts instead of inserting at a collapsed caret.
+     The verified focus version is checked again immediately before Paste, and an aborted verification never
+     falls through to layout-only switching. Backends without a foreground-event counter use an independent
+     verification copy before replacement and retain their existing strict foreground checks.
      Typing a single punctuation character beside an existing word changes only that character.
      Typing a whole wrong-layout word still includes its punctuation: `htdm.dftim` → `ревьюваешь`.
      Cursor movement, clicks, other shortcuts, window/layout changes and a 2-second pause between keystrokes start a new input run.

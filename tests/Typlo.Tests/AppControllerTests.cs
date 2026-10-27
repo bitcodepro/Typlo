@@ -303,8 +303,8 @@ public sealed class AppControllerTests : IDisposable
             recovery = Task.Run(async () =>
             {
                 await Task.Delay(80);
+                if (loseSelection) _platform.DocumentFor(1).Anchor = null; // finish the editor transition first
                 _platform.Window = 1;
-                if (loseSelection) _platform.Document.Anchor = null; // blur discarded the range without user input
             });
         };
         await _controller.ConvertSelectionAsync(KeyboardLayouts.English);
@@ -621,8 +621,9 @@ public sealed class AppControllerTests : IDisposable
             recovery = Task.Run(async () =>
             {
                 await Task.Delay(40);
+                var document = _platform.DocumentFor(1);
+                if (collapsed) document.Anchor = null; // clear before publishing the restored foreground
                 _platform.Window = 1;
-                if (collapsed) _platform.Document.Anchor = null; // editor lost its range on blur
             });
         };
         if (!collapsed) _platform.AfterCopy = () => _platform.ExternalCopy("not the typed suffix", owner: 1);
@@ -633,6 +634,28 @@ public sealed class AppControllerTests : IDisposable
         Assert.Null(_platform.ActiveLayoutId);
     }
 
+    // The second sequence read is the clipboard settle boundary, before the next foreground
+    // observation. These hooks complete the entire blur/return there; no timers race the controller.
+    private void AtNextCopySettle(Action action)
+    {
+        _platform.AfterCopy = () =>
+        {
+            _platform.AfterCopy = null;
+            AtSettle(action);
+        };
+    }
+
+    private void AtSettle(Action action)
+    {
+        var reads = 0;
+        _platform.OnSequenceRead = () =>
+        {
+            if (++reads != 2) return;
+            _platform.OnSequenceRead = null;
+            action();
+        };
+    }
+
     [Theory]
     [InlineData("copy")]
     [InlineData("paste")]
@@ -640,21 +663,162 @@ public sealed class AppControllerTests : IDisposable
     {
         _platform.WaitForTransientFocus = true;
         _platform.Type("ghbdtn");
-        Task recovery = Task.CompletedTask;
-        void Interrupt()
+        if (phase == "copy") AtNextCopySettle(() => _platform.BlurAndReturn(loseSelection: true));
+        else _platform.AfterWrite = text =>
         {
-            _platform.Window = 2;
-            recovery = Task.Run(async () =>
-            {
-                await Task.Delay(80);
-                _platform.Window = 1;
-                _platform.Document.Anchor = null; // no real input, but the editor no longer has the copied range
-            });
-        }
-        if (phase == "copy") _platform.AfterCopy = () => { _platform.AfterCopy = null; Interrupt(); };
-        else _platform.AfterWrite = text => { if (text == "привет") { _platform.AfterWrite = null; Interrupt(); } };
+            if (text != "привет") return;
+            _platform.AfterWrite = null;
+            _platform.BlurAndReturn(loseSelection: true);
+        };
         await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
-        await recovery;
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Null(_platform.ActiveLayoutId);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        Assert.All(_platform.ObservedForegroundWindows, window => Assert.Equal((nint)1, window));
+    }
+
+    [Theory]
+    [InlineData("recent", false)]
+    [InlineData("recent", true)]
+    [InlineData("explicit", false)]
+    [InlineData("explicit", true)]
+    [InlineData("repeat", false)]
+    [InlineData("repeat", true)]
+    public async Task FullBlurBetweenForegroundReads_RechecksTheCurrentRange(string mode, bool loseSelection)
+    {
+        _platform.WaitForTransientFocus = true;
+        _platform.ActiveLayoutId = KeyboardLayouts.English.Id;
+        if (mode == "explicit") { _platform.Document.Text = "ghbdtn"; _platform.Document.SelectAll(); }
+        else _platform.Type("ghbdtn");
+        if (mode == "repeat") await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        var before = _platform.Document.Text;
+        var beforeLayout = _platform.ActiveLayoutId;
+        var beforePastes = _platform.PasteCount;
+        AtNextCopySettle(() => _platform.BlurAndReturn(loseSelection));
+        var target = mode == "repeat" ? KeyboardLayouts.English : KeyboardLayouts.Russian;
+        await _controller.ConvertSelectionAsync(target);
+        Assert.Equal(loseSelection ? before : mode == "repeat" ? "ghbdtn" : "привет", _platform.Document.Text);
+        Assert.Equal(loseSelection ? beforeLayout : target.Id, _platform.ActiveLayoutId);
+        Assert.Equal(beforePastes + (loseSelection ? 0 : 1), _platform.PasteCount);
+        Assert.All(_platform.ObservedForegroundWindows, window => Assert.Equal((nint)1, window));
+        Assert.Equal(0, _platform.Activations);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RepeatedBlurDuringRecopy_AbortsWithABoundedNumberOfCopies(bool loseSelection)
+    {
+        _platform.WaitForTransientFocus = true;
+        _platform.Type("ghbdtn");
+        var copies = 0;
+        _platform.AfterCopy = () =>
+        {
+            var current = ++copies;
+            AtSettle(() => _platform.BlurAndReturn(current == 2 && loseSelection));
+        };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal(2, copies);
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Null(_platform.ActiveLayoutId);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        Assert.All(_platform.ObservedForegroundWindows, window => Assert.Equal((nint)1, window));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Recopy_UserInputOrExternalCopy_StopsBeforePaste(bool externalCopy)
+    {
+        _platform.WaitForTransientFocus = true;
+        _platform.Type("ghbdtn");
+        var copies = 0;
+        _platform.AfterCopy = () =>
+        {
+            var current = ++copies;
+            AtSettle(() =>
+            {
+                _platform.BlurAndReturn(loseSelection: false);
+                if (current != 2) return;
+                if (externalCopy) _platform.ExternalCopy("external copy", owner: 99);
+                else _platform.UserKey(TypedKey.ResetKey);
+            });
+        };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal(2, copies);
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Null(_platform.ActiveLayoutId);
+        // Real input while Copy is pending makes the new sequence ambiguous (it could be a
+        // user copy from the same app). Do not claim it and restore an older clipboard over it.
+        Assert.Equal(externalCopy ? "external copy" : "ghbdtn", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task FullBlurDuringFinalClipboardCheck_StopsBeforePasteAndLayoutSwitch()
+    {
+        _platform.Type("ghbdtn");
+        _platform.AfterWrite = text =>
+        {
+            if (text != "привет") return;
+            _platform.AfterWrite = null;
+            var reads = 0;
+            _platform.OnSequenceRead = () =>
+            {
+                if (++reads != 5) return;
+                _platform.OnSequenceRead = null;
+                _platform.BlurAndReturn(loseSelection: true);
+            };
+        };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Null(_platform.ActiveLayoutId);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task PlatformWithoutFocusEvents_MakesAnIndependentCopyBeforeReplacing()
+    {
+        _platform.TrackFocusTransitions = false;
+        _platform.Type("ghbdtn");
+        AtNextCopySettle(() => _platform.BlurAndReturn(loseSelection: true));
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Null(_platform.ActiveLayoutId);
+    }
+
+    [Fact]
+    public async Task NoOpTransform_AfterFullBlur_DoesNotSwitchLayout()
+    {
+        _platform.Type("ghbdtn");
+        await _controller.TransformSelectionAsync(text =>
+        {
+            _platform.BlurAndReturn(loseSelection: true);
+            return (text, KeyboardLayouts.Russian);
+        });
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Null(_platform.ActiveLayoutId);
+    }
+
+    [Fact]
+    public async Task NoOpTransform_FullBlurAfterVerification_DoesNotSwitchLayout()
+    {
+        _platform.Type("ghbdtn");
+        await _controller.TransformSelectionAsync(text =>
+        {
+            _platform.AfterForegroundRead = () =>
+            {
+                _platform.AfterForegroundRead = null;
+                _platform.BlurAndReturn(loseSelection: true);
+            };
+            return (text, KeyboardLayouts.Russian);
+        });
         Assert.Equal("ghbdtn", _platform.Document.Text);
         Assert.Equal(0, _platform.PasteCount);
         Assert.Null(_platform.ActiveLayoutId);
@@ -1507,8 +1671,33 @@ public sealed class AppControllerTests : IDisposable
     private sealed class FakePlatform : IPlatform
     {
         private readonly Dictionary<nint, Document> _documents = [];
-        public nint Window = 1;
-        public Document Document => _documents.TryGetValue(Window, out var doc) ? doc : _documents[Window] = new();
+        private readonly object _focusGate = new();
+        private nint _window = 1;
+        private long _foregroundVersion;
+        public bool TrackFocusTransitions = true;
+        public nint Window
+        {
+            get { lock (_focusGate) return _window; }
+            set { lock (_focusGate) { if (_window != value) _foregroundVersion++; _window = value; } }
+        }
+        public long? ForegroundChangeVersion { get { lock (_focusGate) return TrackFocusTransitions ? _foregroundVersion : null; } }
+        public Document Document => DocumentFor(Window);
+        public Document DocumentFor(nint window)
+        {
+            lock (_focusGate) return _documents.TryGetValue(window, out var doc) ? doc : _documents[window] = new();
+        }
+        public void BlurAndReturn(bool loseSelection)
+        {
+            lock (_focusGate)
+            {
+                var target = Window;
+                var document = Document;
+                Window = 2;
+                if (loseSelection) document.Anchor = null;
+                Window = target;
+            }
+        }
+        public readonly System.Collections.Concurrent.ConcurrentQueue<nint> ObservedForegroundWindows = new();
         public string ClipboardText = "original clipboard";
         public Action<string>? AfterWrite;
         public Action? OnForegroundRead, AfterForegroundRead, AfterSnapshot;
@@ -1627,7 +1816,7 @@ public sealed class AppControllerTests : IDisposable
         public void SendPaste() { PasteCount++; Document.Type(ClipboardText); AfterPaste?.Invoke(); }
         public nint ForegroundWindow
         {
-            get { OnForegroundRead?.Invoke(); var window = Window; AfterForegroundRead?.Invoke(); return window; }
+            get { OnForegroundRead?.Invoke(); var window = Window; ObservedForegroundWindows.Enqueue(window); AfterForegroundRead?.Invoke(); return window; }
         }
         public void ActivateWindow(nint handle) { Activations++; Window = handle; }
         public (int X, int Y) CursorPosition => (0, 0);

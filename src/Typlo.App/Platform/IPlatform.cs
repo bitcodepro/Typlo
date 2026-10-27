@@ -102,6 +102,11 @@ public interface IPlatform : IDisposable
     void SendPaste();
     /// <summary>Opaque handle of the focused window/app (HWND, PID or X11 window id); 0 if unknown.</summary>
     nint ForegroundWindow { get; }
+    /// <summary>
+    /// Monotonic foreground transition counter, including a departure and return between reads.
+    /// Null when the platform cannot observe transitions independently of polling.
+    /// </summary>
+    long? ForegroundChangeVersion => null;
     /// <summary>Waits for a transient activation to end, cancelling on input; never steals focus.</summary>
     Task<bool> WaitForTargetAsync(nint window, Func<bool> stillValid, Action? onResumed = null) =>
         Task.FromResult(window != 0 && ForegroundWindow == window && stillValid());
