@@ -15,13 +15,7 @@ public sealed partial class WindowsPhysicalTypingTests
     public void FrenchHookDefault_ProducesUsPhysicalKeysForRecentConversionAndSnippets()
     {
         if (!OperatingSystem.IsWindows()) return;
-        var previouslyEnabled = Enabled();
-        // Load translation tables without activating the layout or notifying Shell. No user settings change.
-        var fr = LoadKeyboardLayoutW("0000040c", 0x80 /* KLF_NOTELLSHELL */);
-        var en = LoadKeyboardLayoutW("00000409", 0x80);
-        Assert.NotEqual(0, fr);
-        Assert.NotEqual(0, en);
-        try
+        WithLayouts((en, fr) =>
         {
             using var hook = new TypingEventsTests.FakeHook();
             var raised = new List<TypedKey>();
@@ -57,11 +51,67 @@ public sealed partial class WindowsPhysicalTypingTests
             Assert.Equal('q', WindowsKeyboardLayouts.PhysicalCharacter(KeyCode.VcA, 0x51, false, fr, en));
             Assert.Equal(';', WindowsKeyboardLayouts.PhysicalCharacter(KeyCode.VcSemicolon, 0xba, false, fr, en));
             Assert.Null(WindowsKeyboardLayouts.PhysicalCharacter(KeyCode.VcUndefined, 0, false, fr, en));
+        });
+    }
+
+    [Theory]
+    [InlineData(false, "mame", ";q;e")]
+    [InlineData(true, "MAME", ":Q:E")]
+    public void UsHookFrenchWindow_MInWordsAndSnippetTriggersRemainsPhysicalInput(bool shift, string text, string expectedKeys)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        WithLayouts((en, fr) =>
+        {
+            // VK_M is alphanumeric in the input window, but the US hook reports this scan as an OEM key.
+            Assert.Equal(';', WindowsKeyboardLayouts.PhysicalCharacter(KeyCode.VcSemicolon, 0x4d, false, en, fr));
+            Assert.Equal(':', WindowsKeyboardLayouts.PhysicalCharacter(KeyCode.VcSemicolon, 0x4d, true, en, fr));
+            using var hook = new TypingEventsTests.FakeHook();
+            var raised = new List<TypedKey>();
+            TypingEvents.Attach(hook, raised.Add, physicalCharacter:
+                (code, raw, shifted) => WindowsKeyboardLayouts.PhysicalCharacter(code, raw, shifted, en, fr));
+            if (shift) hook.Press(KeyCode.VcLeftShift);
+            foreach (var (code, raw) in new (KeyCode, ushort)[]
+                { (KeyCode.VcSemicolon, 0x4d), (KeyCode.VcQ, 0x41), (KeyCode.VcSemicolon, 0x4d), (KeyCode.VcE, 0x45) })
+            {
+                hook.Press(code, raw);
+                hook.Release(code);
+            }
+            if (shift) hook.Release(KeyCode.VcLeftShift);
+            Assert.All(raised, key => Assert.False(key.Reset || key.Backspace));
+            var keys = new string(raised.Select(key => key.Char).ToArray());
+            Assert.Equal(expectedKeys, keys);
+
+            var installed = WindowsKeyboardLayouts.Read();
+            var french = installed.Single(layout => layout.Id == WindowsKeyboardLayouts.Id(fr));
+            var english = installed.Single(layout => layout.Id == WindowsKeyboardLayouts.Id(en));
+            var run = new RecentTyping.Run(1, keys);
+            Assert.Same(french, run.MatchSource(text, [french, english]));
+            Assert.Equal(expectedKeys, new LayoutConverter([french, english]).ConvertTo(text, english, french).Text);
+            var matcher = new Typlo.Core.Text.SnippetMatcher();
+            matcher.SetSnippets([new() { Trigger = text, Text = "done" }], [french, english]);
+            var hits = new List<Typlo.Core.Text.Snippet>();
+            foreach (var key in keys)
+                if (matcher.OnChar(key) is { } snippet) hits.Add(snippet);
+            Assert.Equal("done", Assert.Single(hits).Text);
+        });
+    }
+
+    private static void WithLayouts(Action<nint, nint> test)
+    {
+        var previouslyEnabled = Enabled();
+        // Load translation tables without activating the layout or notifying Shell. No user settings change.
+        var fr = LoadKeyboardLayoutW("0000040c", 0x80 /* KLF_NOTELLSHELL */);
+        var en = LoadKeyboardLayoutW("00000409", 0x80);
+        try
+        {
+            Assert.NotEqual(0, fr);
+            Assert.NotEqual(0, en);
+            test(en, fr);
         }
         finally
         {
-            var restoredFrench = previouslyEnabled.Contains(fr) || UnloadKeyboardLayout(fr);
-            var restoredEnglish = previouslyEnabled.Contains(en) || UnloadKeyboardLayout(en);
+            var restoredFrench = fr == 0 || previouslyEnabled.Contains(fr) || UnloadKeyboardLayout(fr);
+            var restoredEnglish = en == 0 || previouslyEnabled.Contains(en) || UnloadKeyboardLayout(en);
             Assert.True(restoredFrench && restoredEnglish, "Temporary keyboard-layout tables must be unloaded after the test.");
         }
     }

@@ -36,9 +36,16 @@ internal static partial class WindowsKeyboardLayouts
         nint layout;
         if (raw is >= 0x30 and <= 0x39 or >= 0x41 and <= 0x5a)
         {
+            // A letter in the input layout can occupy an OEM key in the hook layout:
+            // French VK_M on the physical semicolon key becomes VcSemicolon with a US hook.
             var name = KeyCodes.ToName(code);
-            if (name is not { Length: 1 } || !char.IsAsciiLetterOrDigit(name[0])) return null;
-            vk = name[0];
+            vk = code switch
+            {
+                KeyCode.VcMisc => 0xdf,    // VK_OEM_8: not a configurable hotkey name.
+                KeyCode.VcSection => 0xe2, // VK_OEM_102.
+                _ => name is null ? 0 : VirtualKeys.FromName(name),
+            };
+            if (vk == 0) return null;
             layout = hookLayout;
         }
         else if (raw is >= 0xba and <= 0xc0 or >= 0xdb and <= 0xdf or 0xe2)
