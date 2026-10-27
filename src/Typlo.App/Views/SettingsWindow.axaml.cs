@@ -8,6 +8,7 @@ using Typlo.Core.Hotkeys;
 using Typlo.Core.Layouts;
 using Typlo.Core.Settings;
 using Typlo.Core.Text;
+using Typlo.Core.Imaging;
 
 namespace Typlo.App.Views;
 
@@ -34,6 +35,7 @@ public partial class SettingsWindow : Window
 
     /// <summary>Opens the list of all keyboard shortcuts.</summary>
     public Action? ShowShortcuts { get; set; }
+    public Action<CaptureShape, CaptureDestination>? CaptureScreenshot { get; set; }
     private bool _saved;
 
     public SettingsWindow() : this(null!) { } // designer
@@ -54,6 +56,23 @@ public partial class SettingsWindow : Window
         ClipboardHotkeyBox.HotkeyText = _draft.ClipboardHotkey;
         _hotkeyRows.Add((ClipboardHotkeyBox, ClipboardHotkeyStatus));
         ClipboardHotkeyBox.HotkeyChanged += () => Validate();
+        CaptureCopyHotkeyBox.HotkeyText = _draft.ScreenshotCopyHotkey;
+        CaptureSaveHotkeyBox.HotkeyText = _draft.ScreenshotSaveHotkey;
+        CaptureCopyButton.IsEnabled = CaptureSaveButton.IsEnabled = controller.Platform.SupportsScreenCapture;
+        CaptureCopyHotkeyBox.IsEnabled = CaptureSaveHotkeyBox.IsEnabled = controller.Platform.SupportsScreenCapture;
+        if (controller.Platform.SupportsScreenCapture)
+        {
+            _hotkeyRows.Add((CaptureCopyHotkeyBox, CaptureCopyStatus));
+            _hotkeyRows.Add((CaptureSaveHotkeyBox, CaptureSaveStatus));
+            CaptureCopyHotkeyBox.HotkeyChanged += () => Validate();
+            CaptureSaveHotkeyBox.HotkeyChanged += () => Validate();
+        }
+        else CaptureHint.Text = Loc.T("capture.windowsOnly");
+        CaptureShapeBox.IsEnabled = controller.Platform.SupportsScreenCapture;
+        CaptureShapeBox.ItemsSource = new[] { Loc.T("capture.rectangle"), Loc.T("capture.freehand") };
+        CaptureShapeBox.SelectedIndex = (int)_draft.ScreenshotShape;
+        CaptureCopyButton.Click += (_, _) => CaptureScreenshot?.Invoke((CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex), CaptureDestination.Clipboard);
+        CaptureSaveButton.Click += (_, _) => CaptureScreenshot?.Invoke((CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex), CaptureDestination.File);
         InitializeCycle();
         RefreshLayoutsButton.Click += (_, _) => RefreshLayouts();
 
@@ -401,6 +420,9 @@ public partial class SettingsWindow : Window
         _draft.CaseHotkey = _caseBox.HotkeyText;
         _draft.TranslitHotkey = _translitBox.HotkeyText;
         _draft.UndoHotkey = _undoBox.HotkeyText;
+        _draft.ScreenshotShape = (CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex);
+        _draft.ScreenshotCopyHotkey = CaptureCopyHotkeyBox.HotkeyText;
+        _draft.ScreenshotSaveHotkey = CaptureSaveHotkeyBox.HotkeyText;
         _draft.UiTheme = Themes[Math.Max(0, ThemeBox.SelectedIndex)];
         _draft.Snippets = _snippetRows
             .Where(r => !string.IsNullOrWhiteSpace(r.Trigger.Text) || !string.IsNullOrEmpty(r.Text.Text))

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Typlo.Core.Imaging;
 using Typlo.App.Platform;
 using Typlo.Core;
 using Typlo.Core.Hotkeys;
@@ -18,6 +19,8 @@ public sealed class AppController : IDisposable
     private const int CaseId = 3;
     private const int TranslitId = 4;
     private const int UndoId = 5;
+    private const int ScreenshotCopyId = 6;
+    private const int ScreenshotSaveId = 7;
     private const int LayoutIdBase = 100;
     // A hotkey is delivered on key-down. Waiting a whole second for its modifiers penalises a held
     // chord; give a normal release a short grace period, then use the platform's safe release path.
@@ -38,6 +41,9 @@ public sealed class AppController : IDisposable
 
     /// <summary>Raised on a background thread; the argument is the window that was active before.</summary>
     public event Action<nint>? ShowHistoryRequested;
+    public event Action<CaptureDestination>? ScreenshotRequested;
+    private volatile bool _capturingScreen;
+    public bool IsCapturingScreen => _capturingScreen;
 
     /// <summary>Hotkeys that could not be registered (taken by another app), as text for the UI.</summary>
     public IReadOnlyList<string> FailedHotkeys { get; private set; } = [];
@@ -175,6 +181,11 @@ public sealed class AppController : IDisposable
         Register(CaseId, Settings.CaseHotkey, Loc.T("hk.case"));
         Register(TranslitId, Settings.TranslitHotkey, Loc.T("hk.translit"));
         Register(UndoId, Settings.UndoHotkey, Loc.T("hk.undo"));
+        if (_platform.SupportsScreenCapture)
+        {
+            Register(ScreenshotCopyId, Settings.ScreenshotCopyHotkey, Loc.T("capture.copy"));
+            Register(ScreenshotSaveId, Settings.ScreenshotSaveHotkey, Loc.T("capture.save"));
+        }
         var next = LayoutIdBase;
         foreach (var lh in Settings.LayoutHotkeys)
         {
@@ -189,7 +200,10 @@ public sealed class AppController : IDisposable
     {
         try
         {
-            if (id == ClipboardId) ShowHistoryRequested?.Invoke(_platform.ForegroundWindow);
+            if (_capturingScreen) return;
+            if (id == ScreenshotCopyId) ScreenshotRequested?.Invoke(CaptureDestination.Clipboard);
+            else if (id == ScreenshotSaveId) ScreenshotRequested?.Invoke(CaptureDestination.File);
+            else if (id == ClipboardId) ShowHistoryRequested?.Invoke(_platform.ForegroundWindow);
             else if (id == ToggleId) _ = ConvertSelectionAsync(null);
             else if (id == CaseId) _ = ChangeCaseAsync();
             else if (id == TranslitId) _ = TransliterateAsync();
@@ -197,6 +211,46 @@ public sealed class AppController : IDisposable
             else if (_layoutHotkeys.TryGetValue(id, out var layout)) _ = ConvertSelectionAsync(layout);
         }
         catch (Exception e) { Log.Error("Hotkey handler failed", e); }
+    }
+
+    /// <summary>Serializes a user-requested capture with all other clipboard tools. Cancellation never writes.</summary>
+    internal async Task<ImageCodec.Encoded?> CaptureScreenshotAsync(Func<Task<CapturedPixels?>> capture, bool copyToClipboard = true)
+    {
+        if (!_platform.SupportsScreenCapture || !await _convertGate.WaitAsync(0)) return null;
+        _capturingScreen = true;
+        try
+        {
+            LastTransform = null;
+            _recentTyping.Reset(Interlocked.Read(ref _typingVersion));
+            var pixels = await capture();
+            if (pixels is null) return null;
+            var image = ImageCodec.FromBgra(pixels.Bgra, pixels.Width, pixels.Height);
+            if (copyToClipboard) PublishScreenshot(image, pixels.Bgra);
+            return image;
+        }
+        finally { _capturingScreen = false; _convertGate.Release(); }
+    }
+
+    internal async Task<bool> CopyScreenshotAsync(ImageCodec.Encoded image)
+    {
+        if (!await _convertGate.WaitAsync(0)) return false;
+        try
+        {
+            var (pixels, _, _) = ImageCodec.DecodeBgra(image.Png);
+            PublishScreenshot(image, pixels);
+            return true;
+        }
+        finally { _convertGate.Release(); }
+    }
+
+    private void PublishScreenshot(ImageCodec.Encoded image, byte[] bgra)
+    {
+        using (_platform.SuspendCapture())
+        {
+            _adoptedCopy = null;
+            _platform.SetImage(image.Png, bgra, image.Width, image.Height);
+        }
+        OnClipboardCaptured(new RawClip(null, image.Png, true, "Typlo"));
     }
 
     /// <summary>Copies the selection, converts it to <paramref name="target"/> (null = toggle) and pastes it back.</summary>
@@ -314,6 +368,11 @@ public sealed class AppController : IDisposable
             // or moved the caret, so the result must not be pasted (or recorded for Undo).
             var (result, switchTo) = transform(text, source);
             timing.Mark("conversion");
+            if (result == text && (_verifiedSelection?.FocusVersion is null || SelectionFocusChanged(window, text)))
+            {
+                var current = await CopySelectionAsync(window, NoInputSince, allowRevalidation: false);
+                if (current is null || !SameSelection(current, text)) return;
+            }
             if (result == text && automaticSelection && NoInputSince() && IsTargetActive(window))
             {
                 Collapse(window);
@@ -337,8 +396,13 @@ public sealed class AppController : IDisposable
                 LastTransform = NoInputSince() && IsTargetActive(window) ? new TransformRecord(window, text, result, DateTime.UtcNow,
                     switchTo ?? _converter.DetectLayout(result, source) ?? source) : null;
             }
-            if (switchTo is not null && Settings.SwitchSystemLayout && NoInputSince() && IsTargetActive(window))
+            if (switchTo is not null && Settings.SwitchSystemLayout && NoInputSince() && IsTargetActive(window) &&
+                (result != text || !SelectionFocusChanged(window, text)))
                 _platform.SwitchKeyboardLayout(window, switchTo);
+        }
+        catch (SelectionChangedException)
+        {
+            Log.Info("Text tool stopped: the copied selection is no longer verified");
         }
         catch (ClipboardTakenException)
         {
@@ -385,6 +449,7 @@ public sealed class AppController : IDisposable
 
     private ClipboardSnapshot CaptureClipboard()
     {
+        _verifiedSelection = null;
         var sequence = _platform.ClipboardSequence;
         var snapshot = _platform.Snapshot();
         if (_platform.ClipboardSequence != sequence) throw new ClipboardTakenException();
@@ -398,6 +463,7 @@ public sealed class AppController : IDisposable
     /// </summary>
     private void RestoreIfUnchanged(ClipboardSnapshot snapshot)
     {
+        _verifiedSelection = null;
         try
         {
             if (_platform.ClipboardSequence != _expectedSequence)
@@ -412,6 +478,13 @@ public sealed class AppController : IDisposable
 
     /// <summary>Thrown to stop an operation when another app changed the clipboard while Typlo was using it.</summary>
     private sealed class ClipboardTakenException() : Exception("The clipboard was changed by another app.");
+    private sealed class SelectionChangedException() : Exception("The copied selection can no longer be verified.");
+    private (nint Window, string Text, long? FocusVersion)? _verifiedSelection;
+
+    private static bool SameSelection(string a, string b) => a.Replace("\r\n", "\n") == b.Replace("\r\n", "\n");
+    private bool ForegroundChanged(long? before) => before is { } version && _platform.ForegroundChangeVersion != version;
+    private bool SelectionFocusChanged(nint window, string text) => _verifiedSelection is not { } copy ||
+        copy.Window != window || !SameSelection(copy.Text, text) || ForegroundChanged(copy.FocusVersion);
 
     /// <summary>The selection we copied and the window whose app wrote it (to recognise that app's late flush).</summary>
     private (string Text, nint Window)? _adoptedCopy;
@@ -454,13 +527,17 @@ public sealed class AppController : IDisposable
     /// </summary>
     private async Task<bool> PasteTextAsync(string text, nint window, Func<bool> stillValid, string expectedSelection, Action? onSent = null)
     {
-        var resumed = false;
+        // Without an event counter, make an independent second copy before replacement instead of
+        // trusting the copy that crossed the clipboard settle wait. Windows also detects hidden
+        // away/return cycles throughout conversion and the final clipboard checks.
+        var resumed = _verifiedSelection?.FocusVersion is null;
         async Task<bool> VerifyAfterResume()
         {
-            if (!resumed) return true;
-            var current = await CopySelectionAsync(window, stillValid);
+            if (!resumed && !SelectionFocusChanged(window, expectedSelection)) return true;
+            // A second interruption during this verification is a safe abort, not an unbounded retry.
+            var current = await CopySelectionAsync(window, stillValid, allowRevalidation: false);
             resumed = false;
-            return current is not null && current.Replace("\r\n", "\n") == expectedSelection.Replace("\r\n", "\n");
+            return current is not null && SameSelection(current, expectedSelection);
         }
         if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true) || !await VerifyAfterResume()) return false;
         if (!stillValid())
@@ -482,7 +559,7 @@ public sealed class AppController : IDisposable
                 Log.Info("Paste skipped: the active window changed");
                 return false;
             }
-            if (resumed)
+            if (resumed || SelectionFocusChanged(window, expectedSelection))
             {
                 if (!await VerifyAfterResume()) return false;
                 SetOwnText(text);
@@ -494,7 +571,7 @@ public sealed class AppController : IDisposable
             }
         }
         EnsureClipboardIsOurs();
-        if (!IsTargetActive(window) || !stillValid()) return false;
+        if (!IsTargetActive(window) || !stillValid() || SelectionFocusChanged(window, expectedSelection)) return false;
         _platform.SendPaste();
         onSent?.Invoke();
         // Give the target app time to read the clipboard before it changes again.
@@ -564,6 +641,7 @@ public sealed class AppController : IDisposable
             }
             if (await PasteTextAsync(last.Original, window, StillValid, last.Result)) LastTransform = null;
         }
+        catch (SelectionChangedException) { Log.Info("Undo stopped: the copied selection is no longer verified"); }
         catch (ClipboardTakenException) { Log.Info("Undo stopped: another app changed the clipboard meanwhile"); }
         catch (Exception e) { Log.Error("Undo failed", e); }
         finally
@@ -738,6 +816,7 @@ public sealed class AppController : IDisposable
             }
             Log.Info("Snippet expanded");
         }
+        catch (SelectionChangedException) { Log.Info("Snippet stopped: the copied selection is no longer verified"); }
         catch (ClipboardTakenException) { Log.Info("Snippet stopped: another app changed the clipboard meanwhile"); }
         catch (Exception e) { Log.Error("Snippet expansion failed", e); }
         finally
@@ -770,44 +849,52 @@ public sealed class AppController : IDisposable
     /// <summary>Sends Copy and returns the selected text, or null when nothing is selected.</summary>
     private async Task<string?> CopySelectionAsync(nint window, Func<bool> stillValid, bool allowRevalidation = true)
     {
+        _verifiedSelection = null;
+        var focusVersion = _platform.ForegroundChangeVersion;
         var resumed = false;
-        if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true)) return null;
-        // A unique placeholder guarantees the copy is visible as a change even when the selection
-        // equals what was already on the clipboard (content-hashing platforms such as Linux).
+        if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true)) throw new SelectionChangedException();
+        // A unique placeholder makes even identical copies visible on content-hashing platforms.
         var placeholder = "\u2063typlo-" + Guid.NewGuid().ToString("N");
         SetOwnText(placeholder);
         var before = _platform.ClipboardSequence;
-        if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true)) return null;
+        if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true)) throw new SelectionChangedException();
         _platform.SendCopy();
-        // Generous: heavy apps (and the first clipboard use in a process) can take over half a second to copy, and a
-        // copy that arrives after we gave up would be mistaken for a later one.
-        if (await WaitForClipboardChange(before, TimeSpan.FromSeconds(2)) is not { } change) return null;
+        if (await WaitForClipboardChange(before, TimeSpan.FromSeconds(2)) is not { } change)
+        {
+            if (resumed || ForegroundChanged(focusVersion) || !stillValid()) throw new SelectionChangedException();
+            return null;
+        }
         var observed = change.Sequence;
-        if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true)) return null;
-        // Adopt the copy only if the target app made it. Where the OS names the clipboard owner (Windows, X11), a copy
-        // by any other process is refused. Where it does not (macOS, Wayland), a further change while the copy settled
-        // is ambiguous (a second write by the app or another app's copy, even after an empty first state), so it is
-        // refused too.
+        if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true)) throw new SelectionChangedException();
+        // Never replace a foreign clipboard write with another verification copy.
         var owned = _platform.IsClipboardOwnedBy(window);
         if (owned == false || (owned is null && change.ChangedAgain) || _platform.ClipboardSequence != observed)
             throw new ClipboardTakenException();
-        _expectedSequence = observed; // the copy we triggered
+        _expectedSequence = observed;
         var text = _platform.ReadText();
         if (text is not null && _platform.IsClipboardOwnedBy(window) == true) _adoptedCopy = (text, window);
         EnsureClipboardIsOurs();
-        if (string.IsNullOrEmpty(text) || text == placeholder) return null;
-        // VS Code and Visual Studio copy the whole current line when nothing is selected; they mark such copies.
         var lineCopy = _platform.IsEmptySelectionLineCopy();
         EnsureClipboardIsOurs();
-        if (lineCopy) return null;
-        if (resumed)
+        var interrupted = resumed || ForegroundChanged(focusVersion);
+        if (!stillValid() || !IsTargetActive(window)) throw new SelectionChangedException();
+        if (string.IsNullOrEmpty(text) || text == placeholder || lineCopy)
         {
-            // The editor may discard its selection on blur. Verify the current range, rather than
-            // pasting over a selection that only existed before the notification appeared.
-            if (!allowRevalidation) return null;
-            var current = await CopySelectionAsync(window, stillValid, allowRevalidation: false);
-            return current == text ? text : null;
+            if (interrupted) throw new SelectionChangedException();
+            return null;
         }
+        if (interrupted)
+        {
+            // The clipboard still contains what was selected before blur. Only a new copy can
+            // establish the current range. Another interruption during that copy aborts safely.
+            if (!allowRevalidation) throw new SelectionChangedException();
+            var current = await CopySelectionAsync(window, stillValid, allowRevalidation: false);
+            if (current is null || !SameSelection(current, text)) throw new SelectionChangedException();
+            return current;
+        }
+        // Retain the version from BEFORE the copy, not a newer version sampled after verification.
+        // A transition just after this check must still invalidate the range before Paste.
+        _verifiedSelection = (window, text, focusVersion);
         return text;
     }
 

@@ -7,6 +7,7 @@ using Typlo.App.Platform;
 using Typlo.App.Services;
 using Typlo.App.Views;
 using Typlo.Core;
+using Typlo.Core.Imaging;
 
 namespace Typlo.App;
 
@@ -17,6 +18,7 @@ public partial class App : Application
     private ClipboardWindow? _historyWindow;
     private SettingsWindow? _settingsWindow;
     private TrayIcon? _tray;
+    private ScreenCaptureService? _screenCapture;
 
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
@@ -79,10 +81,13 @@ public partial class App : Application
         _updates.Start();
 
         _controller.ShowHistoryRequested += prev => Dispatcher.UIThread.Post(() => ShowHistory(prev));
+        _screenCapture = new ScreenCaptureService(_controller);
+        _controller.ScreenshotRequested += destination => Dispatcher.UIThread.Post(() => _ = _screenCapture.StartAsync(_controller.Settings.ScreenshotShape, destination));
         CreateTray();
         desktop.Exit += (_, _) => Cleanup();
 
-        if (_controller.FailedHotkeys.Count > 0 || !Program.Args.Contains("--tray") && !File.Exists(paths.SettingsFile + ".seen"))
+        if (Program.Args.Contains("--capture")) OnCommand(Program.Args);
+        else if (_controller.FailedHotkeys.Count > 0 || !Program.Args.Contains("--tray") && !File.Exists(paths.SettingsFile + ".seen"))
         {
             File.WriteAllText(paths.SettingsFile + ".seen", "");
             ShowSettings();
@@ -97,7 +102,12 @@ public partial class App : Application
     private void OnCommand(string[] args)
     {
         if (_controller is null) return;
-        if (args.Contains("--history"))
+        if (Array.IndexOf(args, "--capture") is var captureIndex and >= 0)
+        {
+            var shape = captureIndex + 1 < args.Length && args[captureIndex + 1] == "freehand" ? CaptureShape.Freehand : CaptureShape.Rectangle;
+            Dispatcher.UIThread.Post(() => _ = _screenCapture!.StartAsync(shape, args.Contains("--save") ? CaptureDestination.File : CaptureDestination.Clipboard));
+        }
+        else if (args.Contains("--history"))
             Dispatcher.UIThread.Post(() => ShowHistory(_platform!.ForegroundWindow));
         else if (args.Contains("--install-update"))
             _ = Task.Run(async () =>
@@ -223,6 +233,14 @@ public partial class App : Application
         keepAwake.Click += (_, _) => _controller.SetPreventScreenLock(!_controller.Settings.PreventScreenLock);
         var exit = new NativeMenuItem(Loc.T("tray.exit"));
         exit.Click += (_, _) => (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
+        var capture = new NativeMenuItem(Loc.T("capture.title")) { Menu = new NativeMenu(), IsEnabled = _platform!.SupportsScreenCapture };
+        foreach (var destination in new[] { CaptureDestination.Clipboard, CaptureDestination.File })
+        {
+            var item = new NativeMenuItem(Loc.T(destination == CaptureDestination.Clipboard ? "capture.copy" : "capture.save"));
+            item.Click += (_, _) => _ = _screenCapture!.StartAsync(_controller!.Settings.ScreenshotShape, destination);
+            capture.Menu.Items.Add(item);
+        }
+        menu.Items.Add(capture);
         menu.Items.Add(history);
         menu.Items.Add(settings);
         menu.Items.Add(shortcuts);
@@ -237,6 +255,7 @@ public partial class App : Application
 
     private void ShowHistory(nint previousWindow)
     {
+        if (_screenCapture?.IsActive == true) return;
         if (_controller is null) return;
         _historyWindow ??= new ClipboardWindow(_controller);
         _historyWindow.ShowFor(previousWindow);
@@ -273,6 +292,7 @@ public partial class App : Application
 
     private void ShowSettings()
     {
+        if (_screenCapture?.IsActive == true) return;
         if (_controller is null) return;
         if (_settingsWindow is { IsVisible: true })
         {
@@ -284,6 +304,7 @@ public partial class App : Application
             Reopen = () => Dispatcher.UIThread.Post(ShowSettings),
             CheckForUpdates = ShowUpdateDialog,
             ShowShortcuts = ShowShortcuts,
+            CaptureScreenshot = (mode, destination) => _ = _screenCapture!.StartAsync(mode, destination),
         };
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         _settingsWindow.Show();
@@ -292,6 +313,7 @@ public partial class App : Application
 
     private void Cleanup()
     {
+        _screenCapture?.Dispose();
         _ipc?.Dispose();
         _updates?.Dispose();
         _tray?.Dispose();

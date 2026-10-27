@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Typlo.Core.Imaging;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
@@ -192,6 +193,33 @@ internal sealed class EditorCheck : Form
                     if (popup.TextAtClose != "notification text") throw new InvalidOperationException("Input reached the notification window");
                 });
 
+            await Check("desktop capture has exact BGRA pixels and a transparent freehand mask", async () =>
+            {
+                using var swatch = new Form
+                {
+                    BackColor = Color.FromArgb(13, 97, 173), Width = 100, Height = 100,
+                    FormBorderStyle = FormBorderStyle.None, ShowInTaskbar = false, TopMost = true,
+                    StartPosition = FormStartPosition.Manual, Left = Left + 80, Top = Top + 80,
+                };
+                swatch.Show(this); swatch.Activate();
+                try
+                {
+                    await Task.Delay(150);
+                    var position = swatch.PointToScreen(new Point(20, 20));
+                    var frame = DesktopCapture.Grab();
+                    var x = position.X - frame.Bounds.X;
+                    var y = position.Y - frame.Bounds.Y;
+                    var offset = (y * frame.Bounds.Width + x) * 4;
+                    if (!frame.Bgra.AsSpan(offset, 4).SequenceEqual(new byte[] { 173, 97, 13, 255 }))
+                        throw new InvalidOperationException($"Screen copy color mismatch: {string.Join(',', frame.Bgra.AsSpan(offset, 4).ToArray())}; fixture DPI={swatch.DeviceDpi}, sample={x},{y}, frame={frame.Bounds.Width}x{frame.Bounds.Height}");
+                    var crop = CaptureRegion.Crop(frame.Bgra, frame.Bounds.Width, frame.Bounds.Height, CaptureShape.Freehand,
+                        [new(x, y), new(x + 20, y), new(x, y + 20)])!;
+                    if (crop.Width != 20 || crop.Height != 20 || crop.Bgra[3] != 255 || crop.Bgra[^1] != 0)
+                        throw new InvalidOperationException("The freehand crop did not retain its transparent background");
+                }
+                finally { swatch.Close(); Activate(); _browser.Focus(); }
+            });
+
             await StartClipboardHelper();
             await Check("an unrelated child process is not an embedded editor", async () =>
             {
@@ -209,6 +237,63 @@ internal sealed class EditorCheck : Form
                 await interference;
                 await ExpectText("ghb");
                 if (platform.ReadText() != ExternalCopy) throw new InvalidOperationException("External copy was overwritten");
+            });
+
+            await Check("foreground events retain a complete activation cycle between samples", async () =>
+            {
+                await Prepare("ghb", select: true);
+                var counter = typeof(IPlatform).GetProperty("ForegroundChangeVersion");
+                long? Version() => (long?)counter?.GetValue(platform);
+                var before = Version() ?? throw new InvalidOperationException("No durable foreground counter");
+                using var popup = new NotificationFixture(true);
+                popup.ShowNotification(this);
+                var activated = Native.GetForegroundWindow() == popup.Handle;
+                popup.Close(); Activate(); _browser.Focus();
+                if (!activated || Native.GetForegroundWindow() != Handle)
+                    throw new InvalidOperationException("Fixture could not perform the activation cycle");
+                await Until(() => Version() >= before + 2, "A complete activation cycle was lost between samples");
+            });
+
+            await Check("copy snapshot followed by a completed blur and lost selection never duplicates text", async () =>
+            {
+                using var controller = Controller(platform, "copy-blur", recent: false);
+                await Prepare("ghb", select: true);
+                var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<CoreWebView2WebMessageReceivedEventArgs> handler = async (_, e) =>
+                {
+                    if (e.TryGetWebMessageAsString() != "focus-copy") return;
+                    try
+                    {
+                        using var popup = new NotificationFixture(true);
+                        popup.ShowNotification(this);
+                        if (Native.GetForegroundWindow() != popup.Handle)
+                            throw new InvalidOperationException("Fixture popup did not activate");
+                        await _browser.ExecuteScriptAsync("window.getSelection().removeAllRanges()");
+                        popup.Close(); Activate(); _browser.Focus();
+                        await _browser.ExecuteScriptAsync("""
+                            (()=>{const e=document.getElementById('editor');e.focus();
+                            const r=document.createRange();r.selectNodeContents(e);r.collapse(false);
+                            const s=window.getSelection();s.removeAllRanges();s.addRange(r);})()
+                            """);
+                        // Publish the pre-blur snapshot only after the editor has completed its return.
+                        // No sleep decides whether the controller sees the popup while waiting for Copy.
+                        platform.SetText("ghb");
+                        completed.TrySetResult();
+                    }
+                    catch (Exception error) { completed.TrySetException(error); }
+                };
+                _browser.CoreWebView2.WebMessageReceived += handler;
+                try
+                {
+                    await _browser.ExecuteScriptAsync("""
+                        document.addEventListener('copy', e=>{e.preventDefault();
+                            chrome.webview.postMessage('focus-copy');}, {once:true});
+                        """);
+                    await controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+                    await completed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                    await ExpectText("ghb");
+                }
+                finally { _browser.CoreWebView2.WebMessageReceived -= handler; }
             });
 
             Result = _report.Any(line => line.StartsWith("FAIL", StringComparison.Ordinal)) ? 1 : 0;
@@ -243,7 +328,7 @@ internal sealed class EditorCheck : Form
         var paths = new AppPaths(Path.Combine(_work, name));
         new SettingsStore(paths.SettingsFile).Save(new AppSettings
         {
-            LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "", ClipboardHotkey = "",
+            LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "", ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "",
             SwitchSystemLayout = false, ConvertLastWord = recent, HistoryEnabled = false,
         });
         return new AppController(platform, paths, PlatformFactory.CreateKeyProtector(diagnostic: true), diagnostic: true);
