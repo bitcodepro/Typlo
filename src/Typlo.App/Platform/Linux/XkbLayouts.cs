@@ -30,18 +30,7 @@ internal static partial class XkbLayouts
         return line is null ? [] : line["layout:".Length..].Trim().Split(',', StringSplitOptions.TrimEntries);
     }
 
-    public static bool SwitchTo(int langId)
-    {
-        string language;
-        try { language = System.Globalization.CultureInfo.GetCultureInfo(langId).TwoLetterISOLanguageName; }
-        catch (System.Globalization.CultureNotFoundException) { return false; }
-        var installed = LinuxKeyboardLayouts.Read(false);
-        var group = installed.ToList().FindIndex(l => l.LanguageCode == language);
-        if (group < 0) return false;
-        return SwitchGroup(group);
-    }
-
-    public static bool SwitchGroup(int group) => group >= 0 && WithDisplay(d => XkbLockGroup(d, XkbUseCoreKbd, (uint)group));
+    public static bool SwitchGroup(int group) => group is >= 0 and < 4 && WithDisplay(d => XkbLockGroup(d, XkbUseCoreKbd, (uint)group));
 
     /// <summary>The active group index, or -1.</summary>
     public static int CurrentGroup()

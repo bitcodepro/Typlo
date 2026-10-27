@@ -45,7 +45,8 @@ internal static class TypingEvents
     /// <param name="isOwnPress">
     /// Consumes a key press (key code, raw code) Typlo itself injected, on platforms whose hook does not flag them.
     /// </param>
-    public static void Attach(IGlobalHook hook, Action<TypedKey> raise, Func<KeyCode, ushort, bool>? isOwnPress = null)
+    public static void Attach(IGlobalHook hook, Action<TypedKey> raise, Func<KeyCode, ushort, bool>? isOwnPress = null,
+        Func<KeyCode, ushort, bool, char?>? physicalCharacter = null)
     {
         var down = new HashSet<KeyCode>();
         // Effective key state also follows injected releases (otherwise Shift/Ctrl can get stuck).
@@ -98,7 +99,8 @@ internal static class TypingEvents
             }
             // Modifier presses are never typing; they are also not tracked as own input (text entry may add a Shift).
             if (modifier || own) return;
-            if (e.IsEventSimulated && !(AcceptSimulated && !shortcut && ToChar(code, shift) is not null)) return;
+            var character = shortcut ? null : physicalCharacter is null ? ToChar(code, shift) : physicalCharacter(code, e.Data.RawCode, shift);
+            if (e.IsEventSimulated && !(AcceptSimulated && !shortcut && character is not null)) return;
             if (shortcut)
             {
                 // Not typing, and the caret may have moved, unless the controller recognises it as its own hotkey.
@@ -109,7 +111,7 @@ internal static class TypingEvents
             }
             if (code == KeyCode.VcBackspace) { raise(TypedKey.BackspaceKey); return; }
             if (ResetKeys.Contains(code)) { raise(TypedKey.ResetKey); return; }
-            if (ToChar(code, shift) is not { } c)
+            if (character is not { } c)
             {
                 var name = KeyCodes.ToName(code);
                 raise(TypedKey.ForShortcut(name is null ? null : new Typlo.Core.Hotkeys.Hotkey(mods, name)));

@@ -23,17 +23,27 @@ internal static partial class LinuxKeyboardLayouts
         public string Id => $"xkb:{Layout}:{Variant}";
     }
 
-    public static IReadOnlyList<Source> Configured(bool wayland = false)
+    public static IReadOnlyList<Source> Configured() => ReadSources(GnomeInputSources.IsSession, GnomeInputSources.Run);
+
+    // GNOME on X11 loads only a subset of its configured sources into XKB. The configured catalog
+    // and the loaded group indices are different namespaces and must never be used interchangeably.
+    internal static IReadOnlyList<Source> ReadSources(bool gnomeSession, Func<string, string[], Proc.Result> run)
     {
-        if (wayland && Proc.Has("gsettings"))
+        if (gnomeSession)
         {
-            var result = Proc.Run("gsettings", ["get", "org.gnome.desktop.input-sources", "sources"]);
-            var sources = Regex.Matches(result.Text, @"\('xkb',\s*'([^']+)'\)")
+            var result = run("gsettings", ["get", "org.gnome.desktop.input-sources", "sources"]);
+            var sources = Regex.Matches(result.Ok ? result.Text : "", @"\('xkb',\s*'([^']+)'\)")
                 .Select(m => m.Groups[1].Value.Split('+', 2)).Select(parts => new Source(parts[0], parts.Length > 1 ? parts[1] : "")).ToArray();
             if (sources.Length > 0) return sources;
         }
-        var query = Proc.Run("setxkbmap", ["-query"]);
+        var query = run("setxkbmap", ["-query"]);
         return query.Ok ? ParseQuery(query.Text) : [];
+    }
+
+    public static IReadOnlyList<Source> Loaded()
+    {
+        var result = GnomeInputSources.Run("setxkbmap", ["-query"]);
+        return result.Ok ? ParseQuery(result.Text) : [];
     }
 
     internal static IReadOnlyList<Source> ParseQuery(string query)
@@ -45,9 +55,9 @@ internal static partial class LinuxKeyboardLayouts
         return layouts.Where(l => l.Length > 0).Select((layout, i) => new Source(layout, variants.ElementAtOrDefault(i) ?? "")).ToArray();
     }
 
-    public static IReadOnlyList<KeyboardLayout> Read(bool wayland)
+    public static IReadOnlyList<KeyboardLayout> Read()
     {
-        var sources = Configured(wayland);
+        var sources = Configured();
         XDocument? rules = null;
         try { rules = XDocument.Load("/usr/share/X11/xkb/rules/evdev.xml"); }
         catch (Exception e) when (e is IOException or System.Xml.XmlException or UnauthorizedAccessException) { }

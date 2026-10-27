@@ -2,6 +2,8 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Win32;
+using SharpHook.Data;
+using Typlo.App.Platform.Shared;
 using Typlo.Core.Layouts;
 using static Typlo.App.Platform.Windows.Native;
 
@@ -17,6 +19,40 @@ internal static partial class WindowsKeyboardLayouts
      30,31,32,33,34,35,36,37,38,39,40,44,45,46,47,48,49,50,51,52,53,43];
 
     public static string Id(nint handle) => $"win:{unchecked((uint)(long)handle):x8}";
+
+    // SimpleGlobalHook dispatches synchronously on libuiohook's thread. That library maps letter/digit
+    // scans through MapVirtualKeyW using THIS thread's layout, whereas RawCode is the foreground VK.
+    // Invert the same mapping before comparing recent keys/snippet triggers with physical layout maps.
+    public static char? PhysicalCharacter(KeyCode code, ushort raw, bool shift)
+    {
+        var inputThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
+        return PhysicalCharacter(code, raw, shift, GetKeyboardLayout(0), GetKeyboardLayout(inputThread));
+    }
+
+    internal static char? PhysicalCharacter(KeyCode code, ushort raw, bool shift, nint hookLayout, nint inputLayout)
+    {
+        if (code == KeyCode.VcSpace) return ' ';
+        uint vk;
+        nint layout;
+        if (raw is >= 0x30 and <= 0x39 or >= 0x41 and <= 0x5a)
+        {
+            var name = KeyCodes.ToName(code);
+            if (name is not { Length: 1 } || !char.IsAsciiLetterOrDigit(name[0])) return null;
+            vk = name[0];
+            layout = hookLayout;
+        }
+        else if (raw is >= 0xba and <= 0xc0 or >= 0xdb and <= 0xdf or 0xe2)
+        {
+            // OEM keys are not remapped by libuiohook: their VK belongs to the input window's layout.
+            vk = raw;
+            layout = inputLayout;
+        }
+        else return null;
+        if (layout == 0) return null;
+        var scan = MapVirtualKeyExW(vk, 4 /* MAPVK_VK_TO_VSC_EX */, layout);
+        var index = Array.IndexOf(Scans, scan);
+        return index < 0 ? null : (shift ? KeyboardLayouts.English.Shifted : KeyboardLayouts.English.Normal)[index];
+    }
 
     public static IReadOnlyList<KeyboardLayout> Read()
     {

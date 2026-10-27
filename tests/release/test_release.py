@@ -37,6 +37,9 @@ def make_archive(directory, rid, change=None, link=False):
     files = {"README.md": b"Typlo", "LICENSE": b"MIT License\nCopyright (c) 2026 bitcodepro", release.NOTICES: b"Components in this build\n  Avalonia 12.1.3\n  SkiaSharp 3.119.4\nLicense for: Avalonia\nMIT", "build-info.json": json.dumps({"version": VERSION, "rid": rid, "commit": COMMIT}).encode(), release.executable_path(rid): executable(rid)}
     if rid.startswith("osx-"):
         files["Typlo.app/Contents/Info.plist"] = plistlib.dumps({"CFBundleShortVersionString": VERSION, "CFBundleExecutable": "Typlo"})
+    if rid.startswith("linux-"):
+        files.update({"gnome-extension/" + name: (release.ROOT / "integrations/gnome" / name).read_bytes()
+                      for name in release.GNOME_FILES})
     if change:
         change(files)
     archive = directory / release.archive_name(VERSION, rid)
@@ -107,6 +110,16 @@ class PackageTests(unittest.TestCase):
         with archive.open("ab") as stream:
             stream.write(b"tampered")
         with self.assertRaisesRegex(ValueError, "SHA-256"):
+            release.verify_archive(archive, VERSION, "win-x64", COMMIT)
+
+    def test_linux_package_requires_the_complete_gnome_bridge(self):
+        archive = make_archive(self.directory, "linux-x64", lambda files: files.pop("gnome-extension/bridge.js"))
+        with self.assertRaisesRegex(ValueError, "Missing package entries"):
+            release.verify_archive(archive, VERSION, "linux-x64", COMMIT)
+
+    def test_other_packages_do_not_accept_linux_bridge_files(self):
+        archive = make_archive(self.directory, "win-x64", lambda files: files.update({"gnome-extension/extension.js": b"unexpected"}))
+        with self.assertRaisesRegex(ValueError, "Unexpected top-level"):
             release.verify_archive(archive, VERSION, "win-x64", COMMIT)
 
     def test_rejects_architecture_mismatch(self):

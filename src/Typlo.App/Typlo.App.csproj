@@ -18,4 +18,8 @@
     <ProjectReference Include="..\Typlo.Core\Typlo.Core.csproj" />
     <InternalsVisibleTo Include="Typlo.Tests" />
   </ItemGroup>
+  <ItemGroup Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('linux-'))">
+    <Content Include="../../integrations/gnome/*" Link="gnome-extension/%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
 </Project>

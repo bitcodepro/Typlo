@@ -50,7 +50,8 @@ public sealed class WinPlatform : IPlatform
         try
         {
             _typingHook = new SharpHook.SimpleGlobalHook();
-            Shared.TypingEvents.Attach(_typingHook, key => KeyTyped?.Invoke(key));
+            Shared.TypingEvents.Attach(_typingHook, key => KeyTyped?.Invoke(key),
+                physicalCharacter: WindowsKeyboardLayouts.PhysicalCharacter);
             _ = _typingHook.RunAsync().ContinueWith(t => Log.Error("Typing hook stopped", t.Exception!.GetBaseException()),
                 TaskContinuationOptions.OnlyOnFaulted);
         }

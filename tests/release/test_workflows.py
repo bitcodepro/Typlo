@@ -22,7 +22,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(publisher["permissions"], {"contents": "write"})
         for context in ("bitcodepro/Typlo", "refs/heads/main", "'push'", "'workflow_dispatch'"):
             self.assertIn(context, publisher["if"])
-        self.assertEqual(set(publisher["needs"]), {"release-tooling", "build-and-test", "linux-selftest", "version", "packages", "verify-packages"})
+        self.assertEqual(set(publisher["needs"]), {"release-tooling", "build-and-test", "linux-selftest", "gnome-selftest", "version", "packages", "verify-packages"})
 
     def test_all_platforms_and_checks_are_present(self):
         jobs = self.ci["jobs"]
@@ -30,6 +30,8 @@ class WorkflowTests(unittest.TestCase):
         matrix = self.package["jobs"]["package"]["strategy"]["matrix"]["include"]
         self.assertEqual({row["rid"] for row in matrix}, {"win-x64", "linux-x64", "linux-arm64", "osx-arm64", "osx-x64"})
         self.assertIn("linux-selftest", jobs["version"]["needs"])
+        self.assertIn("gnome-selftest", jobs["version"]["needs"])
+        self.assertIn("node --test tests/gnome/bridge.test.mjs", [step.get("run") for step in jobs["release-tooling"]["steps"]])
         self.assertNotIn("emulator-tests", jobs)
 
     def test_actions_are_pinned_and_checkouts_do_not_persist_credentials(self):

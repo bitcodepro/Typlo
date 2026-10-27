@@ -44,6 +44,7 @@ jobs:
           python-version: '3.13'
       - run: python -m pip install --disable-pip-version-check PyYAML==6.0.3
       - run: python -B -m unittest discover -s tests/release -v
+      - run: node --test tests/gnome/bridge.test.mjs
 
   build-and-test:
     name: Build and test (${{ matrix.os }})
@@ -102,9 +103,21 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  gnome-selftest:
+    name: GNOME 46 X11 five-source switching
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - run: docker build -t typlo-gnome-selftest -f tests/gnome/Dockerfile .
+      - run: docker run --rm --network none typlo-gnome-selftest
+
   version:
     name: Select release or preview version
-    needs: [release-tooling, build-and-test, linux-selftest]
+    needs: [release-tooling, build-and-test, linux-selftest, gnome-selftest]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -167,7 +180,7 @@ jobs:
 
   release:
     name: Publish release from main
-    needs: [release-tooling, build-and-test, linux-selftest, version, packages, verify-packages]
+    needs: [release-tooling, build-and-test, linux-selftest, gnome-selftest, version, packages, verify-packages]
     if: >-
       github.repository == 'bitcodepro/Typlo' && github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&

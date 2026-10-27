@@ -266,7 +266,7 @@ public partial class SettingsWindow : Window
         var files = await StorageProvider.OpenFilePickerAsync(new Avalonia.Platform.Storage.FilePickerOpenOptions { AllowMultiple = false });
         if (files.Count == 0 || files[0].TryGetLocalPath() is not { } path) return;
         AppSettings imported;
-        try { imported = new SettingsStore(path).Import(path); }
+        try { imported = new SettingsStore(path).Import(path, _controller.AvailableLayouts); }
         catch (SettingsImportException e) when (e.Problems.Count > 0)
         {
             ExportStatus.Text = Loc.T("settings.snippetProblem", Describe(e.Problems));

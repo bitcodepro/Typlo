@@ -7,6 +7,17 @@ public static partial class Loc
         // Order follows Languages: en, ru, uk, de, es, pt, fr, it, zh, ja.
         var features = new Dictionary<string, string[]>
         {
+            ["note.linux.gnomeBridge"] = [
+                "GNOME: enable the included Typlo Input Sources extension for system-layout switching (README). Text conversion remains available.",
+                "GNOME: для переключения системной раскладки включите расширение Typlo Input Sources из комплекта (README). Преобразование текста доступно.",
+                "GNOME: для перемикання системної розкладки ввімкніть розширення Typlo Input Sources із комплекту (README). Перетворення тексту доступне.",
+                "GNOME: Für den Systemlayoutwechsel die mitgelieferte Erweiterung Typlo Input Sources aktivieren (README). Textumwandlung bleibt verfügbar.",
+                "GNOME: activa la extensión incluida Typlo Input Sources para cambiar la distribución del sistema (README). La conversión de texto sigue disponible.",
+                "GNOME: ative a extensão incluída Typlo Input Sources para trocar o layout do sistema (README). A conversão de texto continua disponível.",
+                "GNOME : activez l’extension fournie Typlo Input Sources pour changer la disposition système (README). La conversion du texte reste disponible.",
+                "GNOME: attiva l’estensione inclusa Typlo Input Sources per cambiare il layout di sistema (README). La conversione del testo resta disponibile.",
+                "GNOME：请启用随附的 Typlo Input Sources 扩展以切换系统布局（README）。文本转换仍可使用。",
+                "GNOME：システム配列の切り替えには同梱の Typlo Input Sources 拡張を有効にしてください（README）。テキスト変換は利用できます。"],
             ["settings.toggle"] = ["Next layout", "Следующая раскладка", "Наступна розкладка", "Nächstes Layout", "Siguiente distribución", "Próximo layout", "Disposition suivante", "Layout successivo", "下一个布局", "次の配列"],
             ["shortcuts.toggle"] = ["Convert to the next layout in your configured cycle", "Преобразовать в следующую раскладку выбранного цикла", "Перетворити на наступну розкладку вибраного циклу", "In das nächste Layout der eingestellten Reihenfolge umwandeln", "Convertir a la siguiente distribución del ciclo configurado", "Converter para o próximo layout do ciclo configurado", "Convertir vers la disposition suivante du cycle configuré", "Converti nel layout successivo del ciclo configurato", "转换为自定义循环中的下一个布局", "設定した順序で次の配列に変換"],
             ["settings.layoutHint"] = ["Layouts come from your system. The first three get Ctrl+Alt+Shift+1/2/3 on first setup; other shortcuts stay empty. Click a shortcut to change it; Backspace disables it.",

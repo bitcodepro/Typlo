@@ -18,6 +18,7 @@ public sealed class LinuxPlatform : HookPlatformBase
     private const string PngTarget = "image/png";
 
     private readonly bool _wayland;
+    private readonly GnomeInputSources? _gnome = GnomeInputSources.IsSession ? new() : null;
     private Process? _inhibitor;
     private Process? _watcher;
     private readonly SemaphoreSlim _changed = new(0);
@@ -37,13 +38,18 @@ public sealed class LinuxPlatform : HookPlatformBase
          string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")));
 
     public override string Name => _wayland ? "Linux (Wayland)" : "Linux (X11)";
-    public override IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => LinuxKeyboardLayouts.Read(_wayland);
-    public override string? GetCurrentLayoutId(nint window) => _wayland ? null :
-        LinuxKeyboardLayouts.Configured().ElementAtOrDefault(XkbLayouts.CurrentGroup())?.Id;
+    public override IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => LinuxKeyboardLayouts.Read();
+    public override string? GetCurrentLayoutId(nint window) => _gnome?.Current() ?? (_wayland ? null :
+        LinuxKeyboardLayouts.Loaded().ElementAtOrDefault(XkbLayouts.CurrentGroup())?.Id);
     public override bool SwitchKeyboardLayout(nint window, KeyboardLayout layout)
     {
-        var group = LinuxKeyboardLayouts.Configured(_wayland).ToList().FindIndex(s => s.Id == layout.Id);
-        return !_wayland && group >= 0 && (window == 0 || ForegroundWindow == window) && XkbLayouts.SwitchGroup(group);
+        if (_wayland) return false;
+        bool StillFocused() => window == 0 || ForegroundWindow == window;
+        // Shell owns both its source indicator and dynamically loaded XKB groups. Switching XKB
+        // behind its back would desynchronize them and cannot reach a fifth configured source.
+        if (_gnome is not null) return _gnome.Activate(layout.Id, StillFocused);
+        var group = LinuxKeyboardLayouts.Loaded().ToList().FindIndex(s => s.Id == layout.Id);
+        return group >= 0 && StillFocused() && XkbLayouts.SwitchGroup(group);
     }
 
     public override PlatformCapabilities Capabilities
@@ -55,8 +61,11 @@ public sealed class LinuxPlatform : HookPlatformBase
             if (missing.Count > 0) notes.Add(Services.Loc.T("note.linux.install", string.Join(", ", missing)));
             if (_wayland)
                 notes.Add(Services.Loc.T("note.linux.wayland"));
+            var switchLayout = !_wayland && (_gnome?.Available ?? XkbLayouts.Available);
+            if (!_wayland && _gnome is not null && !switchLayout)
+                notes.Add(Services.Loc.T("note.linux.gnomeBridge"));
             return new PlatformCapabilities(
-                GlobalHotkeys: !_wayland, SimulateInput: !_wayland, SwitchLayout: !_wayland && XkbLayouts.Available, DetectHotkeyConflicts: false,
+                GlobalHotkeys: !_wayland, SimulateInput: !_wayland, SwitchLayout: switchLayout, DetectHotkeyConflicts: false,
                 Notes: notes.Count > 0 ? string.Join(' ', notes) : null);
         }
     }
@@ -220,7 +229,13 @@ public sealed class LinuxPlatform : HookPlatformBase
 
     protected override ushort? TextEntryKeycode() => _wayland ? null : X11Clients.TextEntryKeycode();
 
-    public override bool SwitchKeyboardLayout(nint window, int langId) => !_wayland && XkbLayouts.Available && XkbLayouts.SwitchTo(langId);
+    public override bool SwitchKeyboardLayout(nint window, int langId)
+    {
+        string language;
+        try { language = System.Globalization.CultureInfo.GetCultureInfo(langId).TwoLetterISOLanguageName; }
+        catch (System.Globalization.CultureNotFoundException) { return false; }
+        return GetKeyboardLayouts().FirstOrDefault(l => l.LanguageCode == language) is { } layout && SwitchKeyboardLayout(window, layout);
+    }
 
     // ---------------------------------------------------------------- system
 

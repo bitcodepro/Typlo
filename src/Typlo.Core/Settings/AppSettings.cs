@@ -198,7 +198,7 @@ public sealed class SettingsStore(string path)
     /// Reads exported settings. Throws <see cref="SettingsImportException"/> for a file that is not Typlo settings
     /// (an empty object included) or that has invalid snippets; nothing is applied in that case.
     /// </summary>
-    public AppSettings Import(string file)
+    public AppSettings Import(string file, IReadOnlyList<global::Typlo.Core.Layouts.KeyboardLayout>? layouts = null)
     {
         var json = File.ReadAllText(file);
         try
@@ -221,7 +221,7 @@ public sealed class SettingsStore(string path)
 
         var s = JsonSerializer.Deserialize(json, SettingsJson.Default.AppSettings)
                 ?? throw new SettingsImportException("Empty settings file.", []);
-        var problems = s.Validate();
+        var problems = s.Validate(layouts);
         if (problems.Count > 0) throw new SettingsImportException("Invalid snippets.", problems);
         s.Normalize();
         return s;
