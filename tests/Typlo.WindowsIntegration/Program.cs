@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -149,6 +150,48 @@ internal sealed class EditorCheck : Form
                 await ExpectText("готовое при");
             });
 
+            foreach (var takesFocus in new[] { false, true })
+                await Check(takesFocus ? "transient notification activation during long selection" : "non-activating notification during long selection", async () =>
+                {
+                    using var controller = Controller(platform, "notification-" + takesFocus, recent: true);
+                    TypingEvents.AcceptSimulated = true;
+                    await Task.Delay(500);
+                    await Prepare("", select: false);
+                    for (var i = 0; i < 300; i++)
+                    {
+                        if (platform.ForegroundWindow != Handle) throw new InvalidOperationException("Fixture lost focus before typing");
+                        platform.SendChord(KeyModifiers.None, "G");
+                    }
+                    await ExpectTextEventually(new string('g', 300));
+                    using var popup = new NotificationFixture(takesFocus);
+                    using var show = new System.Windows.Forms.Timer { Interval = 10 };
+                    using var hide = new System.Windows.Forms.Timer { Interval = 140 };
+                    var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var observedFocus = false;
+                    show.Tick += (_, _) =>
+                    {
+                        show.Stop();
+                        popup.ShowNotification(this);
+                        observedFocus = Native.GetForegroundWindow() == popup.Handle;
+                        hide.Start();
+                    };
+                    hide.Tick += (_, _) =>
+                    {
+                        hide.Stop();
+                        var restore = takesFocus && Native.GetForegroundWindow() == popup.Handle;
+                        popup.Close();
+                        // Emulate the shell returning to the previous edit control after a transient activation.
+                        if (restore) { Activate(); _browser.Focus(); }
+                        closed.TrySetResult();
+                    };
+                    show.Start();
+                    await controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+                    await closed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                    if (observedFocus != takesFocus) throw new InvalidOperationException("Notification fixture did not produce the requested focus state");
+                    await ExpectText(new string('п', 300));
+                    if (popup.TextAtClose != "notification text") throw new InvalidOperationException("Input reached the notification window");
+                });
+
             await StartClipboardHelper();
             await Check("an unrelated child process is not an embedded editor", async () =>
             {
@@ -275,6 +318,18 @@ internal sealed class EditorCheck : Form
         if (actual != expected) throw new InvalidOperationException($"Expected fixture text '{expected}', got '{actual}'");
     }
 
+    private async Task ExpectTextEventually(string expected)
+    {
+        var timer = Stopwatch.StartNew();
+        while (timer.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            var actual = JsonSerializer.Deserialize<string>(await _browser.ExecuteScriptAsync("document.getElementById('editor').innerText"));
+            if (actual == expected) return;
+            await Task.Delay(20);
+        }
+        await ExpectText(expected);
+    }
+
     private static async Task Until(Func<bool> condition, string failure)
     {
         var timer = Stopwatch.StartNew();
@@ -282,4 +337,46 @@ internal sealed class EditorCheck : Form
         throw new TimeoutException(failure);
     }
 
+}
+
+internal sealed class NotificationFixture(bool takesFocus) : IDisposable
+{
+    private Form? _active;
+    private TextBox? _editor;
+    private nint _passive;
+    internal nint Handle => _active?.Handle ?? _passive;
+    internal string TextAtClose { get; private set; } = "notification text";
+    internal void ShowNotification(Form owner)
+    {
+        if (takesFocus)
+        {
+            _editor = new TextBox { Text = "notification text", Dock = DockStyle.Fill };
+            _active = new Form { ShowInTaskbar = false, TopMost = true, Text = "Typlo notification fixture", Width = 250, Height = 100 };
+            _active.Controls.Add(_editor);
+            _active.Show(owner);
+            _active.Activate();
+        }
+        else
+        {
+            // A real non-activating native popup, without Windows Forms focus bookkeeping.
+            _passive = Native.CreateWindowEx(0x08000088 /* NOACTIVATE | TOOLWINDOW | TOPMOST */, "STATIC", "notification text",
+                0x80000000 /* WS_POPUP */, 100, 100, 250, 100, owner.Handle, 0, 0, 0);
+            if (_passive == 0) throw new InvalidOperationException("Could not create passive popup");
+            ShowWindow(_passive, 4 /* SW_SHOWNOACTIVATE */);
+        }
+    }
+    internal void Close()
+    {
+        if (_active is not null)
+        {
+            TextAtClose = _editor!.Text;
+            _active.Close();
+            _active.Dispose();
+            _active = null;
+        }
+        if (_passive != 0) { Native.DestroyWindow(_passive); _passive = 0; }
+    }
+    public void Dispose() => Close();
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)] private static extern bool ShowWindow(nint window, int command);
 }

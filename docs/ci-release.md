@@ -13,8 +13,10 @@ availability or bound GitHub's queue time, including macOS ARM capacity shortage
 - Restore, Release build and the unit tests run on Windows 2025, Ubuntu 24.04 and macOS 15.
 - The Windows job also runs a local WebView2 contenteditable fixture through real copy/paste and
   keyboard input. It checks cross-process clipboard ownership, recent input beside old text,
-  formatted paragraphs, Undo, and interruption by an unrelated process's copy. The fixture uses
-  isolated data/profile folders and sends no Teams messages. Its SDK is a test-only dependency;
+  formatted paragraphs, Undo, and interruption by an unrelated process's copy. It also exercises
+  native passive and transiently activated notification windows during a 300-character selection.
+  Unit checks also cover cancellation on user input, persistent focus loss and lost selection ranges.
+  The fixture uses isolated data/profile folders and sends no Teams messages. Its SDK is a test-only dependency;
   CI explicitly installs Microsoft's WebView2 Runtime if the runner does not already have it.
 - The existing Linux end-to-end selftest runs inside a disposable Ubuntu/Xvfb/Openbox
   Docker container, with a read-only application mount, isolated writable XDG data/config

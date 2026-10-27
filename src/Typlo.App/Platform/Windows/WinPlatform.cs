@@ -471,7 +471,7 @@ public sealed class WinPlatform : IPlatform
     }
     public void SendPaste() => SendChord(KeyModifiers.Ctrl, "V");
 
-    public Task<bool> SelectPreviousCharactersAsync(int count, Func<bool> keepGoing)
+    public async Task<SelectionStatus> SelectPreviousCharactersAsync(nint window, int count, Func<bool> keepGoing)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(count, 100_000);
@@ -482,15 +482,20 @@ public sealed class WinPlatform : IPlatform
             var keys = new List<(ushort, bool)>(batch * 2 + 2) { (VK_SHIFT, false) };
             for (var i = 0; i < batch; i++) { keys.Add((left, false)); keys.Add((left, true)); }
             keys.Add((VK_SHIFT, true));
-            if (!keepGoing()) return Task.FromResult(false);
+            if (!keepGoing()) return SelectionStatus.Cancelled;
+            if (ForegroundWindow != window) return SelectionStatus.Interrupted;
             // Keep native stack allocation bounded, and re-check focus/input between batches.
             if (!Send(keys))
             {
                 Send([(left, true), (VK_SHIFT, true)]);
                 throw new IOException("Windows could not send the complete text selection.");
             }
+            // Let editors process this bounded batch before checking focus and sending more keys.
+            await Task.Delay(20);
+            if (!keepGoing()) return SelectionStatus.Cancelled;
+            if (ForegroundWindow != window) return SelectionStatus.Interrupted;
         }
-        return Task.FromResult(count > 0 || keepGoing());
+        return SelectionStatus.Completed;
     }
 
     public void SendChord(KeyModifiers modifiers, string key)
@@ -520,6 +525,9 @@ public sealed class WinPlatform : IPlatform
     }
 
     public nint ForegroundWindow => GetForegroundWindow();
+
+    public Task<bool> WaitForTargetAsync(nint window, Func<bool> stillValid, Action? onResumed = null) => Shared.TargetFocus.WaitAsync(window,
+        () => ForegroundWindow, () => IsWindow(window) && stillValid(), TimeSpan.FromMilliseconds(750), onResumed);
 
     public void ActivateWindow(nint handle)
     {

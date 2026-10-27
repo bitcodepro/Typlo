@@ -12,6 +12,10 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
    - Nothing selected? Only the recently typed input is converted (can be turned off).
      Windows also recognizes clipboard copies from native child windows hosted by another process,
      such as WebView2 editors in Teams. Copies from unrelated processes still stop the replacement.
+     A transient Windows activation pauses input for up to 750 ms instead of immediately cancelling.
+     After focus returns, an interrupted selection continues only from a verified nonempty suffix.
+     Typing, clicking, an external copy or an unverified/collapsed selection stops the operation;
+     Typlo never activates the original window to take focus away from the user.
      Typing a single punctuation character beside an existing word changes only that character.
      Typing a whole wrong-layout word still includes its punctuation: `htdm.dftim` → `ревьюваешь`.
      Cursor movement, clicks, other shortcuts, window/layout changes and a 2-second pause between keystrokes start a new input run.
