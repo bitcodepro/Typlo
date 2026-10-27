@@ -1,0 +1,8 @@
+{
+  "uuid": "typlo-input-sources@bitcodepro",
+  "name": "Typlo Input Sources",
+  "description": "Allows Typlo to activate configured keyboard sources through GNOME Shell, including sources outside the loaded XKB group.",
+  "shell-version": ["45", "46"],
+  "version": 1,
+  "url": "https://github.com/bitcodepro/Typlo"
+}

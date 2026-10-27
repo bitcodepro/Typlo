@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Typlo.Core.Hotkeys;
+using Typlo.Core.Layouts;
 using Microsoft.Win32;
 using static Typlo.App.Platform.Windows.Native;
 
@@ -49,7 +50,8 @@ public sealed class WinPlatform : IPlatform
         try
         {
             _typingHook = new SharpHook.SimpleGlobalHook();
-            Shared.TypingEvents.Attach(_typingHook, key => KeyTyped?.Invoke(key));
+            Shared.TypingEvents.Attach(_typingHook, key => KeyTyped?.Invoke(key),
+                physicalCharacter: WindowsKeyboardLayouts.PhysicalCharacter);
             _ = _typingHook.RunAsync().ContinueWith(t => Log.Error("Typing hook stopped", t.Exception!.GetBaseException()),
                 TaskContinuationOptions.OnlyOnFaulted);
         }
@@ -456,26 +458,23 @@ public sealed class WinPlatform : IPlatform
     public Task<bool> SelectPreviousCharactersAsync(int count, Func<bool> keepGoing)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(count, 2000);
-        var keys = new List<(ushort, bool)>(count * 2 + 2);
-        keys.Add((VK_SHIFT, false));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(count, 100_000);
         var left = (ushort)VirtualKeys.FromName("Left");
-        for (var i = 0; i < count; i++)
+        for (var offset = 0; offset < count; offset += 256)
         {
-            keys.Add((left, false));
-            keys.Add((left, true));
+            var batch = Math.Min(256, count - offset);
+            var keys = new List<(ushort, bool)>(batch * 2 + 2) { (VK_SHIFT, false) };
+            for (var i = 0; i < batch; i++) { keys.Add((left, false)); keys.Add((left, true)); }
+            keys.Add((VK_SHIFT, true));
+            if (!keepGoing()) return Task.FromResult(false);
+            // Keep native stack allocation bounded, and re-check focus/input between batches.
+            if (!Send(keys))
+            {
+                Send([(left, true), (VK_SHIFT, true)]);
+                throw new IOException("Windows could not send the complete text selection.");
+            }
         }
-        keys.Add((VK_SHIFT, true));
-        if (!keepGoing()) return Task.FromResult(false);
-        // SendInput queues the entire batch in order, without interleaved hardware input. A subsequent
-        // Copy is queued after these arrows, so no timer is needed to wait for the selection to render.
-        if (count > 0 && !Send(keys))
-        {
-            // Do not copy or replace a partially selected range, or leave Shift held after a partial send.
-            Send([(left, true), (VK_SHIFT, true)]);
-            throw new IOException("Windows could not send the complete text selection.");
-        }
-        return Task.FromResult(true);
+        return Task.FromResult(count > 0 || keepGoing());
     }
 
     public void SendChord(KeyModifiers modifiers, string key)
@@ -522,6 +521,11 @@ public sealed class WinPlatform : IPlatform
     public (int X, int Y) CursorPosition => GetCursorPos(out var p) ? (p.X, p.Y) : (0, 0);
 
     // ---------------------------------------------------------------- layouts
+
+    public IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => WindowsKeyboardLayouts.Read();
+    public string? GetCurrentLayoutId(nint window) => WindowsKeyboardLayouts.Current(window);
+    public bool SwitchKeyboardLayout(nint window, KeyboardLayout layout) => layout.Id.StartsWith("win:", StringComparison.Ordinal)
+        ? WindowsKeyboardLayouts.Switch(window, layout) : SwitchKeyboardLayout(window, layout.LangId);
 
     public bool SwitchKeyboardLayout(nint window, int langId)
     {

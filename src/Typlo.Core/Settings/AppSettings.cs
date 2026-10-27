@@ -19,6 +19,7 @@ public enum SettingsProblemKind
     TriggerTooLong,
     DuplicateTrigger,
     EmptyText,
+    MultipleCursors,
 }
 
 /// <summary>An exported settings file that is not valid; <see cref="Problems"/> is empty for "not a Typlo file".</summary>
@@ -30,7 +31,7 @@ public sealed class SettingsImportException(string message, IReadOnlyList<Settin
 public sealed class AppSettings
 {
     public const string FormatId = "typlo-settings";
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
     /// <summary>Longest trigger the typing buffer can recognise.</summary>
     public const int MaxTriggerLength = 64;
 
@@ -40,18 +41,15 @@ public sealed class AppSettings
     /// <summary>Settings file layout version, for future migrations.</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
-    /// <summary>Layouts taking part in conversion, in priority order; Toggle flips between the first two found.</summary>
-    public List<string> Layouts { get; set; } = ["en", "ru"];
+    /// <summary>Native layout IDs in the user's cycle order; populated from the OS on first start.</summary>
+    public List<string> Layouts { get; set; } = [];
+    public bool LayoutsInitialized { get; set; }
 
     /// <summary>Converts the selection to the other layout of the pair.</summary>
     public string ToggleHotkey { get; set; } = "Ctrl+Alt+Shift+Space";
 
     /// <summary>Converts the selection into a specific layout.</summary>
-    public List<LayoutHotkey> LayoutHotkeys { get; set; } =
-    [
-        new() { LayoutId = "en", Hotkey = "Ctrl+Alt+Shift+E" },
-        new() { LayoutId = "ru", Hotkey = "Ctrl+Alt+Shift+R" },
-    ];
+    public List<LayoutHotkey> LayoutHotkeys { get; set; } = [];
 
     /// <summary>Cycles the case of the selection: lower → Title → UPPER.</summary>
     public string CaseHotkey { get; set; } = "Ctrl+Alt+Shift+C";
@@ -109,9 +107,8 @@ public sealed class AppSettings
         MaxImageMegabytes = Math.Clamp(MaxImageMegabytes, 1, 1000);
         MaxTextKilobytes = Math.Clamp(MaxTextKilobytes, 1, 100_000);
         Layouts = (Layouts ?? [])
-            .Where(id => global::Typlo.Core.Layouts.KeyboardLayouts.Find(id) is not null)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        if (Layouts.Count < 2) Layouts = ["en", "ru"];
         if (UiLanguage is not ("en" or "ru" or "uk" or "de" or "es" or "pt" or "fr" or "it" or "zh" or "ja")) UiLanguage = "en";
         if (UiTheme is not ("system" or "light" or "dark")) UiTheme = "system";
         Snippets = (Snippets ?? []).Where(s => s is not null && !string.IsNullOrWhiteSpace(s.Trigger)).ToList();
@@ -133,7 +130,7 @@ public sealed class AppSettings
     }
 
     /// <summary>Snippet problems that would make a snippet never fire or fire ambiguously.</summary>
-    public IReadOnlyList<SettingsProblem> Validate()
+    public IReadOnlyList<SettingsProblem> Validate(IReadOnlyList<global::Typlo.Core.Layouts.KeyboardLayout>? layouts = null)
     {
         var problems = new List<SettingsProblem>();
         var seen = new HashSet<string>();
@@ -142,8 +139,15 @@ public sealed class AppSettings
             var trigger = (s?.Trigger ?? "").Trim();
             if (trigger.Length < 2) problems.Add(new(SettingsProblemKind.TriggerTooShort, trigger));
             else if (trigger.Length > MaxTriggerLength) problems.Add(new(SettingsProblemKind.TriggerTooLong, trigger));
-            else if (!seen.Add(Typlo.Core.Text.SnippetMatcher.Normalize(trigger))) problems.Add(new(SettingsProblemKind.DuplicateTrigger, trigger));
+            else
+            {
+                var keys = SnippetMatcher.NormalizedKeys(trigger, layouts);
+                if (keys.Any(seen.Contains)) problems.Add(new(SettingsProblemKind.DuplicateTrigger, trigger));
+                foreach (var key in keys) seen.Add(key);
+            }
             if (string.IsNullOrEmpty(s?.Text)) problems.Add(new(SettingsProblemKind.EmptyText, trigger));
+            else if (SnippetTemplate.Parse(s.Text).CursorCount > 1) problems.Add(new(SettingsProblemKind.MultipleCursors, trigger));
+            else if (SnippetTemplate.Parse(s.Text).Text.Length == 0) problems.Add(new(SettingsProblemKind.EmptyText, trigger));
         }
         return problems;
     }
@@ -164,7 +168,12 @@ public sealed class SettingsStore(string path)
             if (File.Exists(Path))
             {
                 var s = JsonSerializer.Deserialize(File.ReadAllText(Path), SettingsJson.Default.AppSettings);
-                if (s is not null) { s.Normalize(); return s; }
+                if (s is not null)
+                {
+                    if (s.SchemaVersion < AppSettings.CurrentSchemaVersion && !File.Exists(Path + ".v1")) File.Copy(Path, Path + ".v1");
+                    s.Normalize();
+                    return s;
+                }
             }
         }
         catch (JsonException)
@@ -189,7 +198,7 @@ public sealed class SettingsStore(string path)
     /// Reads exported settings. Throws <see cref="SettingsImportException"/> for a file that is not Typlo settings
     /// (an empty object included) or that has invalid snippets; nothing is applied in that case.
     /// </summary>
-    public AppSettings Import(string file)
+    public AppSettings Import(string file, IReadOnlyList<global::Typlo.Core.Layouts.KeyboardLayout>? layouts = null)
     {
         var json = File.ReadAllText(file);
         try
@@ -212,7 +221,7 @@ public sealed class SettingsStore(string path)
 
         var s = JsonSerializer.Deserialize(json, SettingsJson.Default.AppSettings)
                 ?? throw new SettingsImportException("Empty settings file.", []);
-        var problems = s.Validate();
+        var problems = s.Validate(layouts);
         if (problems.Count > 0) throw new SettingsImportException("Invalid snippets.", problems);
         s.Normalize();
         return s;

@@ -4,7 +4,7 @@
         xmlns:l="using:Typlo.App.Services"
         x:Class="Typlo.App.Views.SettingsWindow"
         Title="{l:Tr settings.title}"
-        Width="560" Height="760" MinWidth="480" MinHeight="500"
+        Width="680" Height="800" MinWidth="560" MinHeight="500"
         WindowStartupLocation="CenterScreen">
   <Window.Styles>
     <Style Selector="TextBlock.h">
@@ -71,12 +71,14 @@
                   Content="{l:Tr settings.lastWord}" />
         <CheckBox x:Name="SwitchLayoutBox" Margin="0,4,0,0"
                   Content="{l:Tr settings.switchLayout}" />
-        <Grid ColumnDefinitions="190,*,Auto,*" Margin="0,8,0,0">
-          <TextBlock Classes="label" Text="{l:Tr settings.pair}" />
-          <ComboBox Grid.Column="1" x:Name="PairFirst" HorizontalAlignment="Stretch" />
-          <TextBlock Grid.Column="2" Text="⇄" Margin="8,0" VerticalAlignment="Center" />
-          <ComboBox Grid.Column="3" x:Name="PairSecond" HorizontalAlignment="Stretch" />
+        <Grid ColumnDefinitions="*,Auto" Margin="0,16,0,6">
+          <TextBlock Classes="label" FontWeight="SemiBold" Text="{l:Tr settings.cycleHeader}" />
+          <Button Grid.Column="1" x:Name="RefreshLayoutsButton" Content="{l:Tr settings.refreshLayouts}" />
         </Grid>
+        <TextBlock Classes="hint" Text="{l:Tr settings.cycleHint}" Margin="0,0,0,8" />
+        <StackPanel x:Name="CycleRows" Spacing="4" />
+        <TextBlock x:Name="CyclePreview" Classes="hint" Margin="0,8,0,0" />
+        <TextBlock x:Name="CycleStatus" Classes="hint" Foreground="IndianRed" Margin="0,4,0,0" />
 
         <TextBlock Classes="h" Text="{l:Tr settings.historyHeader}" />
         <CheckBox x:Name="HistoryEnabledBox" Content="{l:Tr settings.historyEnabled}" />
@@ -107,7 +109,7 @@
 
         <TextBlock Classes="h" Text="{l:Tr settings.snippetsHeader}" />
         <TextBlock Classes="hint" Margin="0,0,0,8" Text="{l:Tr settings.snippetsHint}" />
-        <StackPanel x:Name="SnippetRows" Spacing="6" />
+        <StackPanel x:Name="SnippetRows" Spacing="12" />
         <Button x:Name="AddSnippetButton" Content="{l:Tr settings.snippetAdd}" Margin="0,8,0,0" />
 
       </StackPanel>

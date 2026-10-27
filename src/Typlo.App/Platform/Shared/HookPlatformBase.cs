@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Typlo.Core.Hotkeys;
+using Typlo.Core.Layouts;
 using SharpHook;
 using SharpHook.Data;
 using SharpHook.Simulation;
@@ -219,6 +220,9 @@ public abstract class HookPlatformBase : IPlatform
     public abstract nint ForegroundWindow { get; }
     public abstract void ActivateWindow(nint handle);
     public abstract bool SwitchKeyboardLayout(nint window, int langId);
+    public virtual IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => [];
+    public virtual string? GetCurrentLayoutId(nint window) => null;
+    public virtual bool SwitchKeyboardLayout(nint window, KeyboardLayout layout) => SwitchKeyboardLayout(window, layout.LangId);
 
     // ---------------------------------------------------------------- clipboard
 

@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Platform.Storage;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -21,6 +22,8 @@ public partial class SettingsWindow : Window
     private HotkeyBox _translitBox = null!;
     private HotkeyBox _undoBox = null!;
     private readonly List<(TextBox Trigger, TextBox Text, Control Row)> _snippetRows = [];
+    private readonly List<KeyboardLayout> _cycleOrder = [];
+    private readonly HashSet<string> _enabledCycle = [];
     private static readonly string[] Themes = ["system", "light", "dark"];
 
     /// <summary>Called after a successful import so the app can show a fresh settings window.</summary>
@@ -50,12 +53,9 @@ public partial class SettingsWindow : Window
         BuildHotkeyRows();
         ClipboardHotkeyBox.HotkeyText = _draft.ClipboardHotkey;
         _hotkeyRows.Add((ClipboardHotkeyBox, ClipboardHotkeyStatus));
-        foreach (var (box, _) in _hotkeyRows) box.HotkeyChanged += () => Validate();
-
-        PairFirst.ItemsSource = KeyboardLayouts.All;
-        PairSecond.ItemsSource = KeyboardLayouts.All;
-        PairFirst.SelectedItem = KeyboardLayouts.Find(_draft.Layouts[0]);
-        PairSecond.SelectedItem = KeyboardLayouts.Find(_draft.Layouts[1]);
+        ClipboardHotkeyBox.HotkeyChanged += () => Validate();
+        InitializeCycle();
+        RefreshLayoutsButton.Click += (_, _) => RefreshLayouts();
 
         SwitchLayoutBox.IsChecked = _draft.SwitchSystemLayout;
         LastWordBox.IsChecked = _draft.ConvertLastWord;
@@ -71,7 +71,7 @@ public partial class SettingsWindow : Window
         ThemeBox.ItemsSource = Themes.Select(t => Loc.T("theme." + t)).ToList();
         ThemeBox.SelectedIndex = Math.Max(0, Array.IndexOf(Themes, _draft.UiTheme));
         foreach (var snippet in _draft.Snippets) AddSnippetRow(snippet);
-        AddSnippetButton.Click += (_, _) => AddSnippetRow(new Snippet());
+        AddSnippetButton.Click += (_, _) => AddSnippetRow(new Snippet { Text = Loc.T("settings.snippetExample") });
         ExportButton.Click += async (_, _) => await ExportAsync();
         CheckUpdatesButton.Click += (_, _) => CheckForUpdates?.Invoke();
         ShortcutsButton.Click += (_, _) => ShowShortcuts?.Invoke();
@@ -104,14 +104,14 @@ public partial class SettingsWindow : Window
     {
         _toggleBox = new HotkeyBox { HotkeyText = _draft.ToggleHotkey };
         AddRow(Loc.T("settings.toggle"), _toggleBox);
-        foreach (var layout in KeyboardLayouts.All)
+        foreach (var layout in _controller.AvailableLayouts)
         {
             var box = new HotkeyBox
             {
                 HotkeyText = _draft.LayoutHotkeys.FirstOrDefault(h => h.LayoutId == layout.Id)?.Hotkey ?? "",
             };
             _layoutBoxes[layout.Id] = box;
-            AddRow(Loc.T("settings.convertTo", Loc.T("layout." + layout.Id)), box);
+            AddRow(Loc.T("settings.convertTo", layout.Name) + (layout.SupportsConversion ? "" : " · " + Loc.T("settings.inputMethod")), box);
         }
         _caseBox = new HotkeyBox { HotkeyText = _draft.CaseHotkey };
         AddRow(Loc.T("hk.case"), _caseBox);
@@ -123,19 +123,49 @@ public partial class SettingsWindow : Window
 
     private void AddSnippetRow(Snippet snippet)
     {
-        var trigger = new TextBox { Text = snippet.Trigger, PlaceholderText = Loc.T("settings.snippetTrigger"), Width = 130 };
+        var trigger = new TextBox { Text = snippet.Trigger, PlaceholderText = Loc.T("settings.snippetTrigger") };
         var text = new TextBox
         {
             Text = snippet.Text, PlaceholderText = Loc.T("settings.snippetText"), AcceptsReturn = true,
-            TextWrapping = Avalonia.Media.TextWrapping.Wrap, MaxHeight = 120,
+            AcceptsTab = true, TextWrapping = TextWrapping.NoWrap, Height = 140,
+            FontFamily = new FontFamily("Cascadia Mono, Consolas, Menlo, monospace"), FontSize = 13,
         };
+        ScrollViewer.SetHorizontalScrollBarVisibility(text, ScrollBarVisibility.Auto);
+        ScrollViewer.SetVerticalScrollBarVisibility(text, ScrollBarVisibility.Auto);
         var remove = new Button { Content = "✕", VerticalAlignment = VerticalAlignment.Top };
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), ColumnSpacing = 8 };
-        Grid.SetColumn(text, 1);
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), ColumnSpacing = 8 };
+        header.Children.Add(new TextBlock { Text = Loc.T("settings.snippetKeyword"), VerticalAlignment = VerticalAlignment.Center });
+        Grid.SetColumn(trigger, 1);
         Grid.SetColumn(remove, 2);
-        row.Children.Add(trigger);
-        row.Children.Add(text);
-        row.Children.Add(remove);
+        header.Children.Add(trigger);
+        header.Children.Add(remove);
+        var insert = new Button { Content = Loc.T("settings.snippetCursor") };
+        var previewButton = new Button { Content = Loc.T("settings.snippetPreview") };
+        var preview = new TextBox { IsReadOnly = true, AcceptsReturn = true, IsVisible = false, MinHeight = 70,
+            MaxHeight = 180, TextWrapping = TextWrapping.Wrap, FontFamily = text.FontFamily };
+        var hint = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, Opacity = 0.75 };
+        void UpdatePreview()
+        {
+            var template = SnippetTemplate.Parse(text.Text ?? "");
+            insert.IsEnabled = template.CursorCount == 0;
+            preview.Text = template.CursorOffset is { } offset ? template.Text.Insert(offset, "│") : template.Text;
+            hint.Text = template.CursorCount > 1 ? Loc.T("snippet.multipleCursors", trigger.Text ?? "") : Loc.T("settings.snippetCursorHint");
+            hint.Foreground = template.CursorCount > 1 ? Brushes.IndianRed : Brushes.Gray;
+        }
+        text.TextChanged += (_, _) => UpdatePreview();
+        insert.Click += (_, _) =>
+        {
+            var start = Math.Min(text.SelectionStart, text.SelectionEnd);
+            text.SelectedText = SnippetTemplate.Marker;
+            text.CaretIndex = start + SnippetTemplate.Marker.Length;
+            text.ClearSelection();
+            text.Focus();
+        };
+        previewButton.Click += (_, _) => { UpdatePreview(); preview.IsVisible = !preview.IsVisible; };
+        var body = new StackPanel { Spacing = 8, Children = { header, text,
+            new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { insert, previewButton } }, hint, preview } };
+        var row = new Border { Child = body, Padding = new(12), CornerRadius = new(8), BorderThickness = new(1),
+            [!Border.BorderBrushProperty] = new Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("PanelBorderBrush") };
         var entry = (trigger, text, (Control)row);
         remove.Click += (_, _) =>
         {
@@ -144,6 +174,78 @@ public partial class SettingsWindow : Window
         };
         _snippetRows.Add(entry);
         SnippetRows.Children.Add(row);
+        UpdatePreview();
+    }
+
+    private void InitializeCycle()
+    {
+        _cycleOrder.Clear();
+        _enabledCycle.Clear();
+        foreach (var id in _draft.Layouts)
+            if (_controller.FindLayout(id) is { SupportsConversion: true } layout)
+            { _cycleOrder.Add(layout); _enabledCycle.Add(layout.Id); }
+        _cycleOrder.AddRange(_controller.AvailableLayouts.Where(l => _cycleOrder.All(item => item.Id != l.Id)));
+        BuildCycleRows();
+    }
+
+    private void BuildCycleRows()
+    {
+        CycleRows.Children.Clear();
+        foreach (var layout in _cycleOrder)
+        {
+            var check = new CheckBox { Content = layout.Name, IsChecked = _enabledCycle.Contains(layout.Id), IsEnabled = layout.SupportsConversion };
+            if (!layout.SupportsConversion) ToolTip.SetTip(check, Loc.T("settings.inputMethod"));
+            check.IsCheckedChanged += (_, _) =>
+            {
+                if (check.IsChecked == true) _enabledCycle.Add(layout.Id); else _enabledCycle.Remove(layout.Id);
+                UpdateCyclePreview();
+                Validate();
+            };
+            var index = _cycleOrder.IndexOf(layout);
+            var up = new Button { Content = "↑", IsEnabled = index > 0 };
+            var down = new Button { Content = "↓", IsEnabled = index < _cycleOrder.Count - 1 };
+            ToolTip.SetTip(up, Loc.T("settings.moveUp"));
+            ToolTip.SetTip(down, Loc.T("settings.moveDown"));
+            void Move(int delta)
+            {
+                var at = _cycleOrder.IndexOf(layout);
+                (_cycleOrder[at], _cycleOrder[at + delta]) = (_cycleOrder[at + delta], _cycleOrder[at]);
+                BuildCycleRows();
+            }
+            up.Click += (_, _) => Move(-1);
+            down.Click += (_, _) => Move(1);
+            var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"), ColumnSpacing = 5 };
+            Grid.SetColumn(up, 1); Grid.SetColumn(down, 2);
+            row.Children.Add(check); row.Children.Add(up); row.Children.Add(down);
+            CycleRows.Children.Add(row);
+        }
+        UpdateCyclePreview();
+    }
+
+    private void UpdateCyclePreview()
+    {
+        var selected = _cycleOrder.Where(l => _enabledCycle.Contains(l.Id)).ToArray();
+        string Label(KeyboardLayout layout) => selected.Count(l => l.LanguageCode == layout.LanguageCode) > 1
+            ? layout.Name : layout.LanguageCode.ToUpperInvariant();
+        var labels = selected.Select(Label).ToList();
+        if (labels.Count > 1) labels.Add(labels[0]);
+        CyclePreview.Text = labels.Count > 0 ? string.Join(" → ", labels) : Loc.T("settings.cycleEmpty");
+        ToolTip.SetTip(CyclePreview, string.Join(" → ", selected.Select(l => l.Name)));
+        CycleStatus.Text = _controller.AvailableLayouts.Count == 0 ? Loc.T("settings.noSystemLayouts") :
+            selected.Length < Math.Min(2, _cycleOrder.Count(l => l.SupportsConversion)) ? Loc.T("settings.cycleMinimum") : "";
+    }
+
+    private void RefreshLayouts()
+    {
+        Collect();
+        _controller.RefreshKeyboardLayouts();
+        _controller.LayoutCatalog.Synchronize(_draft);
+        _hotkeyRows.Clear(); _layoutBoxes.Clear(); HotkeyGrid.Children.Clear(); HotkeyGrid.RowDefinitions.Clear();
+        HotkeyGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+        BuildHotkeyRows();
+        _hotkeyRows.Add((ClipboardHotkeyBox, ClipboardHotkeyStatus));
+        InitializeCycle();
+        Validate();
     }
 
     private async Task ExportAsync()
@@ -164,7 +266,7 @@ public partial class SettingsWindow : Window
         var files = await StorageProvider.OpenFilePickerAsync(new Avalonia.Platform.Storage.FilePickerOpenOptions { AllowMultiple = false });
         if (files.Count == 0 || files[0].TryGetLocalPath() is not { } path) return;
         AppSettings imported;
-        try { imported = new SettingsStore(path).Import(path); }
+        try { imported = new SettingsStore(path).Import(path, _controller.AvailableLayouts); }
         catch (SettingsImportException e) when (e.Problems.Count > 0)
         {
             ExportStatus.Text = Loc.T("settings.snippetProblem", Describe(e.Problems));
@@ -186,7 +288,7 @@ public partial class SettingsWindow : Window
         var row = HotkeyGrid.RowDefinitions.Count - 1;
         if (_hotkeyRows.Count > 0) { HotkeyGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto)); row++; }
         var margin = new Avalonia.Thickness(0, _hotkeyRows.Count > 0 ? 8 : 0, 0, 0);
-        var text = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Margin = margin };
+        var text = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Margin = margin, TextWrapping = TextWrapping.Wrap, MaxWidth = 182 };
         box.Margin = margin;
         var status = new TextBlock { FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new(8, margin.Top, 0, 0), Width = 110 };
         Grid.SetRow(text, row);
@@ -196,12 +298,13 @@ public partial class SettingsWindow : Window
         HotkeyGrid.Children.Add(box);
         HotkeyGrid.Children.Add(status);
         _hotkeyRows.Add((box, status));
+        box.HotkeyChanged += () => Validate();
     }
 
     /// <summary>Checks each shortcut: valid, not duplicated, and not taken by another app.</summary>
     private bool Validate()
     {
-        var ok = true;
+        var ok = _enabledCycle.Count >= Math.Min(2, _controller.AvailableLayouts.Count(l => l.SupportsConversion));
         var seen = new Dictionary<Hotkey, HotkeyBox>();
         foreach (var (box, status) in _hotkeyRows)
         {
@@ -266,7 +369,7 @@ public partial class SettingsWindow : Window
     {
         if (!Validate()) return;
         Collect();
-        if (_draft.Validate() is { Count: > 0 } problems)
+        if (_draft.Validate(_controller.AvailableLayouts) is { Count: > 0 } problems)
         {
             SaveStatus.Text = Loc.T("settings.snippetProblem", Describe(problems));
             return;
@@ -287,6 +390,7 @@ public partial class SettingsWindow : Window
         SettingsProblemKind.TriggerTooShort => Loc.T("snippet.tooShort", p.Trigger),
         SettingsProblemKind.TriggerTooLong => Loc.T("snippet.tooLong", p.Trigger[..Math.Min(20, p.Trigger.Length)] + "…", AppSettings.MaxTriggerLength),
         SettingsProblemKind.DuplicateTrigger => Loc.T("snippet.duplicate", p.Trigger),
+        SettingsProblemKind.MultipleCursors => Loc.T("snippet.multipleCursors", p.Trigger),
         _ => Loc.T("snippet.emptyText", p.Trigger),
     }));
 
@@ -299,16 +403,14 @@ public partial class SettingsWindow : Window
         _draft.UndoHotkey = _undoBox.HotkeyText;
         _draft.UiTheme = Themes[Math.Max(0, ThemeBox.SelectedIndex)];
         _draft.Snippets = _snippetRows
-            .Where(r => !string.IsNullOrWhiteSpace(r.Trigger.Text) && !string.IsNullOrEmpty(r.Text.Text))
-            .Select(r => new Snippet { Trigger = r.Trigger.Text!.Trim(), Text = r.Text.Text! }).ToList();
+            .Where(r => !string.IsNullOrWhiteSpace(r.Trigger.Text) || !string.IsNullOrEmpty(r.Text.Text))
+            .Select(r => new Snippet { Trigger = (r.Trigger.Text ?? "").Trim(), Text = r.Text.Text ?? "" }).ToList();
         _draft.LayoutHotkeys = _layoutBoxes
-            .Where(kv => !string.IsNullOrWhiteSpace(kv.Value.HotkeyText))
-            .Select(kv => new LayoutHotkey { LayoutId = kv.Key, Hotkey = kv.Value.HotkeyText }).ToList();
+            .Select(kv => new LayoutHotkey { LayoutId = kv.Key, Hotkey = kv.Value.HotkeyText })
+            .Concat(_draft.LayoutHotkeys.Where(h => _controller.FindLayout(h.LayoutId) is null)).ToList();
         _draft.ClipboardHotkey = ClipboardHotkeyBox.HotkeyText;
-        var first = (PairFirst.SelectedItem as KeyboardLayout)?.Id ?? "en";
-        var second = (PairSecond.SelectedItem as KeyboardLayout)?.Id ?? "ru";
-        if (first == second) second = first == "en" ? "ru" : "en";
-        _draft.Layouts = [first, second];
+        _draft.Layouts = _cycleOrder.Where(l => _enabledCycle.Contains(l.Id)).Select(l => l.Id)
+            .Concat(_draft.Layouts.Where(id => _controller.FindLayout(id) is null)).ToList();
         _draft.SwitchSystemLayout = SwitchLayoutBox.IsChecked == true;
         _draft.ConvertLastWord = LastWordBox.IsChecked == true;
         _draft.HistoryEnabled = HistoryEnabledBox.IsChecked == true;

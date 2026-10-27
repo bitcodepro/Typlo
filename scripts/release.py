@@ -133,6 +133,8 @@ def verify_archive(archive, version, rid, commit):
     if line != f"{digest(archive)}  {expected}":
         raise ValueError(f"SHA-256 mismatch or invalid checksum filename: {expected}")
     required = {"README.md", "LICENSE", NOTICES, "build-info.json", executable_path(rid)}
+    if rid.startswith("linux-"):
+        required.update("gnome-extension/" + name for name in GNOME_FILES)
     if rid.startswith("osx-"):
         required.add("Typlo.app/Contents/Info.plist")
     with zipfile.ZipFile(archive) if extension(rid) == "zip" else tarfile.open(archive, "r:gz") as bundle:
@@ -154,7 +156,8 @@ def verify_archive(archive, version, rid, commit):
                 files[name] = entry
         if not required <= files.keys():
             raise ValueError(f"Missing package entries: {sorted(required - files.keys())}")
-        extra = sorted({name.split("/")[0] for name in files} - TOP_LEVEL)
+        allowed = TOP_LEVEL | ({"gnome-extension"} if rid.startswith("linux-") else set())
+        extra = sorted({name.split("/")[0] for name in files} - allowed)
         if extra:
             raise ValueError(f"Unexpected top-level package entries: {extra}")
 
@@ -196,6 +199,7 @@ def verify_packages(directory, version, commit, rids=RIDS):
 NOTICES = "THIRD-PARTY-NOTICES.txt"
 # Everything an archive may contain at its top level: no extra folders.
 TOP_LEVEL = {"README.md", "LICENSE", NOTICES, "build-info.json", "Typlo.exe", "Typlo", "Typlo.app"}
+GNOME_FILES = ("extension.js", "bridge.js", "metadata.json", "install.sh")
 LICENSE_FILE = re.compile(r"(?i)^(license|licence|copying)([._-].*)?(\.txt|\.md)?$")
 NOTICE_FILE = re.compile(r"(?i)^(third[-_]?party[-_]?notices?|notice)(\.txt|\.md)?$")
 

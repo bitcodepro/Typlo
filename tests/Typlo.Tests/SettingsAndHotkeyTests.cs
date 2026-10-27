@@ -66,11 +66,11 @@ public class SettingsAndHotkeyTests
     }
 
     [Fact]
-    public void Normalize_ClampsAndFixesLayouts()
+    public void Normalize_ClampsAndPreservesNativeLayoutIds()
     {
         var s = new AppSettings { MaxItems = -5, Layouts = ["xx", "ru"] };
         s.Normalize();
         Assert.Equal(10, s.MaxItems);
-        Assert.Equal(["en", "ru"], s.Layouts);
+        Assert.Equal(["xx", "ru"], s.Layouts); // OS identities are resolved by the runtime catalog
     }
 }
