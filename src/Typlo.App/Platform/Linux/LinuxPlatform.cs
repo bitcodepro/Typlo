@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Runtime.Versioning;
 using Typlo.App.Platform.Shared;
+using Typlo.Core.Layouts;
 
 namespace Typlo.App.Platform.Linux;
 
@@ -36,6 +37,14 @@ public sealed class LinuxPlatform : HookPlatformBase
          string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")));
 
     public override string Name => _wayland ? "Linux (Wayland)" : "Linux (X11)";
+    public override IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => LinuxKeyboardLayouts.Read(_wayland);
+    public override string? GetCurrentLayoutId(nint window) => _wayland ? null :
+        LinuxKeyboardLayouts.Configured().ElementAtOrDefault(XkbLayouts.CurrentGroup())?.Id;
+    public override bool SwitchKeyboardLayout(nint window, KeyboardLayout layout)
+    {
+        var group = LinuxKeyboardLayouts.Configured(_wayland).ToList().FindIndex(s => s.Id == layout.Id);
+        return !_wayland && group >= 0 && (window == 0 || ForegroundWindow == window) && XkbLayouts.SwitchGroup(group);
+    }
 
     public override PlatformCapabilities Capabilities
     {

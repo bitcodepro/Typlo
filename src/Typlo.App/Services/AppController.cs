@@ -32,6 +32,9 @@ public sealed class AppController : IDisposable
     public AppSettings Settings { get; private set; }
     public ClipStore Store { get; }
     public IPlatform Platform => _platform;
+    public LayoutCatalog LayoutCatalog { get; private set; } = new([]);
+    public IReadOnlyList<KeyboardLayout> AvailableLayouts => LayoutCatalog.All;
+    public KeyboardLayout? FindLayout(string? id) => LayoutCatalog.Find(id);
 
     /// <summary>Raised on a background thread; the argument is the window that was active before.</summary>
     public event Action<nint>? ShowHistoryRequested;
@@ -48,6 +51,9 @@ public sealed class AppController : IDisposable
         _platform = platform;
         _settingsStore = new SettingsStore(paths.SettingsFile);
         Settings = _settingsStore.Load();
+        DiscoverLayouts();
+        LayoutCatalog.Synchronize(Settings);
+        _settingsStore.Save(Settings);
         Loc.SetLanguage(Settings.UiLanguage);
         Store = new ClipStore(paths.HistoryDb, ClipCrypto.LoadOrCreate(paths.KeyFile, keyProtector), Limits(Settings));
         BuildConverter();
@@ -64,14 +70,33 @@ public sealed class AppController : IDisposable
 
     private void BuildConverter()
     {
-        var ordered = Settings.Layouts.Select(KeyboardLayouts.Find).OfType<KeyboardLayout>()
-            .Concat(KeyboardLayouts.All).Distinct().ToList();
-        _converter = new LayoutConverter(ordered);
+        var cycle = LayoutCatalog.Cycle(Settings);
+        var ordered = cycle.Concat(AvailableLayouts).Append(KeyboardLayouts.English).DistinctBy(l => l.Id).ToList();
+        _converter = new LayoutConverter(ordered, cycle);
     }
+
+    private void DiscoverLayouts()
+    {
+        try { LayoutCatalog = new(_platform.GetKeyboardLayouts()); }
+        catch (Exception e) { Log.Error("System keyboard layout discovery failed", e); }
+    }
+
+    public void RefreshKeyboardLayouts()
+    {
+        DiscoverLayouts();
+        LayoutCatalog.Synchronize(Settings);
+        _settingsStore.Save(Settings);
+        BuildConverter();
+        ApplySnippets();
+    }
+
+    private IEnumerable<KeyboardLayout> SourceLayouts(KeyboardLayout? preferred) => preferred is { SupportsConversion: true }
+        ? new[] { preferred }.Concat(_converter.Layouts).DistinctBy(l => l.Id) : _converter.Layouts;
 
     public void ApplySettings(AppSettings settings)
     {
         settings.Normalize();
+        LayoutCatalog.Synchronize(settings);
         Settings = settings;
         Loc.SetLanguage(settings.UiLanguage);
         _settingsStore.Save(settings);
@@ -116,13 +141,15 @@ public sealed class AppController : IDisposable
     }
 
     /// <summary>Settings window records shortcuts, so live hotkeys must not fire meanwhile.</summary>
-    public void SuspendHotkeys() => _platform.UnregisterAllHotkeys();
+    private volatile bool _editingSettings;
+    public void SuspendHotkeys() { _editingSettings = true; _platform.UnregisterAllHotkeys(); }
 
     /// <summary>Typlo's active hotkeys: pressing one is a command, not input that moves the caret.</summary>
     private readonly HashSet<Hotkey> _activeHotkeys = [];
 
     public void RegisterHotkeys()
     {
+        _editingSettings = false;
         _platform.UnregisterAllHotkeys();
         lock (_activeHotkeys) _activeHotkeys.Clear();
         _layoutHotkeys.Clear();
@@ -151,9 +178,9 @@ public sealed class AppController : IDisposable
         var next = LayoutIdBase;
         foreach (var lh in Settings.LayoutHotkeys)
         {
-            if (KeyboardLayouts.Find(lh.LayoutId) is not { } layout) continue;
+            if (FindLayout(lh.LayoutId) is not { } layout) continue;
             _layoutHotkeys[next] = layout;
-            Register(next++, lh.Hotkey, Loc.T("hk.to", Loc.T("layout." + layout.Id)));
+            Register(next++, lh.Hotkey, Loc.T("hk.to", layout.Name));
         }
         FailedHotkeys = failed;
     }
@@ -173,11 +200,32 @@ public sealed class AppController : IDisposable
     }
 
     /// <summary>Copies the selection, converts it to <paramref name="target"/> (null = toggle) and pastes it back.</summary>
-    public Task ConvertSelectionAsync(KeyboardLayout? target) => TransformSelectionCoreAsync((text, source) =>
+    public Task ConvertSelectionAsync(KeyboardLayout? target)
     {
-        var result = target is null ? _converter.Toggle(text, source) : _converter.ConvertTo(text, target, source);
-        return (result.Changed ? result.Text : text, result.Target);
-    }, switchToIfNothingSelected: target);
+        if (target is { SupportsConversion: false }) return SwitchInputSourceAsync(target);
+        if (target is null && LayoutCatalog.Cycle(Settings).Count < 2) return Task.CompletedTask;
+        return TransformSelectionCoreAsync((text, source) =>
+        {
+            var result = target is null ? _converter.Toggle(text, source) : _converter.ConvertTo(text, target, source);
+            return (result.Changed ? result.Text : text, result.Target);
+        }, switchToIfNothingSelected: target);
+    }
+
+    private async Task SwitchInputSourceAsync(KeyboardLayout layout)
+    {
+        if (!await _convertGate.WaitAsync(0)) return;
+        try
+        {
+            var window = _platform.ForegroundWindow;
+            await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
+            if (!IsTargetActive(window)) return;
+            LastTransform = null;
+            _recentTyping.Reset(Interlocked.Read(ref _typingVersion));
+            _platform.SwitchKeyboardLayout(window, layout);
+        }
+        catch (Exception e) { Log.Error("Input source switch failed", e); }
+        finally { _convertGate.Release(); }
+    }
 
     /// <summary>Cycles the case of the selection (lower → Title → UPPER).</summary>
     public Task ChangeCaseAsync() => TransformSelectionAsync(text => (CaseConverter.Cycle(text), null));
@@ -218,17 +266,19 @@ public sealed class AppController : IDisposable
             snapshot = CaptureClipboard();
             timing.Mark("clipboard snapshot");
             string? text;
-            KeyboardLayout? source = null;
+            KeyboardLayout? activeLayout = FindLayout(_platform.GetCurrentLayoutId(window));
+            KeyboardLayout? source = activeLayout;
             var automaticSelection = false;
+            var reusingLast = false;
             if (Settings.ConvertLastWord && run is not null)
             {
                 // A user-made selection resets the run through its click/navigation/shortcut event.
                 // With a live run, select its exact length before Copy: some editors copy an entire
                 // unselected line without setting any marker, which must never enlarge this range.
-                text = await SelectRecentInputAsync(run, NoInputSince);
+                text = await SelectRecentInputAsync(run, NoInputSince, activeLayout);
                 if (text is not null)
                 {
-                    source = run.MatchSource(text, _converter.Layouts);
+                    source = run.MatchSource(text, SourceLayouts(activeLayout));
                     automaticSelection = true;
                 }
             }
@@ -243,6 +293,7 @@ public sealed class AppController : IDisposable
                 {
                     source = last.ResultLayout;
                     automaticSelection = true;
+                    reusingLast = true;
                 }
                 else if (ReferenceEquals(_lastTransform, last)) LastTransform = null;
             }
@@ -253,7 +304,7 @@ public sealed class AppController : IDisposable
             {
                 Log.Info("Text tools: nothing selected");
                 if (switchToIfNothingSelected is not null && Settings.SwitchSystemLayout)
-                    _platform.SwitchKeyboardLayout(window, switchToIfNothingSelected.LangId);
+                    if (NoInputSince() && IsTargetActive(window)) _platform.SwitchKeyboardLayout(window, switchToIfNothingSelected);
                 return;
             }
 
@@ -261,7 +312,18 @@ public sealed class AppController : IDisposable
             // or moved the caret, so the result must not be pasted (or recorded for Undo).
             var (result, switchTo) = transform(text, source);
             timing.Mark("conversion");
-            if (result == text && automaticSelection && NoInputSince()) Collapse(window);
+            if (result == text && automaticSelection && NoInputSince() && IsTargetActive(window))
+            {
+                Collapse(window);
+                if (switchTo is not null)
+                {
+                    // Two cycle members can produce identical text (e.g. a common RU/UA word).
+                    // Advance the logical source even when no paste or system-layout switch is needed.
+                    LastTransform = reusingLast && last is not null ? last with { ResultLayout = switchTo } :
+                        new TransformRecord(window, text, text, DateTime.UtcNow, switchTo);
+                    _recentTyping.Consume(inputVersion);
+                }
+            }
             if (result != text && await PasteTextAsync(result, window, NoInputSince, () =>
                 {
                     _recentTyping.Consume(inputVersion);
@@ -269,10 +331,11 @@ public sealed class AppController : IDisposable
                 }))
             {
                 // Input during the paste's settling wait may have moved the caret: then the result cannot be located.
-                LastTransform = NoInputSince() ? new TransformRecord(window, text, result, DateTime.UtcNow,
-                    _converter.DetectLayout(result) ?? switchTo ?? source) : null;
+                LastTransform = NoInputSince() && IsTargetActive(window) ? new TransformRecord(window, text, result, DateTime.UtcNow,
+                    switchTo ?? _converter.DetectLayout(result, source) ?? source) : null;
             }
-            if (switchTo is not null && Settings.SwitchSystemLayout) _platform.SwitchKeyboardLayout(window, switchTo.LangId);
+            if (switchTo is not null && Settings.SwitchSystemLayout && NoInputSince() && IsTargetActive(window))
+                _platform.SwitchKeyboardLayout(window, switchTo);
         }
         catch (ClipboardTakenException)
         {
@@ -506,7 +569,7 @@ public sealed class AppController : IDisposable
 
     private void ApplySnippets()
     {
-        _snippets.SetSnippets(Settings.Snippets);
+        _snippets.SetSnippets(Settings.Snippets, AvailableLayouts);
         UpdateTypingWatch();
     }
 
@@ -547,6 +610,7 @@ public sealed class AppController : IDisposable
         Snippet? hit;
         lock (_snippets)
         {
+            if (_editingSettings) { _snippets.Reset(); return; }
             if (typedWindow != 0 && previousWindow != 0 && typedWindow != previousWindow) _snippets.Reset();
             if (key.Reset) { _snippets.Reset(); return; }
             if (key.Backspace) { _snippets.Backspace(); return; }
@@ -588,13 +652,15 @@ public sealed class AppController : IDisposable
 
             // Line breaks and tabs typed as keys would act as Enter/Tab (submit a chat message, move to another field),
             // so such snippets are pasted as text. The clipboard is prepared before anything is deleted.
-            var paste = snippet.Text.IndexOfAny(['\n', '\r', '\t']) >= 0;
+            var template = SnippetTemplate.Parse(snippet.Text);
+            if (template.CursorCount > 1 || template.Text.Length == 0) return;
+            var paste = template.Text.IndexOfAny(['\n', '\r', '\t']) >= 0 || template.Suffix.Length > 0;
             // Disposed on every path, including a failed snapshot or write below.
             using var _ = paste ? _platform.SuspendCapture() : null;
             if (paste)
             {
                 snapshot = CaptureClipboard();
-                SetOwnText(snippet.Text);
+                SetOwnText(template.Text);
             }
 
             var trigger = snippet.Trigger.Trim();
@@ -638,10 +704,19 @@ public sealed class AppController : IDisposable
                 _platform.SendPaste();
                 await Task.Delay(300); // let the target read the clipboard before it is restored
             }
-            else if (!_platform.TypeText(snippet.Text, StillValid))
+            else if (!_platform.TypeText(template.Text, StillValid))
             {
                 Log.Info("Snippet stopped while typing: the target window changed or the user typed");
                 return;
+            }
+            if (template.CursorOffset is not null && template.Suffix.Length > 0 && StillValid())
+            {
+                var expected = template.Suffix.Replace("\r\n", "\n");
+                var selected = await SelectAndVerifyAsync(window, template.CursorSteps, StillValid,
+                    text => text.Replace("\r\n", "\n") == expected, maxSteps: 100_000);
+                // Left collapses our verified selection to its start: the exact marker position.
+                if (selected is not null && StillValid()) _platform.SendChord(KeyModifiers.None, "Left");
+                else Log.Info("Snippet cursor not placed: its suffix or input context changed");
             }
             Log.Info("Snippet expanded");
         }
@@ -738,9 +813,9 @@ public sealed class AppController : IDisposable
         return null;
     }
 
-    private Task<string?> SelectRecentInputAsync(RecentTyping.Run run, Func<bool> stillValid) =>
+    private Task<string?> SelectRecentInputAsync(RecentTyping.Run run, Func<bool> stillValid, KeyboardLayout? preferred = null) =>
         SelectAndVerifyAsync(run.Window, run.Keys.Length, stillValid,
-            text => run.MatchSource(text, _converter.Layouts) is not null);
+            text => run.MatchSource(text, SourceLayouts(preferred)) is not null);
 
     private Task<string?> SelectTransformResultAsync(TransformRecord last, Func<bool> stillValid)
     {
@@ -751,9 +826,9 @@ public sealed class AppController : IDisposable
             text => text.Replace("\r\n", "\n") == expected);
     }
 
-    private async Task<string?> SelectAndVerifyAsync(nint window, int steps, Func<bool> stillValid, Func<string, bool> matches)
+    private async Task<string?> SelectAndVerifyAsync(nint window, int steps, Func<bool> stillValid, Func<string, bool> matches, int maxSteps = 2000)
     {
-        if (steps is < 1 or > 2000) return null;
+        if (steps < 1 || steps > maxSteps) return null;
         var selectedByUs = false;
         try
         {

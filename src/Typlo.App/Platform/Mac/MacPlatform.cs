@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.Versioning;
 using Typlo.App.Platform.Shared;
 using Typlo.Core.Hotkeys;
+using Typlo.Core.Layouts;
 using static Typlo.App.Platform.Mac.ObjC;
 
 namespace Typlo.App.Platform.Mac;
@@ -43,7 +44,7 @@ public sealed class MacPlatform : HookPlatformBase
     public override string Name => "macOS";
 
     public override PlatformCapabilities Capabilities => new(
-        GlobalHotkeys: true, SimulateInput: true, SwitchLayout: false, DetectHotkeyConflicts: false,
+        GlobalHotkeys: true, SimulateInput: true, SwitchLayout: true, DetectHotkeyConflicts: false,
         Notes: AXIsProcessTrusted() ? null
             : Services.Loc.T("note.mac.ax"));
 
@@ -206,8 +207,17 @@ public sealed class MacPlatform : HookPlatformBase
         });
     }
 
-    // Input sources via TIS need CoreFoundation dictionaries; not wired up yet.
-    public override bool SwitchKeyboardLayout(nint window, int langId) => false;
+    private static T InputSourceOnUi<T>(Func<T> action) => Avalonia.Threading.Dispatcher.UIThread.CheckAccess()
+        ? action() : Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(action).GetAwaiter().GetResult();
+    public override IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => InputSourceOnUi(MacKeyboardLayouts.Read);
+    public override string? GetCurrentLayoutId(nint window) => InputSourceOnUi(MacKeyboardLayouts.Current);
+    public override bool SwitchKeyboardLayout(nint window, KeyboardLayout layout) => InputSourceOnUi(() =>
+        (window == 0 || ForegroundWindow == window) && MacKeyboardLayouts.Switch(layout.Id));
+    public override bool SwitchKeyboardLayout(nint window, int langId)
+    {
+        var layout = GetKeyboardLayouts().FirstOrDefault(l => l.LangId == langId);
+        return layout is not null && SwitchKeyboardLayout(window, layout);
+    }
 
     // ---------------------------------------------------------------- system
 

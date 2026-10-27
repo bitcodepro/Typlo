@@ -26,6 +26,164 @@ public sealed class AppControllerTests : IDisposable
         _controller = new(_platform, new AppPaths(_dir), new PlainKeyProtector(), diagnostic: true);
     }
 
+    [Fact]
+    public async Task ThreeLanguageCycle_AdvancesAcrossIdenticalRuUaText_WithSystemSwitchDisabled()
+    {
+        _platform.Installed = [KeyboardLayouts.English, KeyboardLayouts.Ukrainian, KeyboardLayouts.Russian];
+        _controller.RefreshKeyboardLayouts();
+        var settings = _controller.Settings.Clone();
+        settings.Layouts = ["en", "uk", "ru"];
+        settings.SwitchSystemLayout = false;
+        _controller.ApplySettings(settings);
+        _platform.Type("ghbdtn");
+        foreach (var expected in new[] { "привет", "привет", "ghbdtn", "привет" })
+        {
+            await _controller.ConvertSelectionAsync(null);
+            Assert.Equal(expected, _platform.Document.Text);
+        }
+    }
+
+    [Fact]
+    public async Task ActiveSystemLayout_DisambiguatesCommonRuUaWords()
+    {
+        _platform.Installed = [KeyboardLayouts.English, KeyboardLayouts.Ukrainian, KeyboardLayouts.Russian];
+        _platform.ActiveLayoutId = "ru";
+        _controller.RefreshKeyboardLayouts();
+        var settings = _controller.Settings.Clone();
+        settings.Layouts = ["en", "uk", "ru"];
+        _controller.ApplySettings(settings);
+        _platform.TypeAs("ghbdtn", "привет");
+        await _controller.ConvertSelectionAsync(null);
+        Assert.Equal("ghbdtn", _platform.Document.Text); // RU is last in the cycle, so next is EN
+    }
+
+    [Fact]
+    public async Task FocusChangeDuringPasteSettle_DoesNotSwitchTheOtherApplicationsLayout()
+    {
+        _platform.Type("ghbdtn");
+        _platform.AfterPaste = () => { _platform.Window = 2; _platform.Document.Text = "other"; };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Null(_platform.ActiveLayoutId);
+        Assert.Equal("other", _platform.Document.Text);
+    }
+
+    [Fact]
+    public void FiveInstalledLayouts_InitializeOnlyThreeShortcuts()
+    {
+        var en = KeyboardLayouts.English;
+        var platform = new FakePlatform { Installed = Enumerable.Range(0, 5)
+            .Select(i => new KeyboardLayout("native:" + i, "Language " + i, i, en.Normal, en.Shifted, "lang" + i)).ToArray() };
+        using var controller = new AppController(platform, new AppPaths(Path.Combine(_dir, "five")), new PlainKeyProtector(), diagnostic: true);
+        Assert.Equal(5, controller.AvailableLayouts.Count);
+        Assert.Equal(5, controller.Settings.Layouts.Count);
+        Assert.Equal(3, controller.Settings.LayoutHotkeys.Count(h => h.Hotkey.Length > 0));
+    }
+
+    [Fact]
+    public async Task InputMethodHotkey_SwitchesTheSourceWithoutReadingOrReplacingText()
+    {
+        var ime = new KeyboardLayout("native:ime", "Input method", 0, "", "", "ja", supportsConversion: false);
+        var settings = _controller.Settings.Clone();
+        settings.SwitchSystemLayout = false; // this setting controls the post-conversion switch, not explicit IME selection
+        _controller.ApplySettings(settings);
+        _platform.Document.Text = "existing";
+        await _controller.ConvertSelectionAsync(ime);
+        Assert.Equal("native:ime", _platform.ActiveLayoutId);
+        Assert.Equal("existing", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal(1ul, _platform.ClipboardSequence);
+    }
+
+    [Theory]
+    [InlineData("Hello, {cursor}!\n\nRegards,\n", "Hello, !\n\nRegards,\n", 7)]
+    [InlineData("{cursor}first\r\n\tsecond\r\n", "first\r\n\tsecond\r\n", 0)]
+    [InlineData("end{cursor}", "end", 3)]
+    [InlineData("before{cursor}😀e\u0301\r\nx", "before😀e\u0301\r\nx", 6)]
+    public async Task SnippetTemplate_PlacesCursorAndPreservesMultilineFormatting(string template, string expected, int offset)
+    {
+        _platform.Document.Text = "keep ;hi";
+        _platform.Document.Caret = _platform.Document.Text.Length;
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = template }, 1);
+        Assert.Equal("keep " + expected, _platform.Document.Text);
+        Assert.Equal(5 + offset, _platform.Document.Caret);
+        Assert.Empty(_platform.Document.Selection);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task SnippetTemplate_UserInputDuringPasteSettle_PreventsLateCursorMovement()
+    {
+        _platform.Document.Text = ";hi";
+        _platform.Document.Caret = 3;
+        _platform.AfterPaste = () => _platform.Type("X");
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "before{cursor}after" }, 1);
+        Assert.Equal("beforeafterX", _platform.Document.Text);
+        Assert.Equal(_platform.Document.Text.Length, _platform.Document.Caret);
+        Assert.Empty(_platform.Document.Selection);
+    }
+
+    [Fact]
+    public async Task SnippetTemplate_EditorChangedTheSuffix_DoesNotGuessTheCursorPosition()
+    {
+        _platform.Document.Text = ";hi";
+        _platform.Document.Caret = 3;
+        _platform.AfterPaste = () => _platform.Document.Type("auto");
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "before{cursor}after" }, 1);
+        Assert.Equal("beforeafterauto", _platform.Document.Text);
+        Assert.Equal(_platform.Document.Text.Length, _platform.Document.Caret);
+        Assert.Empty(_platform.Document.Selection);
+    }
+
+    [Fact]
+    public async Task SnippetTemplate_ExternalCopyBeforeCursorPlacement_IsPreserved()
+    {
+        _platform.Document.Text = ";hi";
+        _platform.Document.Caret = 3;
+        _platform.AfterPaste = () => _platform.ExternalCopy("new user copy", owner: 99);
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "before{cursor}after" }, 1);
+        Assert.Equal("beforeafter", _platform.Document.Text);
+        Assert.Equal("new user copy", _platform.ClipboardText);
+        Assert.Equal(_platform.Document.Text.Length, _platform.Document.Caret);
+    }
+
+    [Fact]
+    public async Task SnippetTemplate_MultipleMarkers_DeleteNothing()
+    {
+        _platform.Document.Text = ";hi";
+        _platform.Document.Caret = 3;
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "x{cursor}y{cursor}" }, 1);
+        Assert.Equal(";hi", _platform.Document.Text);
+        Assert.Equal(0, _platform.BackspaceCount);
+    }
+
+    [Fact]
+    public async Task SnippetTemplate_FocusChangeDuringCursorSelection_StopsWithoutMovingTheOtherCaret()
+    {
+        _platform.Document.Text = ";hi";
+        _platform.Document.Caret = 3;
+        _platform.OnLeft = () =>
+        {
+            _platform.Window = 2;
+            _platform.Document.Text = "other";
+            _platform.Document.Caret = 2;
+        };
+        await _controller.ExpandSnippetAsync(new Snippet { Trigger = ";hi", Text = "before{cursor}after" }, 1);
+        Assert.Equal("other", _platform.Document.Text);
+        Assert.Equal(2, _platform.Document.Caret);
+    }
+
+    [Fact]
+    public async Task Snippets_DoNotExpandWhileEditingSettings()
+    {
+        EnableSnippet();
+        _controller.SuspendHotkeys();
+        _platform.Type(";hi");
+        await Task.Delay(100);
+        Assert.Equal(";hi", _platform.Document.Text);
+        Assert.Equal(0, _platform.BackspaceCount);
+        _controller.RegisterHotkeys();
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1099,6 +1257,7 @@ public sealed class AppControllerTests : IDisposable
         }
         public void Left(bool shift, bool word)
         {
+            if (!shift && Anchor is { } anchor) { Caret = Math.Min(anchor, Caret); Anchor = null; return; }
             if (shift) Anchor ??= Caret;
             else Anchor = null;
             if (Caret == 0) return;
@@ -1135,6 +1294,10 @@ public sealed class AppControllerTests : IDisposable
         public int PasteCount, BackspaceCount;
         public TaskCompletionSource ModifiersEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string Name => "Fake platform (no OS access)";
+        public IReadOnlyList<KeyboardLayout> Installed = [KeyboardLayouts.English, KeyboardLayouts.Russian];
+        public string? ActiveLayoutId;
+        public IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => Installed;
+        public string? GetCurrentLayoutId(nint window) => ActiveLayoutId;
         public PlatformCapabilities Capabilities { get; } = new(true, true, true, true);
         public event Action<int>? HotkeyPressed;
         private readonly Dictionary<Hotkey, int> _hotkeys = [];
@@ -1256,6 +1419,7 @@ public sealed class AppControllerTests : IDisposable
             finally { InTypingEvent = false; }
         }
         public bool SwitchKeyboardLayout(nint window, int langId) => true;
+        public bool SwitchKeyboardLayout(nint window, KeyboardLayout layout) { ActiveLayoutId = layout.Id; return true; }
         public bool SetKeepAwake(bool enabled) => true;
         public void SignalUserActivity() { }
         public bool AutostartEnabled { get; set; }

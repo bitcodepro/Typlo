@@ -13,18 +13,25 @@ public sealed class KeyboardLayout
     public int LangId { get; }
     public string Normal { get; }
     public string Shifted { get; }
+    public string LanguageCode { get; }
+    public bool SupportsConversion { get; }
 
     private readonly Dictionary<char, int> _index = new();
 
-    public KeyboardLayout(string id, string name, int langId, string normal, string shifted)
+    public KeyboardLayout(string id, string name, int langId, string normal, string shifted,
+        string? languageCode = null, bool supportsConversion = true)
     {
         if (normal.Length != shifted.Length)
             throw new ArgumentException($"Layout {id}: normal/shifted rows differ in length.");
         Id = id; Name = name; LangId = langId; Normal = normal; Shifted = shifted;
+        LanguageCode = languageCode ?? id;
+        SupportsConversion = supportsConversion && normal.Any(char.IsLetter);
         // Shifted first, then normal, so that a char present in both maps to the unshifted key.
-        for (var i = 0; i < shifted.Length; i++) _index[shifted[i]] = i + normal.Length;
-        for (var i = 0; i < normal.Length; i++) _index[normal[i]] = i;
+        for (var i = 0; i < shifted.Length; i++) if (IsMapped(shifted[i])) _index[shifted[i]] = i + normal.Length;
+        for (var i = 0; i < normal.Length; i++) if (IsMapped(normal[i])) _index[normal[i]] = i;
     }
+
+    private static bool IsMapped(char c) => !char.IsControl(c) && !char.IsSurrogate(c);
 
     /// <summary>Position code of a char: 0..N-1 unshifted, N..2N-1 shifted; -1 if absent.</summary>
     public int CodeOf(char c) => _index.TryGetValue(c, out var i) ? i : -1;

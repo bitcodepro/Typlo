@@ -20,15 +20,6 @@ internal static partial class XkbLayouts
     [LibraryImport(LibX11)] [return: MarshalAs(UnmanagedType.Bool)] private static partial bool XkbLockGroup(nint display, uint device, uint group);
     [LibraryImport(LibX11)] private static partial int XkbGetState(nint display, uint device, nint state);
 
-    /// <summary>XKB layout names for the Windows LANGIDs Typlo knows.</summary>
-    private static string[] NamesFor(int langId) => langId switch
-    {
-        0x0409 => ["us", "gb", "en"],
-        0x0419 => ["ru"],
-        0x0422 => ["ua"],
-        _ => [],
-    };
-
     public static bool Available => Proc.Has("setxkbmap") && !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY"));
 
     public static IReadOnlyList<string> ConfiguredLayouts()
@@ -41,12 +32,16 @@ internal static partial class XkbLayouts
 
     public static bool SwitchTo(int langId)
     {
-        var names = NamesFor(langId);
-        var layouts = ConfiguredLayouts().ToList();
-        var group = layouts.FindIndex(l => names.Contains(l));
+        string language;
+        try { language = System.Globalization.CultureInfo.GetCultureInfo(langId).TwoLetterISOLanguageName; }
+        catch (System.Globalization.CultureNotFoundException) { return false; }
+        var installed = LinuxKeyboardLayouts.Read(false);
+        var group = installed.ToList().FindIndex(l => l.LanguageCode == language);
         if (group < 0) return false;
-        return WithDisplay(d => XkbLockGroup(d, XkbUseCoreKbd, (uint)group));
+        return SwitchGroup(group);
     }
+
+    public static bool SwitchGroup(int group) => group >= 0 && WithDisplay(d => XkbLockGroup(d, XkbUseCoreKbd, (uint)group));
 
     /// <summary>The active group index, or -1.</summary>
     public static int CurrentGroup()

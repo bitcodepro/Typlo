@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Typlo.App.Platform;
 using Typlo.App.Views;
 using Typlo.Core;
@@ -25,7 +26,7 @@ internal static class ScreenshotMode
         try
         {
             var s = controller.Settings.Clone();
-            s.ToggleHotkey = ""; s.ClipboardHotkey = "Ctrl+Shift+V"; s.LayoutHotkeys = []; s.StartWithSystem = false;
+            s.ToggleHotkey = ""; s.ClipboardHotkey = ""; s.CaseHotkey = ""; s.TranslitHotkey = ""; s.UndoHotkey = ""; s.StartWithSystem = false;
             controller.ApplySettings(s);
 
             await Dispatcher.UIThread.InvokeAsync(() =>
@@ -54,7 +55,8 @@ internal static class ScreenshotMode
             await Dispatcher.UIThread.InvokeAsync(async () =>
             {
                 using (var icon = File.Create(Path.Combine(outDir, "icon.png"))) AppIcon.Create().Save(icon);
-                foreach (var (code, _) in Loc.Languages)
+                var language = Environment.GetEnvironmentVariable("TYPLO_SCREENSHOT_LANGUAGE");
+                foreach (var (code, _) in Loc.Languages.Where(l => string.IsNullOrEmpty(language) || l.Code == language))
                 {
                     var ls = controller.Settings.Clone();
                     ls.UiLanguage = code;
@@ -76,7 +78,7 @@ internal static class ScreenshotMode
                 // Dark theme, with a snippet, scrolled to the new sections.
                 var dark = controller.Settings.Clone();
                 dark.UiTheme = "dark";
-                dark.Snippets = [new Snippet { Trigger = ";addr", Text = "Kyiv, Khreshchatyk St. 1" }];
+                dark.Snippets = [new Snippet { Trigger = ";hello", Text = "Здравствуйте, {cursor}!\n\n    Спасибо за сообщение.\n\nС уважением,\n" }];
                 controller.ApplySettings(dark);
                 Application.Current!.RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Dark;
                 var darkHistory = new ClipboardWindow(controller);
@@ -88,11 +90,21 @@ internal static class ScreenshotMode
                 darkSettings.Show();
                 await Task.Delay(600);
                 Save(darkSettings, Path.Combine(outDir, "settings_dark.png"));
+                darkSettings.FindControl<StackPanel>("CycleRows")?.BringIntoView();
+                await Task.Delay(300);
+                Save(darkSettings, Path.Combine(outDir, "settings_layout_cycle.png"));
                 if (darkSettings.FindControl<ScrollViewer>("Scroller") is { } scroller)
                 {
                     scroller.ScrollToEnd();
                     await Task.Delay(400);
                     Save(darkSettings, Path.Combine(outDir, "settings_dark_bottom.png"));
+                    var preview = darkSettings.GetVisualDescendants().OfType<Button>()
+                        .FirstOrDefault(b => Equals(b.Content, Loc.T("settings.snippetPreview")));
+                    preview?.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+                    await Task.Delay(200);
+                    scroller.ScrollToEnd();
+                    await Task.Delay(200);
+                    Save(darkSettings, Path.Combine(outDir, "settings_snippet_preview.png"));
                 }
                 darkSettings.Close();
 
@@ -103,7 +115,7 @@ internal static class ScreenshotMode
                 Save(viewer, Path.Combine(outDir, "viewer_dark.png"));
                 viewer.Close();
 
-                var shortcuts = new ShortcutsWindow(controller.Settings, null);
+                var shortcuts = new ShortcutsWindow(controller.Settings, null, controller.AvailableLayouts);
                 shortcuts.Show();
                 await Task.Delay(500);
                 Save(shortcuts, Path.Combine(outDir, "shortcuts_dark.png"));

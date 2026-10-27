@@ -34,6 +34,8 @@ internal static class SelfTest
 
         async Task Check(string name, Func<Task<string?>> test, bool when = true)
         {
+            var filter = Environment.GetEnvironmentVariable("TYPLO_SELFTEST_FILTER");
+            if (!string.IsNullOrEmpty(filter) && !name.Contains(filter, StringComparison.OrdinalIgnoreCase)) return;
             if (!when) { lines.Add($"SKIP {name}"); return; }
             try
             {
@@ -87,6 +89,13 @@ internal static class SelfTest
                 platform.SetText("own-write-should-not-be-stored");
                 await Task.Delay(1500);
                 return controller.Store.List().Any(e => e.PreviewText.Contains("own-write")) ? "was stored" : null;
+            });
+
+            await Check("system layouts provide native identities and physical-key maps", () =>
+            {
+                var installed = controller.AvailableLayouts;
+                return Task.FromResult<string?>(installed.Count == 0 ? "no installed layouts discovered" :
+                    installed.Any(l => l.Normal.Length != KeyboardLayouts.English.Normal.Length) ? "physical key counts differ" : null);
             });
 
             await Check("snapshot/restore", () =>
@@ -218,6 +227,11 @@ internal static class SelfTest
                     controller.ApplySettings(s);
                 }
             }, when: caps.SimulateInput);
+
+            await Check("multiline snippet preserves indentation and places the cursor marker", () =>
+                TransformInTextBox(platform, ";cur", () => controller.ExpandSnippetAsync(
+                    new Snippet { Trigger = ";cur", Text = "first\n    {cursor}\nlast" }, platform.ForegroundWindow),
+                    "first\n    \nlast", select: false, multiline: true, expectedBeforeCaret: "first\n    "), when: caps.SimulateInput);
 
             await Check("undo puts back the text replaced by the last conversion", () =>
                 TransformInTextBox(platform, "ghbdtn", async () =>
@@ -466,6 +480,7 @@ internal static class SelfTest
         s.ClipboardHotkey = "";
         s.LayoutHotkeys = [];
         s.SwitchSystemLayout = false;
+        s.Layouts = ["en", "ru"]; // fixture cycle for the RU/EN text assertions, resolved to native IDs
         s.StartWithSystem = false;
         s.ExcludedApps = [];
         return s;
@@ -498,11 +513,11 @@ internal static class SelfTest
 
     /// <summary>Puts <paramref name="input"/> in a focused text box, runs <paramref name="action"/> and compares the result.</summary>
     private static Task<string?> TransformInTextBox(IPlatform platform, string input, Func<Task> action, string expected,
-        bool select = true, bool multiline = false) =>
-        TransformSequenceInTextBox(platform, input, [(action, expected)], select, multiline);
+        bool select = true, bool multiline = false, string? expectedBeforeCaret = null) =>
+        TransformSequenceInTextBox(platform, input, [(action, expected)], select, multiline, expectedBeforeCaret);
 
     private static async Task<string?> TransformSequenceInTextBox(IPlatform platform, string input,
-        (Func<Task> Action, string Expected)[] steps, bool select = true, bool multiline = false)
+        (Func<Task> Action, string Expected)[] steps, bool select = true, bool multiline = false, string? expectedBeforeCaret = null)
     {
         Window? window = null;
         TextBox? box = null;
@@ -531,6 +546,11 @@ internal static class SelfTest
                 await Task.Delay(300);
                 var text = (await Dispatcher.UIThread.InvokeAsync(() => box!.Text))?.Replace("\r\n", "\n");
                 if (text != steps[i].Expected) return $"step {i + 1}: text box has '{text}', expected '{steps[i].Expected}'";
+            }
+            if (expectedBeforeCaret is not null)
+            {
+                var before = await Dispatcher.UIThread.InvokeAsync(() => (box!.Text ?? "")[..box.CaretIndex].Replace("\r\n", "\n"));
+                if (before != expectedBeforeCaret) return "caret is not at the cursor marker";
             }
             return null;
         }

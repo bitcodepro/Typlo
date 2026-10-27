@@ -11,7 +11,7 @@ namespace Typlo.App.Views;
 /// <summary>Every keyboard shortcut of Typlo in one place, with the user's current global hotkeys.</summary>
 public sealed class ShortcutsWindow : Window
 {
-    public ShortcutsWindow(AppSettings settings, Action? openSettings)
+    public ShortcutsWindow(AppSettings settings, Action? openSettings, IReadOnlyList<KeyboardLayout>? layouts = null)
     {
         Title = Loc.T("shortcuts.title");
         Icon = AppIcon.Create();
@@ -25,8 +25,8 @@ public sealed class ShortcutsWindow : Window
         Section(body, Loc.T("shortcuts.global"), Loc.T("shortcuts.globalHint"));
         Row(body, Key(settings.ToggleHotkey), Loc.T("shortcuts.toggle"));
         foreach (var lh in settings.LayoutHotkeys)
-            if (KeyboardLayouts.Find(lh.LayoutId) is { } layout)
-                Row(body, Key(lh.Hotkey), Loc.T("settings.convertTo", Loc.T("layout." + layout.Id)));
+            if (layouts?.FirstOrDefault(l => l.Id == lh.LayoutId) is { } layout)
+                Row(body, Key(lh.Hotkey), Loc.T("settings.convertTo", layout.Name));
         Row(body, Key(settings.CaseHotkey), Loc.T("shortcuts.case"));
         Row(body, Key(settings.TranslitHotkey), Loc.T("shortcuts.translit"));
         Row(body, Key(settings.UndoHotkey), Loc.T("shortcuts.undo"));

@@ -1,5 +1,6 @@
 using Typlo.App.Platform.Shared;
 using Typlo.Core.Hotkeys;
+using Typlo.Core.Layouts;
 
 namespace Typlo.App.Platform;
 
@@ -107,6 +108,10 @@ public interface IPlatform : IDisposable
     event Action<TypedKey>? KeyTyped;
 
     // Keyboard layout
+    /// <summary>Enabled system input sources, with native IDs and physical-key maps.</summary>
+    IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => KeyboardLayouts.All;
+    string? GetCurrentLayoutId(nint window) => null;
+    bool SwitchKeyboardLayout(nint window, KeyboardLayout layout) => SwitchKeyboardLayout(window, layout.LangId);
     /// <summary>Switches the input language of <paramref name="window"/> to the given Windows LANGID if supported.</summary>
     bool SwitchKeyboardLayout(nint window, int langId);
 

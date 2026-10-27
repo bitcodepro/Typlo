@@ -110,7 +110,8 @@ public partial class App : Application
         else if (Array.IndexOf(args, "--convert") is var i and >= 0)
         {
             var target = i + 1 < args.Length ? args[i + 1] : "toggle";
-            _ = _controller.ConvertSelectionAsync(Core.Layouts.KeyboardLayouts.Find(target));
+            var layout = _controller.FindLayout(target);
+            if (target == "toggle" || layout is not null) _ = _controller.ConvertSelectionAsync(layout);
         }
     }
 
@@ -247,7 +248,7 @@ public partial class App : Application
     {
         if (_controller is null) return;
         _shortcutsWindow?.Close();
-        _shortcutsWindow = new ShortcutsWindow(_controller.Settings, ShowSettings);
+        _shortcutsWindow = new ShortcutsWindow(_controller.Settings, ShowSettings, _controller.AvailableLayouts);
         _shortcutsWindow.Closed += (_, _) => _shortcutsWindow = null;
         _shortcutsWindow.Show();
         _shortcutsWindow.Activate();

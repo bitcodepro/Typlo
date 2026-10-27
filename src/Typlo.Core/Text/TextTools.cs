@@ -139,12 +139,24 @@ public sealed class SnippetMatcher
     private readonly StringBuilder _buffer = new();
     private List<(string Key, Snippet Snippet)> _snippets = [];
 
-    public void SetSnippets(IEnumerable<Snippet> snippets) =>
+    public void SetSnippets(IEnumerable<Snippet> snippets, IReadOnlyList<KeyboardLayout>? layouts = null) =>
         _snippets = snippets
             .Where(s => s.Trigger.Trim().Length >= 2 && s.Text.Length > 0)
-            .Select(s => (Normalize(s.Trigger.Trim()), s))
+            .SelectMany(s => NormalizedKeys(s.Trigger.Trim(), layouts).Select(key => (key, s)))
             .OrderByDescending(s => s.Item1.Length)
             .ToList();
+
+    public static IReadOnlyList<string> NormalizedKeys(string trigger, IReadOnlyList<KeyboardLayout>? layouts = null)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal) { Normalize(trigger) };
+        foreach (var layout in (layouts ?? KeyboardLayouts.All).Append(KeyboardLayouts.English).Where(l => l.SupportsConversion))
+        {
+            var codes = trigger.Select(layout.CodeOf).ToArray();
+            if (codes.Any(code => code < 0 || code >= KeyboardLayouts.English.Normal.Length * 2)) continue;
+            keys.Add(Normalize(new string(codes.Select(KeyboardLayouts.English.CharAt).ToArray())));
+        }
+        return keys.ToArray();
+    }
 
     public bool HasSnippets => _snippets.Count > 0;
 
