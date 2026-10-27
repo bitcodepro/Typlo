@@ -22,6 +22,8 @@ public sealed record PlatformCapabilities(
     bool DetectHotkeyConflicts,
     string? Notes = null);
 
+public enum SelectionStatus { Completed, Interrupted, Cancelled }
+
 /// <summary>
 /// Everything OS-specific the app needs: <see cref="Windows.WinPlatform"/>, <see cref="Mac.MacPlatform"/>,
 /// <see cref="Linux.LinuxPlatform"/>. The UI and core never call the OS directly.
@@ -60,7 +62,8 @@ public interface IPlatform : IDisposable
     /// </summary>
     bool IsEmptySelectionLineCopy();
     /// <summary>
-    /// Whether the clipboard was last written by the process that owns <paramref name="window"/>;
+    /// Whether the clipboard was last written by the app hosting <paramref name="window"/>, including
+    /// a process owning an embedded native child window (e.g. a Windows WebView2 editor);
     /// null where the OS does not tell (then only the change timing is used).
     /// </summary>
     bool? IsClipboardOwnedBy(nint window);
@@ -75,16 +78,18 @@ public interface IPlatform : IDisposable
     /// Selects the given number of characters immediately left of the caret. Checks the caller's
     /// clipboard/focus/input guard before each key, or once before an atomic input batch.
     /// </summary>
-    async Task<bool> SelectPreviousCharactersAsync(int count, Func<bool> keepGoing)
+    async Task<SelectionStatus> SelectPreviousCharactersAsync(nint window, int count, Func<bool> keepGoing)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
         for (var i = 0; i < count; i++)
         {
-            if (!keepGoing()) return false;
+            if (!keepGoing()) return SelectionStatus.Cancelled;
+            if (ForegroundWindow != window) return SelectionStatus.Interrupted;
             SendChord(KeyModifiers.Shift, "Left");
         }
         if (count > 0) await Task.Delay(20);
-        return keepGoing();
+        if (!keepGoing()) return SelectionStatus.Cancelled;
+        return ForegroundWindow == window ? SelectionStatus.Completed : SelectionStatus.Interrupted;
     }
     /// <summary>The platform's copy shortcut (Ctrl+C, or Cmd+C on macOS).</summary>
     void SendCopy();
@@ -97,6 +102,9 @@ public interface IPlatform : IDisposable
     void SendPaste();
     /// <summary>Opaque handle of the focused window/app (HWND, PID or X11 window id); 0 if unknown.</summary>
     nint ForegroundWindow { get; }
+    /// <summary>Waits for a transient activation to end, cancelling on input; never steals focus.</summary>
+    Task<bool> WaitForTargetAsync(nint window, Func<bool> stillValid, Action? onResumed = null) =>
+        Task.FromResult(window != 0 && ForegroundWindow == window && stillValid());
     void ActivateWindow(nint handle);
     /// <summary>Mouse position in physical screen pixels.</summary>
     (int X, int Y) CursorPosition { get; }

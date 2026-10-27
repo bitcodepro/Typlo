@@ -255,11 +255,11 @@ public sealed class AppController : IDisposable
         try
         {
             var window = _platform.ForegroundWindow;
-            await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
-            timing.Mark("modifiers");
-            if (!IsTargetActive(window)) return;
             var inputVersion = Interlocked.Read(ref _typingVersion);
             bool NoInputSince() => Interlocked.Read(ref _typingVersion) == inputVersion;
+            await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
+            timing.Mark("modifiers");
+            if (!await _platform.WaitForTargetAsync(window, NoInputSince)) return;
             var run = _recentTyping.Capture(window);
             var last = CaptureLastTransform(window);
             using var _ = _platform.SuspendCapture();
@@ -276,6 +276,7 @@ public sealed class AppController : IDisposable
                 // With a live run, select its exact length before Copy: some editors copy an entire
                 // unselected line without setting any marker, which must never enlarge this range.
                 text = await SelectRecentInputAsync(run, NoInputSince, activeLayout);
+                if (text is null) return; // a failed range check must not become a layout-only switch
                 if (text is not null)
                 {
                     source = run.MatchSource(text, SourceLayouts(activeLayout));
@@ -289,15 +290,16 @@ public sealed class AppController : IDisposable
                 // again before every use. User-made selections invalidate this record through the hook.
                 bool RangeStillValid() => NoInputSince() && ReferenceEquals(_lastTransform, last);
                 text = await SelectTransformResultAsync(last, RangeStillValid);
-                if (text is not null)
+                if (text is null)
                 {
-                    source = last.ResultLayout;
-                    automaticSelection = true;
-                    reusingLast = true;
+                    if (ReferenceEquals(_lastTransform, last)) LastTransform = null;
+                    return; // failed verification of a known range must not become a layout-only switch
                 }
-                else if (ReferenceEquals(_lastTransform, last)) LastTransform = null;
+                source = last.ResultLayout;
+                automaticSelection = true;
+                reusingLast = true;
             }
-            else text = await CopySelectionAsync(window);
+            else text = await CopySelectionAsync(window, NoInputSince);
             timing.Mark("selection/copy");
             if (!NoInputSince()) return;
             if (string.IsNullOrEmpty(text))
@@ -324,12 +326,13 @@ public sealed class AppController : IDisposable
                     _recentTyping.Consume(inputVersion);
                 }
             }
-            if (result != text && await PasteTextAsync(result, window, NoInputSince, () =>
+            if (result != text)
+            {
+                if (!await PasteTextAsync(result, window, NoInputSince, text, () =>
                 {
                     _recentTyping.Consume(inputVersion);
                     timing.Mark("replacement sent");
-                }))
-            {
+                })) return;
                 // Input during the paste's settling wait may have moved the caret: then the result cannot be located.
                 LastTransform = NoInputSince() && IsTargetActive(window) ? new TransformRecord(window, text, result, DateTime.UtcNow,
                     switchTo ?? _converter.DetectLayout(result, source) ?? source) : null;
@@ -449,9 +452,17 @@ public sealed class AppController : IDisposable
     /// Nothing is pasted if the user switched to another window meanwhile, or if <paramref name="stillValid"/> (the
     /// operation's own guard, e.g. "no input since the selection was made") fails right before Ctrl+V.
     /// </summary>
-    private async Task<bool> PasteTextAsync(string text, nint window, Func<bool> stillValid, Action? onSent = null)
+    private async Task<bool> PasteTextAsync(string text, nint window, Func<bool> stillValid, string expectedSelection, Action? onSent = null)
     {
-        if (!IsTargetActive(window)) return false;
+        var resumed = false;
+        async Task<bool> VerifyAfterResume()
+        {
+            if (!resumed) return true;
+            var current = await CopySelectionAsync(window, stillValid);
+            resumed = false;
+            return current is not null && current.Replace("\r\n", "\n") == expectedSelection.Replace("\r\n", "\n");
+        }
+        if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true) || !await VerifyAfterResume()) return false;
         if (!stillValid())
         {
             Log.Info("Paste skipped: the user typed or moved the caret before it");
@@ -466,10 +477,15 @@ public sealed class AppController : IDisposable
         {
             // If another app copied something since our write, that content would be pasted.
             EnsureClipboardIsOurs();
-            if (!IsTargetActive(window))
+            if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true))
             {
                 Log.Info("Paste skipped: the active window changed");
                 return false;
+            }
+            if (resumed)
+            {
+                if (!await VerifyAfterResume()) return false;
+                SetOwnText(text);
             }
             if (!stillValid())
             {
@@ -477,6 +493,8 @@ public sealed class AppController : IDisposable
                 return false;
             }
         }
+        EnsureClipboardIsOurs();
+        if (!IsTargetActive(window) || !stillValid()) return false;
         _platform.SendPaste();
         onSent?.Invoke();
         // Give the target app time to read the clipboard before it changes again.
@@ -528,8 +546,8 @@ public sealed class AppController : IDisposable
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
             var window = last.Window;
             // The record is cleared by any user input; re-check it after every wait and before every keystroke.
-            bool StillValid() => ReferenceEquals(_lastTransform, last) && IsTargetActive(window);
-            if (!StillValid())
+            bool StillValid() => ReferenceEquals(_lastTransform, last);
+            if (!await _platform.WaitForTargetAsync(window, StillValid))
             {
                 Log.Info("Undo skipped: the conversion can no longer be located");
                 return;
@@ -544,7 +562,7 @@ public sealed class AppController : IDisposable
                 Log.Info("Undo skipped: the text before the caret is no longer the converted text");
                 return;
             }
-            if (await PasteTextAsync(last.Original, window, StillValid)) LastTransform = null;
+            if (await PasteTextAsync(last.Original, window, StillValid, last.Result)) LastTransform = null;
         }
         catch (ClipboardTakenException) { Log.Info("Undo stopped: another app changed the clipboard meanwhile"); }
         catch (Exception e) { Log.Error("Undo failed", e); }
@@ -750,21 +768,22 @@ public sealed class AppController : IDisposable
     }
 
     /// <summary>Sends Copy and returns the selected text, or null when nothing is selected.</summary>
-    private async Task<string?> CopySelectionAsync(nint window)
+    private async Task<string?> CopySelectionAsync(nint window, Func<bool> stillValid, bool allowRevalidation = true)
     {
-        if (!IsTargetActive(window)) return null;
+        var resumed = false;
+        if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true)) return null;
         // A unique placeholder guarantees the copy is visible as a change even when the selection
         // equals what was already on the clipboard (content-hashing platforms such as Linux).
         var placeholder = "\u2063typlo-" + Guid.NewGuid().ToString("N");
         SetOwnText(placeholder);
         var before = _platform.ClipboardSequence;
-        if (!IsTargetActive(window)) return null;
+        if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true)) return null;
         _platform.SendCopy();
         // Generous: heavy apps (and the first clipboard use in a process) can take over half a second to copy, and a
         // copy that arrives after we gave up would be mistaken for a later one.
         if (await WaitForClipboardChange(before, TimeSpan.FromSeconds(2)) is not { } change) return null;
         var observed = change.Sequence;
-        if (!IsTargetActive(window)) return null;
+        if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true)) return null;
         // Adopt the copy only if the target app made it. Where the OS names the clipboard owner (Windows, X11), a copy
         // by any other process is refused. Where it does not (macOS, Wayland), a further change while the copy settled
         // is ambiguous (a second write by the app or another app's copy, even after an empty first state), so it is
@@ -781,6 +800,14 @@ public sealed class AppController : IDisposable
         var lineCopy = _platform.IsEmptySelectionLineCopy();
         EnsureClipboardIsOurs();
         if (lineCopy) return null;
+        if (resumed)
+        {
+            // The editor may discard its selection on blur. Verify the current range, rather than
+            // pasting over a selection that only existed before the notification appeared.
+            if (!allowRevalidation) return null;
+            var current = await CopySelectionAsync(window, stillValid, allowRevalidation: false);
+            return current == text ? text : null;
+        }
         return text;
     }
 
@@ -815,7 +842,10 @@ public sealed class AppController : IDisposable
 
     private Task<string?> SelectRecentInputAsync(RecentTyping.Run run, Func<bool> stillValid, KeyboardLayout? preferred = null) =>
         SelectAndVerifyAsync(run.Window, run.Keys.Length, stillValid,
-            text => run.MatchSource(text, SourceLayouts(preferred)) is not null);
+            text => run.MatchSource(text, SourceLayouts(preferred)) is not null,
+            remainingSteps: text => text.Length is > 0 && text.Length < run.Keys.Length &&
+                new RecentTyping.Run(run.Window, run.Keys[^text.Length..]).MatchSource(text, SourceLayouts(preferred)) is not null
+                    ? run.Keys.Length - text.Length : null);
 
     private Task<string?> SelectTransformResultAsync(TransformRecord last, Func<bool> stillValid)
     {
@@ -823,10 +853,17 @@ public sealed class AppController : IDisposable
         var expected = last.Result.Replace("\r\n", "\n");
         var steps = System.Globalization.StringInfo.ParseCombiningCharacters(expected).Length;
         return SelectAndVerifyAsync(last.Window, steps, stillValid,
-            text => text.Replace("\r\n", "\n") == expected);
+            text => text.Replace("\r\n", "\n") == expected, remainingSteps: text =>
+            {
+                var suffix = text.Replace("\r\n", "\n");
+                if (suffix.Length == 0 || suffix.Length >= expected.Length || !expected.EndsWith(suffix, StringComparison.Ordinal)) return null;
+                var remaining = steps - System.Globalization.StringInfo.ParseCombiningCharacters(suffix).Length;
+                return remaining > 0 ? remaining : null;
+            });
     }
 
-    private async Task<string?> SelectAndVerifyAsync(nint window, int steps, Func<bool> stillValid, Func<string, bool> matches, int maxSteps = 2000)
+    private async Task<string?> SelectAndVerifyAsync(nint window, int steps, Func<bool> stillValid, Func<string, bool> matches,
+        int maxSteps = 2000, Func<string, int?>? remainingSteps = null)
     {
         if (steps < 1 || steps > maxSteps) return null;
         var selectedByUs = false;
@@ -835,16 +872,33 @@ public sealed class AppController : IDisposable
             bool BeforeSelectionKey()
             {
                 EnsureClipboardIsOurs();
-                if (!stillValid() || !IsTargetActive(window)) return false;
-                selectedByUs = true;
+                if (!stillValid()) return false;
+                if (IsTargetActive(window)) selectedByUs = true;
                 return true;
             }
-            if (!await _platform.SelectPreviousCharactersAsync(steps, BeforeSelectionKey)) return null;
-            if (!stillValid() || !IsTargetActive(window)) return null;
-            var text = await CopySelectionAsync(window);
-            if (text is null || !stillValid() || !matches(text)) return null;
-            selectedByUs = false; // keep this verified selection for the replacement
-            return text;
+            var remaining = steps;
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var status = await _platform.SelectPreviousCharactersAsync(window, remaining, BeforeSelectionKey);
+                if (status == SelectionStatus.Cancelled || !await _platform.WaitForTargetAsync(window, stillValid)) return null;
+                var text = await CopySelectionAsync(window, stillValid);
+                if (text is not null && stillValid() && matches(text))
+                {
+                    selectedByUs = false; // keep this verified selection for the replacement
+                    return text;
+                }
+                // A notification may have interrupted an input batch. Extend only a nonempty selection
+                // verified as the suffix of this exact run/result. A collapsed or unrelated range is refused.
+                if (status != SelectionStatus.Interrupted || text is null || !stillValid() ||
+                    remainingSteps?.Invoke(text) is not { } left || left < 1 || left >= steps)
+                {
+                    Log.Info($"Text selection could not be verified (steps={steps}, copied length={text?.Length ?? 0})");
+                    return null;
+                }
+                remaining = left;
+                Log.Info($"Text selection resumed after transient activation (remaining steps={remaining})");
+            }
+            return null;
         }
         finally
         {

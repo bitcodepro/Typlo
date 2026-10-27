@@ -10,6 +10,12 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
      Settings → layout cycle lets you enable/reorder sources and refresh after an OS input-settings change.
      Input methods without a direct character map are shown as switch-only sources.
    - Nothing selected? Only the recently typed input is converted (can be turned off).
+     Windows also recognizes clipboard copies from native child windows hosted by another process,
+     such as WebView2 editors in Teams. Copies from unrelated processes still stop the replacement.
+     A transient Windows activation pauses input for up to 750 ms instead of immediately cancelling.
+     After focus returns, an interrupted selection continues only from a verified nonempty suffix.
+     Typing, clicking, an external copy or an unverified/collapsed selection stops the operation;
+     Typlo never activates the original window to take focus away from the user.
      Typing a single punctuation character beside an existing word changes only that character.
      Typing a whole wrong-layout word still includes its punctuation: `htdm.dftim` → `ревьюваешь`.
      Cursor movement, clicks, other shortcuts, window/layout changes and a 2-second pause between keystrokes start a new input run.
@@ -86,10 +92,19 @@ Data folder: `data/` next to the executable; if not writable (or inside a `.app`
     Typlo --selftest report.txt              # end-to-end check against the real clipboard/hotkeys/input
     Typlo --screenshots shots                # render the windows with sample data
 
+    # Windows: real WebView2 contenteditable, recent input, formatting, Undo and clipboard races:
+    pwsh -File scripts/test-windows-webview.ps1
+
+The WebView2 check uses a local HTML editor and its own temporary settings/profile. It does not
+sign in to Teams or send messages. It requires the installed WebView2 Runtime; CI may install it
+with the explicit `-InstallRuntimeIfMissing` switch. WebView2 is a test dependency only.
+
+```sh
     # Linux end-to-end in Docker (X11 via Xvfb):
     dotnet publish src/Typlo.App -c Release -r linux-x64 --self-contained -o publish-linux
     docker build -t typlo-linux-test tests/linux
     docker run --rm -v "$PWD/publish-linux:/app" -v "$PWD/out:/out" typlo-linux-test
+```
 
 ## Layout
 

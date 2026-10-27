@@ -284,6 +284,75 @@ public sealed class AppControllerTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConsecutiveExplicitLayoutCommand_AfterTransientActivation_SwitchesOnlyIfTheRangeIsVerified(bool loseSelection)
+    {
+        _platform.WaitForTransientFocus = true;
+        _platform.Type("ghbdtn");
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("привет", _platform.Document.Text);
+        Assert.Equal(KeyboardLayouts.Russian.Id, _platform.ActiveLayoutId);
+        Task recovery = Task.CompletedTask;
+        _platform.OnLeft = () =>
+        {
+            _platform.OnLeft = null;
+            _platform.Window = 2;
+            _platform.Document.Text = "notification";
+            recovery = Task.Run(async () =>
+            {
+                await Task.Delay(80);
+                _platform.Window = 1;
+                if (loseSelection) _platform.Document.Anchor = null; // blur discarded the range without user input
+            });
+        };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.English);
+        await recovery;
+        Assert.Equal(loseSelection ? "привет" : "ghbdtn", _platform.Document.Text);
+        Assert.Equal(loseSelection ? KeyboardLayouts.Russian.Id : KeyboardLayouts.English.Id, _platform.ActiveLayoutId);
+        Assert.Equal(loseSelection ? 1 : 2, _platform.PasteCount);
+        Assert.Empty(_platform.Document.Selection);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        Assert.Equal(0, _platform.Activations);
+        if (loseSelection)
+        {
+            await _controller.UndoLastTransformAsync();
+            Assert.Equal("привет", _platform.Document.Text);
+            Assert.Equal(1, _platform.PasteCount); // the failed record must also be discarded
+        }
+        _platform.Window = 2;
+        Assert.Equal("notification", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task ConsecutiveExplicitLayoutCommand_ChangedResultDoesNotSwitchLayout()
+    {
+        _platform.Type("ghbdtn");
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        _platform.Document.Text = "другое"; // editor changed the result without a keyboard event
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.English);
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("другое", _platform.Document.Text);
+        Assert.Equal(KeyboardLayouts.Russian.Id, _platform.ActiveLayoutId);
+        Assert.Equal(1, _platform.PasteCount);
+        Assert.Empty(_platform.Document.Selection);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task ExplicitLayoutCommand_WithoutATrackedRangeStillSwitchesLayout()
+    {
+        _platform.ActiveLayoutId = KeyboardLayouts.Russian.Id;
+        _platform.Document.Text = "existing text";
+        _platform.Document.Caret = _platform.Document.Text.Length;
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.English);
+        Assert.Equal("existing text", _platform.Document.Text);
+        Assert.Equal(KeyboardLayouts.English.Id, _platform.ActiveLayoutId);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
     [Fact]
     public async Task ConsecutiveTransliterationCommands_UseTheChangedLengthOfTheResult()
     {
@@ -444,6 +513,162 @@ public sealed class AppControllerTests : IDisposable
         Assert.Equal("other window", _platform.Document.Selection);
         Assert.Equal(0, _platform.PasteCount);
         Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Theory]
+    [InlineData("selection")]
+    [InlineData("copy")]
+    [InlineData("paste")]
+    public async Task TransientActivation_ResumesOnlyInTheOriginalWindow(string phase)
+    {
+        _platform.WaitForTransientFocus = true;
+        _platform.Type("ghbdtn");
+        Task recovery = Task.CompletedTask;
+        void Interrupt()
+        {
+            _platform.Window = 2;
+            _platform.Document.Text = "notification";
+            recovery = Task.Run(async () => { await Task.Delay(80); _platform.Window = 1; });
+        }
+        if (phase == "selection") _platform.OnLeft = () => { _platform.OnLeft = null; Interrupt(); };
+        if (phase == "copy") _platform.AfterCopy = () => { _platform.AfterCopy = null; Interrupt(); };
+        if (phase == "paste") _platform.AfterWrite = text => { if (text == "привет") { _platform.AfterWrite = null; Interrupt(); } };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        await recovery;
+        Assert.Equal("привет", _platform.Document.Text);
+        Assert.Equal(1, _platform.PasteCount);
+        Assert.Equal(0, _platform.Activations); // Recovery must not take focus back from another application.
+        _platform.Window = 2;
+        Assert.Equal("notification", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task UserInputDuringTransientActivation_CancelsEvenIfTheTargetReturns()
+    {
+        _platform.WaitForTransientFocus = true;
+        _platform.Type("ghbdtn");
+        Task recovery = Task.CompletedTask;
+        _platform.OnLeft = () =>
+        {
+            _platform.OnLeft = null;
+            _platform.Window = 2;
+            _platform.Document.Text = "other window";
+            recovery = Task.Run(async () =>
+            {
+                await Task.Delay(20);
+                _platform.UserKey(TypedKey.ResetKey); // A real click/key, unlike passive window activation.
+                await Task.Delay(40);
+                _platform.Window = 1;
+            });
+        };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        await recovery;
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal(0, _platform.Activations);
+    }
+
+    [Fact]
+    public async Task ExternalCopyDuringTransientActivation_IsPreserved()
+    {
+        _platform.WaitForTransientFocus = true;
+        _platform.Type("ghbdtn");
+        Task recovery = Task.CompletedTask;
+        _platform.OnLeft = () =>
+        {
+            _platform.OnLeft = null;
+            _platform.Window = 2;
+            recovery = Task.Run(async () =>
+            {
+                await Task.Delay(20);
+                _platform.ExternalCopy("external copy", owner: 99);
+                await Task.Delay(40);
+                _platform.Window = 1;
+            });
+        };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        await recovery;
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal("external copy", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task PersistentFocusChange_TimesOutWithoutTypingOrTakingFocusBack()
+    {
+        _platform.WaitForTransientFocus = true;
+        _platform.Type("ghbdtn");
+        _platform.OnLeft = () => { _platform.OnLeft = null; _platform.Window = 2; _platform.Document.Text = "other window"; };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal((nint)2, _platform.Window);
+        Assert.Equal("other window", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal(0, _platform.Activations);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InterruptedSelection_UnverifiedOrCollapsedRangeIsNeverExtended(bool collapsed)
+    {
+        _platform.WaitForTransientFocus = true;
+        _platform.Type("ghbdtn");
+        Task recovery = Task.CompletedTask;
+        _platform.OnLeft = () =>
+        {
+            _platform.OnLeft = null;
+            _platform.Window = 2;
+            recovery = Task.Run(async () =>
+            {
+                await Task.Delay(40);
+                _platform.Window = 1;
+                if (collapsed) _platform.Document.Anchor = null; // editor lost its range on blur
+            });
+        };
+        if (!collapsed) _platform.AfterCopy = () => _platform.ExternalCopy("not the typed suffix", owner: 1);
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        await recovery;
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Null(_platform.ActiveLayoutId);
+    }
+
+    [Theory]
+    [InlineData("copy")]
+    [InlineData("paste")]
+    public async Task SelectionLostDuringBlur_IsRecheckedBeforeReplacement(string phase)
+    {
+        _platform.WaitForTransientFocus = true;
+        _platform.Type("ghbdtn");
+        Task recovery = Task.CompletedTask;
+        void Interrupt()
+        {
+            _platform.Window = 2;
+            recovery = Task.Run(async () =>
+            {
+                await Task.Delay(80);
+                _platform.Window = 1;
+                _platform.Document.Anchor = null; // no real input, but the editor no longer has the copied range
+            });
+        }
+        if (phase == "copy") _platform.AfterCopy = () => { _platform.AfterCopy = null; Interrupt(); };
+        else _platform.AfterWrite = text => { if (text == "привет") { _platform.AfterWrite = null; Interrupt(); } };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        await recovery;
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Null(_platform.ActiveLayoutId);
+    }
+
+    [Fact]
+    public async Task UserInputWhileModifiersAreReleased_CancelsThePendingConversion()
+    {
+        _platform.Type("ghbdtn");
+        _platform.BeforeModifiers = () => { _platform.UserKey(TypedKey.ResetKey); return Task.CompletedTask; };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("ghbdtn", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Null(_platform.ActiveLayoutId);
     }
 
     [Theory]
@@ -1302,6 +1527,11 @@ public sealed class AppControllerTests : IDisposable
         public event Action<int>? HotkeyPressed;
         private readonly Dictionary<Hotkey, int> _hotkeys = [];
         public bool OwnerKnown = true;
+        public bool WaitForTransientFocus;
+        public int Activations;
+        public Task<bool> WaitForTargetAsync(nint window, Func<bool> stillValid, Action? onResumed = null) => WaitForTransientFocus
+            ? TargetFocus.WaitAsync(window, () => ForegroundWindow, stillValid, TimeSpan.FromMilliseconds(250), onResumed)
+            : Task.FromResult(window != 0 && ForegroundWindow == window && stillValid());
         public int TypedTextCount;
         public Action<int>? OnTypeChar;
         public Action? AfterPaste;
@@ -1399,7 +1629,7 @@ public sealed class AppControllerTests : IDisposable
         {
             get { OnForegroundRead?.Invoke(); var window = Window; AfterForegroundRead?.Invoke(); return window; }
         }
-        public void ActivateWindow(nint handle) => Window = handle;
+        public void ActivateWindow(nint handle) { Activations++; Window = handle; }
         public (int X, int Y) CursorPosition => (0, 0);
         public void SetTypingWatch(bool enabled) => TypingWatch = enabled;
         public void Type(string text)

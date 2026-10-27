@@ -65,12 +65,19 @@ jobs:
       - run: dotnet restore Typlo.slnx
       - run: dotnet build Typlo.slnx -c Release --no-restore
       - run: dotnet test Typlo.slnx -c Release --no-build --logger trx --results-directory TestResults
+      - name: Windows WebView2 editor integration
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-windows-webview.ps1 -ResultsDirectory TestResults/webview2 -InstallRuntimeIfMissing
       - name: Retain test reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tests-${{ matrix.os }}
-          path: TestResults/*.trx
+          path: |
+            TestResults/*.trx
+            TestResults/webview2/*.txt
+            TestResults/webview2/typlo.log
           if-no-files-found: warn
           retention-days: 7
 
