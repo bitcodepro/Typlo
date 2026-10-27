@@ -284,6 +284,75 @@ public sealed class AppControllerTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConsecutiveExplicitLayoutCommand_AfterTransientActivation_SwitchesOnlyIfTheRangeIsVerified(bool loseSelection)
+    {
+        _platform.WaitForTransientFocus = true;
+        _platform.Type("ghbdtn");
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("привет", _platform.Document.Text);
+        Assert.Equal(KeyboardLayouts.Russian.Id, _platform.ActiveLayoutId);
+        Task recovery = Task.CompletedTask;
+        _platform.OnLeft = () =>
+        {
+            _platform.OnLeft = null;
+            _platform.Window = 2;
+            _platform.Document.Text = "notification";
+            recovery = Task.Run(async () =>
+            {
+                await Task.Delay(80);
+                _platform.Window = 1;
+                if (loseSelection) _platform.Document.Anchor = null; // blur discarded the range without user input
+            });
+        };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.English);
+        await recovery;
+        Assert.Equal(loseSelection ? "привет" : "ghbdtn", _platform.Document.Text);
+        Assert.Equal(loseSelection ? KeyboardLayouts.Russian.Id : KeyboardLayouts.English.Id, _platform.ActiveLayoutId);
+        Assert.Equal(loseSelection ? 1 : 2, _platform.PasteCount);
+        Assert.Empty(_platform.Document.Selection);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        Assert.Equal(0, _platform.Activations);
+        if (loseSelection)
+        {
+            await _controller.UndoLastTransformAsync();
+            Assert.Equal("привет", _platform.Document.Text);
+            Assert.Equal(1, _platform.PasteCount); // the failed record must also be discarded
+        }
+        _platform.Window = 2;
+        Assert.Equal("notification", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task ConsecutiveExplicitLayoutCommand_ChangedResultDoesNotSwitchLayout()
+    {
+        _platform.Type("ghbdtn");
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        _platform.Document.Text = "другое"; // editor changed the result without a keyboard event
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.English);
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("другое", _platform.Document.Text);
+        Assert.Equal(KeyboardLayouts.Russian.Id, _platform.ActiveLayoutId);
+        Assert.Equal(1, _platform.PasteCount);
+        Assert.Empty(_platform.Document.Selection);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task ExplicitLayoutCommand_WithoutATrackedRangeStillSwitchesLayout()
+    {
+        _platform.ActiveLayoutId = KeyboardLayouts.Russian.Id;
+        _platform.Document.Text = "existing text";
+        _platform.Document.Caret = _platform.Document.Text.Length;
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.English);
+        Assert.Equal("existing text", _platform.Document.Text);
+        Assert.Equal(KeyboardLayouts.English.Id, _platform.ActiveLayoutId);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
     [Fact]
     public async Task ConsecutiveTransliterationCommands_UseTheChangedLengthOfTheResult()
     {

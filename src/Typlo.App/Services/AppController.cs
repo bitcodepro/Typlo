@@ -290,13 +290,14 @@ public sealed class AppController : IDisposable
                 // again before every use. User-made selections invalidate this record through the hook.
                 bool RangeStillValid() => NoInputSince() && ReferenceEquals(_lastTransform, last);
                 text = await SelectTransformResultAsync(last, RangeStillValid);
-                if (text is not null)
+                if (text is null)
                 {
-                    source = last.ResultLayout;
-                    automaticSelection = true;
-                    reusingLast = true;
+                    if (ReferenceEquals(_lastTransform, last)) LastTransform = null;
+                    return; // failed verification of a known range must not become a layout-only switch
                 }
-                else if (ReferenceEquals(_lastTransform, last)) LastTransform = null;
+                source = last.ResultLayout;
+                automaticSelection = true;
+                reusingLast = true;
             }
             else text = await CopySelectionAsync(window, NoInputSince);
             timing.Mark("selection/copy");
