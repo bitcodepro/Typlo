@@ -33,6 +33,12 @@ public sealed class ShortcutsWindow : Window
         Row(body, Key(settings.ClipboardHotkey), Loc.T("shortcuts.history"));
         Row(body, Key(settings.ClipboardHotkey) + " ×2", Loc.T("shortcuts.previous"));
 
+        Section(body, Loc.T("capture.title"), Loc.T("capture.settingsHint"));
+        Row(body, Key(settings.ScreenshotCopyHotkey), Loc.T("capture.copy"));
+        Row(body, Key(settings.ScreenshotSaveHotkey), Loc.T("capture.save"));
+        Row(body, "R / F", Loc.T("capture.changeMode"));
+        Row(body, "Esc", Loc.T("settings.cancel"));
+
         Section(body, Loc.T("shortcuts.historyWindow"), null);
         Row(body, "↑ ↓  PgUp PgDn", Loc.T("shortcuts.select"));
         Row(body, "Enter", Loc.T("history.ctx.paste"));

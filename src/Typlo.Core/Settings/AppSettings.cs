@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Typlo.Core.Text;
+using Typlo.Core.Imaging;
 
 namespace Typlo.Core.Settings;
 
@@ -71,6 +72,10 @@ public sealed class AppSettings
 
     public string ClipboardHotkey { get; set; } = "Ctrl+Shift+V";
 
+    public CaptureShape ScreenshotShape { get; set; } = CaptureShape.Rectangle;
+    public string ScreenshotCopyHotkey { get; set; } = "Ctrl+Alt+Shift+S";
+    public string ScreenshotSaveHotkey { get; set; } = "Ctrl+Alt+Shift+F";
+
     public bool HistoryEnabled { get; set; } = true;
     public int MaxItems { get; set; } = 500;
     public int MaxTotalMegabytes { get; set; } = 200;
@@ -127,6 +132,9 @@ public sealed class AppSettings
         CaseHotkey ??= "";
         TranslitHotkey ??= "";
         UndoHotkey ??= "";
+        if (!Enum.IsDefined(ScreenshotShape)) ScreenshotShape = CaptureShape.Rectangle;
+        ScreenshotCopyHotkey ??= "";
+        ScreenshotSaveHotkey ??= "";
     }
 
     /// <summary>Snippet problems that would make a snippet never fire or fire ambiguously.</summary>

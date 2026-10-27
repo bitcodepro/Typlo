@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Typlo.Core.Imaging;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
@@ -192,6 +193,33 @@ internal sealed class EditorCheck : Form
                     if (popup.TextAtClose != "notification text") throw new InvalidOperationException("Input reached the notification window");
                 });
 
+            await Check("desktop capture has exact BGRA pixels and a transparent freehand mask", async () =>
+            {
+                using var swatch = new Form
+                {
+                    BackColor = Color.FromArgb(13, 97, 173), Width = 100, Height = 100,
+                    FormBorderStyle = FormBorderStyle.None, ShowInTaskbar = false, TopMost = true,
+                    StartPosition = FormStartPosition.Manual, Left = Left + 80, Top = Top + 80,
+                };
+                swatch.Show(this); swatch.Activate();
+                try
+                {
+                    await Task.Delay(150);
+                    var position = swatch.PointToScreen(new Point(20, 20));
+                    var frame = DesktopCapture.Grab();
+                    var x = position.X - frame.Bounds.X;
+                    var y = position.Y - frame.Bounds.Y;
+                    var offset = (y * frame.Bounds.Width + x) * 4;
+                    if (!frame.Bgra.AsSpan(offset, 4).SequenceEqual(new byte[] { 173, 97, 13, 255 }))
+                        throw new InvalidOperationException($"Screen copy color mismatch: {string.Join(',', frame.Bgra.AsSpan(offset, 4).ToArray())}; fixture DPI={swatch.DeviceDpi}, sample={x},{y}, frame={frame.Bounds.Width}x{frame.Bounds.Height}");
+                    var crop = CaptureRegion.Crop(frame.Bgra, frame.Bounds.Width, frame.Bounds.Height, CaptureShape.Freehand,
+                        [new(x, y), new(x + 20, y), new(x, y + 20)])!;
+                    if (crop.Width != 20 || crop.Height != 20 || crop.Bgra[3] != 255 || crop.Bgra[^1] != 0)
+                        throw new InvalidOperationException("The freehand crop did not retain its transparent background");
+                }
+                finally { swatch.Close(); Activate(); _browser.Focus(); }
+            });
+
             await StartClipboardHelper();
             await Check("an unrelated child process is not an embedded editor", async () =>
             {
@@ -243,7 +271,7 @@ internal sealed class EditorCheck : Form
         var paths = new AppPaths(Path.Combine(_work, name));
         new SettingsStore(paths.SettingsFile).Save(new AppSettings
         {
-            LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "", ClipboardHotkey = "",
+            LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "", ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "",
             SwitchSystemLayout = false, ConvertLastWord = recent, HistoryEnabled = false,
         });
         return new AppController(platform, paths, PlatformFactory.CreateKeyProtector(diagnostic: true), diagnostic: true);

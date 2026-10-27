@@ -31,6 +31,7 @@ public enum SelectionStatus { Completed, Interrupted, Cancelled }
 public interface IPlatform : IDisposable
 {
     string Name { get; }
+    bool SupportsScreenCapture => false;
     PlatformCapabilities Capabilities { get; }
 
     // Hotkeys

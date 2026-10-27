@@ -26,7 +26,7 @@ internal static class ScreenshotMode
         try
         {
             var s = controller.Settings.Clone();
-            s.ToggleHotkey = ""; s.ClipboardHotkey = ""; s.CaseHotkey = ""; s.TranslitHotkey = ""; s.UndoHotkey = ""; s.StartWithSystem = false;
+            s.ToggleHotkey = ""; s.ClipboardHotkey = ""; s.CaseHotkey = ""; s.TranslitHotkey = ""; s.UndoHotkey = ""; s.ScreenshotCopyHotkey = ""; s.ScreenshotSaveHotkey = ""; s.StartWithSystem = false;
             controller.ApplySettings(s);
 
             await Dispatcher.UIThread.InvokeAsync(() =>
@@ -90,6 +90,9 @@ internal static class ScreenshotMode
                 darkSettings.Show();
                 await Task.Delay(600);
                 Save(darkSettings, Path.Combine(outDir, "settings_dark.png"));
+                darkSettings.FindControl<TextBlock>("CaptureSaveStatus")?.BringIntoView();
+                await Task.Delay(300);
+                Save(darkSettings, Path.Combine(outDir, "settings_screenshots.png"));
                 darkSettings.FindControl<StackPanel>("CycleRows")?.BringIntoView();
                 await Task.Delay(300);
                 Save(darkSettings, Path.Combine(outDir, "settings_layout_cycle.png"));

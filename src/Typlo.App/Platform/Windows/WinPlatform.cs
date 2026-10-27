@@ -63,6 +63,7 @@ public sealed class WinPlatform : IPlatform
     }
 
     public string Name => "Windows";
+    public bool SupportsScreenCapture => true;
 
     public PlatformCapabilities Capabilities { get; } = new(
         GlobalHotkeys: true, SimulateInput: true, SwitchLayout: true, DetectHotkeyConflicts: true);

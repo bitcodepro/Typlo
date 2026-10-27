@@ -40,7 +40,23 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
    "Copy text from image" (offline OCR: Windows built-in, `tesseract` on Linux). "Pause history" in the tray stops recording for
    10 minutes, 1 hour or until restart.
    Encrypted (AES-256-GCM). Limits on count, total size, image size; excluded apps.
-3. **System** – interface language (English, Русский, Українська, Deutsch, Español, Português, Français, Italiano, 中文, 日本語) and theme (system/light/dark), export/import of settings, add to autostart; keep the screen from locking (like video playback). After 3 idle minutes
+3. **Screenshots (Windows)** – tray → Screenshots or Settings → Screenshots:
+   - `Ctrl+Alt+Shift+S`: capture to the clipboard; `Ctrl+Alt+Shift+F`: capture and open Save As.
+     Both shortcuts are configurable and can be disabled. Choose the default rectangle/freehand shape in Settings;
+     `R` / `F` changes shape in the overlay before drawing.
+   - The desktop freezes before the selection overlay opens. Drag with the crosshair, then release to capture.
+     `Esc` or right click cancels without changing the clipboard. A tiny or empty area lets you try again.
+   - Freehand contours close automatically; pixels outside the contour are transparent in the PNG.
+     The preview confirms the copy, shows pixel dimensions and offers Copy, Save JPEG or another capture.
+     Save As produces an actual JPEG at quality 95 and the original pixel dimensions, without resizing.
+     JPEG has no transparency, so the area outside a freehand contour is white in saved files.
+     The Save shortcut does not modify the clipboard or add the image to history, even if the file dialog is cancelled.
+     Paste the image into another app with `Ctrl+V`. Screenshots join history only when recording is enabled and unpaused.
+   - Monitors use their own DPI scale, including monitors left/above the primary display. No image is uploaded;
+     the full desktop frame stays in memory for the selection. Only the selected image is copied/saved.
+   - Command-line launch: `Typlo --capture rectangle` / `Typlo --capture freehand`; add `--save` for the JPEG dialog.
+     Capture is currently Windows-only; the controls explain this on macOS/Linux.
+4. **System** – interface language (English, Русский, Українська, Deutsch, Español, Português, Français, Italiano, 中文, 日本語) and theme (system/light/dark), export/import of settings, add to autostart; keep the screen from locking (like video playback). After 3 idle minutes
    it also presses F15 (a key standard keyboards do not have) so Teams does not switch to "Away";
    it never touches the mouse and sends nothing while you work.
 
@@ -58,6 +74,7 @@ the old files on the next start. "Check for updates…" (tray menu or Settings) 
 |---|---|---|---|---|
 | Global hotkeys | RegisterHotKey | libuiohook (needs Accessibility) | libuiohook | bind in desktop settings → `Typlo --history` / `--convert ru\|en\|toggle` |
 | Copy/paste simulation | SendInput | CGEvent (Cmd+C/V) | XTest | – (history only puts the item on the clipboard) |
+| Screenshots: rectangle / freehand | yes | – | – | – |
 | Clipboard history | Win32 listener | NSPasteboard | `xclip` (+ `clipnotify` if present) | `wl-clipboard` |
 | Key for history | DPAPI | Keychain | Secret Service (`secret-tool`), else 0600 file | same |
 | Switch system layout | yes | yes (TIS) | yes (XKB; GNOME needs the bridge below) | no |

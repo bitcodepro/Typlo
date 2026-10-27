@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Typlo.Core.Imaging;
 using Typlo.App.Platform;
 using Typlo.Core;
 using Typlo.Core.Hotkeys;
@@ -18,6 +19,8 @@ public sealed class AppController : IDisposable
     private const int CaseId = 3;
     private const int TranslitId = 4;
     private const int UndoId = 5;
+    private const int ScreenshotCopyId = 6;
+    private const int ScreenshotSaveId = 7;
     private const int LayoutIdBase = 100;
     // A hotkey is delivered on key-down. Waiting a whole second for its modifiers penalises a held
     // chord; give a normal release a short grace period, then use the platform's safe release path.
@@ -38,6 +41,9 @@ public sealed class AppController : IDisposable
 
     /// <summary>Raised on a background thread; the argument is the window that was active before.</summary>
     public event Action<nint>? ShowHistoryRequested;
+    public event Action<CaptureDestination>? ScreenshotRequested;
+    private volatile bool _capturingScreen;
+    public bool IsCapturingScreen => _capturingScreen;
 
     /// <summary>Hotkeys that could not be registered (taken by another app), as text for the UI.</summary>
     public IReadOnlyList<string> FailedHotkeys { get; private set; } = [];
@@ -175,6 +181,11 @@ public sealed class AppController : IDisposable
         Register(CaseId, Settings.CaseHotkey, Loc.T("hk.case"));
         Register(TranslitId, Settings.TranslitHotkey, Loc.T("hk.translit"));
         Register(UndoId, Settings.UndoHotkey, Loc.T("hk.undo"));
+        if (_platform.SupportsScreenCapture)
+        {
+            Register(ScreenshotCopyId, Settings.ScreenshotCopyHotkey, Loc.T("capture.copy"));
+            Register(ScreenshotSaveId, Settings.ScreenshotSaveHotkey, Loc.T("capture.save"));
+        }
         var next = LayoutIdBase;
         foreach (var lh in Settings.LayoutHotkeys)
         {
@@ -189,7 +200,10 @@ public sealed class AppController : IDisposable
     {
         try
         {
-            if (id == ClipboardId) ShowHistoryRequested?.Invoke(_platform.ForegroundWindow);
+            if (_capturingScreen) return;
+            if (id == ScreenshotCopyId) ScreenshotRequested?.Invoke(CaptureDestination.Clipboard);
+            else if (id == ScreenshotSaveId) ScreenshotRequested?.Invoke(CaptureDestination.File);
+            else if (id == ClipboardId) ShowHistoryRequested?.Invoke(_platform.ForegroundWindow);
             else if (id == ToggleId) _ = ConvertSelectionAsync(null);
             else if (id == CaseId) _ = ChangeCaseAsync();
             else if (id == TranslitId) _ = TransliterateAsync();
@@ -197,6 +211,46 @@ public sealed class AppController : IDisposable
             else if (_layoutHotkeys.TryGetValue(id, out var layout)) _ = ConvertSelectionAsync(layout);
         }
         catch (Exception e) { Log.Error("Hotkey handler failed", e); }
+    }
+
+    /// <summary>Serializes a user-requested capture with all other clipboard tools. Cancellation never writes.</summary>
+    internal async Task<ImageCodec.Encoded?> CaptureScreenshotAsync(Func<Task<CapturedPixels?>> capture, bool copyToClipboard = true)
+    {
+        if (!_platform.SupportsScreenCapture || !await _convertGate.WaitAsync(0)) return null;
+        _capturingScreen = true;
+        try
+        {
+            LastTransform = null;
+            _recentTyping.Reset(Interlocked.Read(ref _typingVersion));
+            var pixels = await capture();
+            if (pixels is null) return null;
+            var image = ImageCodec.FromBgra(pixels.Bgra, pixels.Width, pixels.Height);
+            if (copyToClipboard) PublishScreenshot(image, pixels.Bgra);
+            return image;
+        }
+        finally { _capturingScreen = false; _convertGate.Release(); }
+    }
+
+    internal async Task<bool> CopyScreenshotAsync(ImageCodec.Encoded image)
+    {
+        if (!await _convertGate.WaitAsync(0)) return false;
+        try
+        {
+            var (pixels, _, _) = ImageCodec.DecodeBgra(image.Png);
+            PublishScreenshot(image, pixels);
+            return true;
+        }
+        finally { _convertGate.Release(); }
+    }
+
+    private void PublishScreenshot(ImageCodec.Encoded image, byte[] bgra)
+    {
+        using (_platform.SuspendCapture())
+        {
+            _adoptedCopy = null;
+            _platform.SetImage(image.Png, bgra, image.Width, image.Height);
+        }
+        OnClipboardCaptured(new RawClip(null, image.Png, true, "Typlo"));
     }
 
     /// <summary>Copies the selection, converts it to <paramref name="target"/> (null = toggle) and pastes it back.</summary>

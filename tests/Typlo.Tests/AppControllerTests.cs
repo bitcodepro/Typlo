@@ -10,6 +10,7 @@ using Typlo.Core.Hotkeys;
 using Typlo.Core.Layouts;
 using Typlo.Core.Storage;
 using Typlo.Core.Text;
+using Typlo.Core.Imaging;
 
 namespace Typlo.Tests;
 
@@ -24,6 +25,103 @@ public sealed class AppControllerTests : IDisposable
     {
         _output = output;
         _controller = new(_platform, new AppPaths(_dir), new PlainKeyProtector(), diagnostic: true);
+    }
+
+    [Fact]
+    public void ScreenshotHotkeys_RequestCopyOrSaveAndCanBeDisabled()
+    {
+        _platform.SupportsScreenCapture = true;
+        _controller.RegisterHotkeys();
+        var requests = new List<CaptureDestination>();
+        _controller.ScreenshotRequested += requests.Add;
+        _platform.PressHotkey(_controller.Settings.ScreenshotCopyHotkey);
+        _platform.PressHotkey(_controller.Settings.ScreenshotSaveHotkey);
+        Assert.Equal([CaptureDestination.Clipboard, CaptureDestination.File], requests);
+        _platform.SupportsScreenCapture = false;
+        _controller.RegisterHotkeys();
+        _platform.PressHotkey(_controller.Settings.ScreenshotCopyHotkey);
+        Assert.Equal(2, requests.Count);
+        _platform.SupportsScreenCapture = true;
+        var settings = _controller.Settings.Clone();
+        settings.ScreenshotCopyHotkey = "";
+        _controller.ApplySettings(settings);
+        _platform.PressHotkey("Ctrl+Alt+Shift+S");
+        Assert.Equal(2, requests.Count);
+    }
+
+    [Fact]
+    public async Task ScreenshotCancellation_PreservesClipboardAndSerializesOtherCommands()
+    {
+        _platform.SupportsScreenCapture = true;
+        _controller.RegisterHotkeys();
+        var requests = 0;
+        _controller.ScreenshotRequested += _ => requests++;
+        var sequence = _platform.ClipboardSequence;
+        var image = await _controller.CaptureScreenshotAsync(async () =>
+        {
+            Assert.True(_controller.IsCapturingScreen);
+            _platform.PressHotkey(_controller.Settings.ScreenshotSaveHotkey);
+            await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+            return null;
+        });
+        Assert.Null(image);
+        Assert.False(_controller.IsCapturingScreen);
+        Assert.Equal(0, requests);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Null(_platform.ActiveLayoutId);
+        Assert.Equal(sequence, _platform.ClipboardSequence);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        _platform.PressHotkey(_controller.Settings.ScreenshotCopyHotkey);
+        Assert.Equal(1, requests);
+    }
+
+    [Fact]
+    public async Task ScreenshotFailure_ReleasesTheClipboardGate()
+    {
+        _platform.SupportsScreenCapture = true;
+        await Assert.ThrowsAsync<IOException>(() => _controller.CaptureScreenshotAsync(() => throw new IOException("fixture failure")));
+        Assert.False(_controller.IsCapturingScreen);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        _platform.Type("abc");
+        await _controller.ChangeCaseAsync();
+        Assert.Equal("Abc", _platform.Document.Text);
+    }
+
+    [Fact]
+    public async Task ScreenshotForSaving_DoesNotWriteClipboardOrHistory()
+    {
+        ImageCodecTests.Initialize();
+        _platform.SupportsScreenCapture = true;
+        var sequence = _platform.ClipboardSequence;
+        var image = await _controller.CaptureScreenshotAsync(() =>
+            Task.FromResult<CapturedPixels?>(new(new byte[16], 2, 2)), copyToClipboard: false);
+        Assert.NotNull(image);
+        Assert.Equal((2, 2), (image.Width, image.Height));
+        Assert.Equal(sequence, _platform.ClipboardSequence);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        Assert.Empty(_controller.Store.List());
+        Assert.False(_controller.IsCapturingScreen);
+    }
+
+    [Theory]
+    [InlineData(true, false, 1)]
+    [InlineData(false, false, 0)]
+    [InlineData(true, true, 0)]
+    public async Task ScreenshotCopy_UsesImageClipboardAndRespectsHistoryRecording(bool history, bool paused, int expectedStored)
+    {
+        ImageCodecTests.Initialize();
+        _platform.SupportsScreenCapture = true;
+        var settings = _controller.Settings.Clone();
+        settings.HistoryEnabled = history;
+        _controller.ApplySettings(settings);
+        if (paused) _controller.PauseHistory(null);
+        var image = await _controller.CaptureScreenshotAsync(() =>
+            Task.FromResult<CapturedPixels?>(new(Enumerable.Repeat((byte)255, 16).ToArray(), 2, 2)));
+        Assert.NotNull(image);
+        Assert.Equal(1, _platform.ImageWriteCount);
+        Assert.Equal(image.Png, _platform.ImagePng);
+        Assert.Equal(expectedStored, _controller.Store.List().Count);
+        Assert.False(_controller.IsCapturingScreen);
     }
 
     [Fact]
@@ -1519,6 +1617,7 @@ public sealed class AppControllerTests : IDisposable
         public int PasteCount, BackspaceCount;
         public TaskCompletionSource ModifiersEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string Name => "Fake platform (no OS access)";
+        public bool SupportsScreenCapture { get; set; }
         public IReadOnlyList<KeyboardLayout> Installed = [KeyboardLayouts.English, KeyboardLayouts.Russian];
         public string? ActiveLayoutId;
         public IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => Installed;
@@ -1567,7 +1666,14 @@ public sealed class AppControllerTests : IDisposable
         public void SetText(string text) { ExternalCopy(text); AfterWrite?.Invoke(text); }
         public void SetRichText(string text, string? html, string? rtf) => SetText(text);
         public void SetFiles(IReadOnlyList<string> paths) => SetText(string.Join('\n', paths));
-        public void SetImage(byte[] png, byte[] bgra, int width, int height) => throw new NotSupportedException();
+        public int ImageWriteCount;
+        public byte[]? ImagePng;
+        public void SetImage(byte[] png, byte[] bgra, int width, int height)
+        {
+            ImageWriteCount++;
+            ImagePng = png;
+            ExternalCopy("image");
+        }
         public ClipboardSnapshot Snapshot()
         {
             var snapshot = new ClipboardSnapshot([("text", Encoding.UTF8.GetBytes(ClipboardText))]);

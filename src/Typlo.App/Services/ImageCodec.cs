@@ -28,6 +28,37 @@ public static class ImageCodec
         return new Encoded(png, Thumbnail(bitmap), size.Width, size.Height);
     }
 
+    public static Encoded FromBgra(byte[] bgra, int width, int height)
+    {
+        if (width < 1 || height < 1 || (long)width * height > Core.Imaging.CaptureRegion.MaxPixels ||
+            bgra.LongLength != (long)width * height * 4) throw new ArgumentException("Invalid image dimensions.");
+        using var bitmap = new WriteableBitmap(new PixelSize(width, height), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Unpremul);
+        using (var frame = bitmap.Lock())
+            for (var y = 0; y < height; y++) Marshal.Copy(bgra, y * width * 4, frame.Address + y * frame.RowBytes, width * 4);
+        using var output = new MemoryStream();
+        bitmap.Save(output, PngBitmapEncoderOptions.Default);
+        // Skia's thumbnail resize accepts immutable decoded bitmaps, not WriteableBitmap.
+        return Encode(output.ToArray(), alreadyPng: true);
+    }
+
+    public static byte[] ToJpeg(byte[] png)
+    {
+        var (pixels, width, height) = DecodeBgra(png);
+        // JPEG has no alpha channel. Composite freehand pixels on white at full source resolution.
+        for (var i = 0; i < pixels.Length; i += 4)
+        {
+            var alpha = pixels[i + 3];
+            for (var c = 0; c < 3; c++) pixels[i + c] = (byte)((pixels[i + c] * alpha + 255 * (255 - alpha) + 127) / 255);
+            pixels[i + 3] = 255;
+        }
+        using var bitmap = new WriteableBitmap(new PixelSize(width, height), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
+        using (var frame = bitmap.Lock())
+            for (var y = 0; y < height; y++) Marshal.Copy(pixels, y * width * 4, frame.Address + y * frame.RowBytes, width * 4);
+        using var output = new MemoryStream();
+        bitmap.Save(output, new JpegBitmapEncoderOptions { Quality = 95 });
+        return output.ToArray();
+    }
+
     private static byte[] Thumbnail(Bitmap bitmap)
     {
         var size = bitmap.PixelSize;

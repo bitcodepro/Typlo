@@ -478,6 +478,8 @@ internal static class SelfTest
         // Self-test must not grab the user's real shortcuts or touch autostart.
         s.ToggleHotkey = "";
         s.ClipboardHotkey = "";
+        s.ScreenshotCopyHotkey = "";
+        s.ScreenshotSaveHotkey = "";
         s.LayoutHotkeys = [];
         s.SwitchSystemLayout = false;
         s.Layouts = ["en", "ru"]; // fixture cycle for the RU/EN text assertions, resolved to native IDs
