@@ -124,6 +124,12 @@ internal static partial class Native
     [LibraryImport("user32.dll")] public static unsafe partial uint SendInput(uint count, INPUT* inputs, int size);
     [LibraryImport("user32.dll")] public static partial short GetAsyncKeyState(int vk);
     [LibraryImport("user32.dll")] public static partial nint GetForegroundWindow();
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    public delegate void WinEventProc(nint hook, uint eventType, nint window, int objectId, int childId, uint threadId, uint time);
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern nint SetWinEventHook(uint eventMin, uint eventMax, nint module, WinEventProc callback,
+        uint processId, uint threadId, uint flags);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool UnhookWinEvent(nint hook);
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool SetForegroundWindow(nint hwnd);
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool BringWindowToTop(nint hwnd);
     [LibraryImport("user32.dll")] public static partial uint GetWindowThreadProcessId(nint hwnd, out uint pid);

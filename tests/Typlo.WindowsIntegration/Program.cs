@@ -239,6 +239,63 @@ internal sealed class EditorCheck : Form
                 if (platform.ReadText() != ExternalCopy) throw new InvalidOperationException("External copy was overwritten");
             });
 
+            await Check("foreground events retain a complete activation cycle between samples", async () =>
+            {
+                await Prepare("ghb", select: true);
+                var counter = typeof(IPlatform).GetProperty("ForegroundChangeVersion");
+                long? Version() => (long?)counter?.GetValue(platform);
+                var before = Version() ?? throw new InvalidOperationException("No durable foreground counter");
+                using var popup = new NotificationFixture(true);
+                popup.ShowNotification(this);
+                var activated = Native.GetForegroundWindow() == popup.Handle;
+                popup.Close(); Activate(); _browser.Focus();
+                if (!activated || Native.GetForegroundWindow() != Handle)
+                    throw new InvalidOperationException("Fixture could not perform the activation cycle");
+                await Until(() => Version() >= before + 2, "A complete activation cycle was lost between samples");
+            });
+
+            await Check("copy snapshot followed by a completed blur and lost selection never duplicates text", async () =>
+            {
+                using var controller = Controller(platform, "copy-blur", recent: false);
+                await Prepare("ghb", select: true);
+                var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<CoreWebView2WebMessageReceivedEventArgs> handler = async (_, e) =>
+                {
+                    if (e.TryGetWebMessageAsString() != "focus-copy") return;
+                    try
+                    {
+                        using var popup = new NotificationFixture(true);
+                        popup.ShowNotification(this);
+                        if (Native.GetForegroundWindow() != popup.Handle)
+                            throw new InvalidOperationException("Fixture popup did not activate");
+                        await _browser.ExecuteScriptAsync("window.getSelection().removeAllRanges()");
+                        popup.Close(); Activate(); _browser.Focus();
+                        await _browser.ExecuteScriptAsync("""
+                            (()=>{const e=document.getElementById('editor');e.focus();
+                            const r=document.createRange();r.selectNodeContents(e);r.collapse(false);
+                            const s=window.getSelection();s.removeAllRanges();s.addRange(r);})()
+                            """);
+                        // Publish the pre-blur snapshot only after the editor has completed its return.
+                        // No sleep decides whether the controller sees the popup while waiting for Copy.
+                        platform.SetText("ghb");
+                        completed.TrySetResult();
+                    }
+                    catch (Exception error) { completed.TrySetException(error); }
+                };
+                _browser.CoreWebView2.WebMessageReceived += handler;
+                try
+                {
+                    await _browser.ExecuteScriptAsync("""
+                        document.addEventListener('copy', e=>{e.preventDefault();
+                            chrome.webview.postMessage('focus-copy');}, {once:true});
+                        """);
+                    await controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+                    await completed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                    await ExpectText("ghb");
+                }
+                finally { _browser.CoreWebView2.WebMessageReceived -= handler; }
+            });
+
             Result = _report.Any(line => line.StartsWith("FAIL", StringComparison.Ordinal)) ? 1 : 0;
             _report.Add(Result == 0 ? "ALL PASSED" : "FAILED");
         }

@@ -26,6 +26,9 @@ public sealed class WinPlatform : IPlatform
     private readonly ConcurrentQueue<Action> _queue = new();
     private readonly ManualResetEventSlim _ready = new();
     private readonly WndProc _wndProc; // keeps the delegate alive for native code
+    private readonly WinEventProc _foregroundProc; // rooted until the message loop unhooks it
+    private nint _foregroundHook, _lastForeground;
+    private long _foregroundVersion;
     private readonly HashSet<int> _hotkeyIds = [];
     private readonly HashSet<uint> _ownSequences = [];
     private readonly uint _fmtPng, _fmtExclude, _fmtCanInclude, _fmtViewerIgnore, _fmtHtml, _fmtRtf, _fmtDropEffect;
@@ -78,6 +81,7 @@ public sealed class WinPlatform : IPlatform
         _fmtRtf = RegisterClipboardFormatW("Rich Text Format");
         _fmtDropEffect = RegisterClipboardFormatW("Preferred DropEffect");
         _wndProc = WindowProc;
+        _foregroundProc = (_, _, window, _, _, _, _) => ObserveForeground(window);
         _thread = new Thread(MessageLoop) { IsBackground = true, Name = "Typlo.MessageLoop" };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
@@ -98,7 +102,15 @@ public sealed class WinPlatform : IPlatform
         };
         RegisterClassEx(ref wc);
         _hwnd = CreateWindowEx(0, wc.lpszClassName, "Typlo", 0, 0, 0, 0, 0, HWND_MESSAGE, 0, wc.hInstance, 0);
-        if (_hwnd != 0) AddClipboardFormatListener(_hwnd);
+        if (_hwnd != 0)
+        {
+            AddClipboardFormatListener(_hwnd);
+            _lastForeground = GetForegroundWindow();
+            // OUTOFCONTEXT delivers every queued foreground event on this message-loop thread,
+            // including both halves of a brief away/return cycle. Do not skip our own process.
+            _foregroundHook = SetWinEventHook(0x0003, 0x0003, 0, _foregroundProc, 0, 0, 0);
+            if (_foregroundHook == 0) Log.Error("Foreground event hook unavailable; text replacement will be refused");
+        }
         _ready.Set();
         if (_hwnd == 0) return;
 
@@ -127,6 +139,7 @@ public sealed class WinPlatform : IPlatform
                 _suspendCount = Math.Max(0, _suspendCount - 1);
                 return 0;
             case WM_CLOSE:
+                if (_foregroundHook != 0) { UnhookWinEvent(_foregroundHook); _foregroundHook = 0; }
                 RemoveClipboardFormatListener(hwnd);
                 foreach (var hk in _hotkeyIds) UnregisterHotKey(hwnd, hk);
                 DestroyWindow(hwnd);
@@ -157,6 +170,22 @@ public sealed class WinPlatform : IPlatform
     }
 
     private void Invoke(Action action) => Invoke(() => { action(); return 0; });
+
+    private void ObserveForeground(nint window)
+    {
+        if (window == _lastForeground) return;
+        _lastForeground = window;
+        _foregroundVersion++;
+    }
+
+    public long? ForegroundChangeVersion => Invoke<long?>(() =>
+    {
+        if (_foregroundHook == 0) throw new InvalidOperationException("Cannot verify foreground transitions.");
+        // Query on the event thread rather than reading its counter from another thread.
+        // The sample also catches a currently active departure before its callback is delivered.
+        ObserveForeground(GetForegroundWindow());
+        return _foregroundVersion;
+    });
 
     // ---------------------------------------------------------------- hotkeys
 
