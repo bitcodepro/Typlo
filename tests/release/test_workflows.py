@@ -32,6 +32,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("linux-selftest", jobs["version"]["needs"])
         self.assertIn("gnome-selftest", jobs["version"]["needs"])
         self.assertIn("node --test tests/gnome/bridge.test.mjs", [step.get("run") for step in jobs["release-tooling"]["steps"]])
+        webview = next(step for step in jobs["build-and-test"]["steps"] if step.get("name") == "Windows WebView2 editor integration")
+        self.assertEqual(webview["if"], "runner.os == 'Windows'")
+        self.assertIn("test-windows-webview.ps1", webview["run"])
         self.assertNotIn("emulator-tests", jobs)
 
     def test_actions_are_pinned_and_checkouts_do_not_persist_credentials(self):

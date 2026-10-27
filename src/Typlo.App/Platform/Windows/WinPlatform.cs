@@ -263,7 +263,23 @@ public sealed class WinPlatform : IPlatform
         if (owner == 0) return null; // some apps copy without an owner window
         GetWindowThreadProcessId(owner, out var ownerPid);
         GetWindowThreadProcessId(window, out var windowPid);
-        return ownerPid == windowPid;
+        if (ownerPid == 0 || windowPid == 0) return null;
+        if (ownerPid == windowPid) return true;
+        // WebView2 editors (e.g. Teams) copy through a separate browser process. Accept that
+        // process only if it owns an actual native child of the target's top-level window.
+        // A shared executable name or parent-process relationship alone is not enough.
+        var root = GetAncestor(window, 2 /* GA_ROOT */);
+        if (root == 0) return false;
+        var embedded = false;
+        EnumChildWindows(root, (child, _) =>
+        {
+            GetWindowThreadProcessId(child, out var childPid);
+            if (childPid != ownerPid) return true;
+            embedded = true;
+            return false;
+        }, 0);
+        if (!embedded) Log.Info($"Clipboard owner is outside the target window (target PID={windowPid}, owner PID={ownerPid})");
+        return embedded;
     }
 
     public bool IsEmptySelectionLineCopy() => Invoke(() => WithClipboard(() =>

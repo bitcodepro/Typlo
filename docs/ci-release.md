@@ -11,6 +11,11 @@ availability or bound GitHub's queue time, including macOS ARM capacity shortage
 ## Checks and packages
 
 - Restore, Release build and the unit tests run on Windows 2025, Ubuntu 24.04 and macOS 15.
+- The Windows job also runs a local WebView2 contenteditable fixture through real copy/paste and
+  keyboard input. It checks cross-process clipboard ownership, recent input beside old text,
+  formatted paragraphs, Undo, and interruption by an unrelated process's copy. The fixture uses
+  isolated data/profile folders and sends no Teams messages. Its SDK is a test-only dependency;
+  CI explicitly installs Microsoft's WebView2 Runtime if the runner does not already have it.
 - The existing Linux end-to-end selftest runs inside a disposable Ubuntu/Xvfb/Openbox
   Docker container, with a read-only application mount, isolated writable XDG data/config
   directories and no network. It checks
@@ -21,7 +26,8 @@ availability or bound GitHub's queue time, including macOS ARM capacity shortage
   macOS archives contain `Typlo.app` and retain the existing ad-hoc signature.
   No signing identity or notarization is introduced.
 - Every archive contains only the executable (or `Typlo.app`), README, MIT LICENSE,
-  `THIRD-PARTY-NOTICES.txt` and `build-info.json` (version, RID and source commit) - no folders.
+  `THIRD-PARTY-NOTICES.txt` and `build-info.json` (version, RID and source commit).
+  Linux packages additionally contain the restricted GNOME source-switching extension.
   The notices file lists the packages actually shipped for that RID and their license/notice
   texts, each identical text once.
   The verifier checks all five archive/checksum pairs, required contents, embedded
@@ -30,10 +36,9 @@ availability or bound GitHub's queue time, including macOS ARM capacity shortage
   missing platforms, extra assets and local data files.
 - Test reports and PR preview packages are kept as Actions artifacts for seven days.
 
-macOS Accessibility/Keychain, Windows desktop input and Linux Wayland behavior
-still need manual testing in a real user session. The hosted unit tests and archive
-checks do not claim coverage of those desktop interactions. Windows/macOS GUI
-selftests are deliberately not run on the developer's desktop or CI service session.
+macOS Accessibility/Keychain, Linux Wayland behavior and the real Teams application
+still need manual testing in a real user session. The Windows integration check covers
+the WebView2 editor/process boundary; it does not sign into Teams or exercise its full UI.
 
 The SDK is restricted to the .NET 10.0.4xx feature band with latest-patch roll-forward.
 Unlike QueueLoom, Typlo currently has no NuGet lockfiles; restore uses the existing

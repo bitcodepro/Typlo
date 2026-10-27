@@ -27,6 +27,8 @@ internal static partial class Native
     public static readonly nint HWND_MESSAGE = -3;
 
     public delegate nint WndProc(nint hwnd, uint msg, nint wParam, nint lParam);
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public delegate bool EnumWindowProc(nint hwnd, nint parameter);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct WNDCLASSEX
@@ -129,6 +131,8 @@ internal static partial class Native
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool GetCursorPos(out POINT p);
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static partial bool IsWindow(nint hwnd);
     [LibraryImport("user32.dll")] public static partial nint GetAncestor(nint hwnd, uint flags);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)] public static extern bool EnumChildWindows(nint parent, EnumWindowProc callback, nint parameter);
 
     public const uint ES_CONTINUOUS = 0x80000000, ES_SYSTEM_REQUIRED = 0x1, ES_DISPLAY_REQUIRED = 0x2;
     [LibraryImport("kernel32.dll")] public static partial uint SetThreadExecutionState(uint flags);

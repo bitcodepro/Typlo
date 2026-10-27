@@ -60,7 +60,8 @@ public interface IPlatform : IDisposable
     /// </summary>
     bool IsEmptySelectionLineCopy();
     /// <summary>
-    /// Whether the clipboard was last written by the process that owns <paramref name="window"/>;
+    /// Whether the clipboard was last written by the app hosting <paramref name="window"/>, including
+    /// a process owning an embedded native child window (e.g. a Windows WebView2 editor);
     /// null where the OS does not tell (then only the change timing is used).
     /// </summary>
     bool? IsClipboardOwnedBy(nint window);
