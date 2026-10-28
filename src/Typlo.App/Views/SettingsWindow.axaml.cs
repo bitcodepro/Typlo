@@ -50,7 +50,14 @@ public partial class SettingsWindow : Window
 
         // Live hotkeys would fire while the user records new ones.
         controller.SuspendHotkeys();
-        Closed += (_, _) => { if (!_saved) controller.RegisterHotkeys(); };
+        Closed += async (_, _) =>
+        {
+            if (_saved) return;
+            // Keep the on-demand UI alive until restoration completes, but release the dispatcher
+            // immediately so dismissal, focus changes and other IPC requests can still finish.
+            using var operation = UiOperations.Shared.Begin();
+            if (operation is not null) await controller.RestoreHotkeysAsync();
+        };
 
         BuildHotkeyRows();
         ClipboardHotkeyBox.HotkeyText = _draft.ClipboardHotkey;

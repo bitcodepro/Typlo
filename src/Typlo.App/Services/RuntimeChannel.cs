@@ -176,6 +176,11 @@ internal sealed class RuntimeClient(string channel, int uiOwner = 0, Action<Runt
             await using var pipe = new NamedPipeClientStream(".", channel, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             progress.Begin(RuntimeTransportPhase.Accept);
             await pipe.ConnectAsync(timeout.Token).ConfigureAwait(false);
+            if (diagnostic is not null && OperatingSystem.IsWindows())
+            {
+                if (Platform.Windows.Native.GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var pid)) progress.PeerProcessId = (int)pid;
+                progress.Report(diagnostic, RuntimeTransportIssue.Accepted, null, false, false, 0);
+            }
             await RuntimeChannel.WriteFrameAsync(pipe, JsonSerializer.SerializeToUtf8Bytes(request, RuntimeJson.Default.RuntimeRequest), timeout.Token, progress).ConfigureAwait(false);
             var data = await RuntimeChannel.ReadFrameAsync(pipe, timeout.Token, progress).ConfigureAwait(false);
             progress.Begin(RuntimeTransportPhase.ReplyJson);

@@ -117,7 +117,21 @@ internal sealed class BackgroundHost : IDisposable
             case "settings": if (command.Settings is null) return new(false, "Missing settings"); _controller.ApplySettings(command.Settings); return State();
             case "refresh-layouts": _controller.RefreshKeyboardLayouts(); return State();
             case "suspend-hotkeys": _controller.SuspendHotkeys(); return State();
-            case "register-hotkeys": _controller.RegisterHotkeys(); return State();
+            case "register-hotkeys":
+                var blockedRestore = _diagnostic && File.Exists(Path.Combine(_paths.DataDir, "hold-hotkey-restore"));
+                if (blockedRestore)
+                {
+                    File.WriteAllText(Path.Combine(_paths.DataDir, "hotkey-restore-waiting"), "waiting");
+                    var limit = Stopwatch.StartNew();
+                    while (File.Exists(Path.Combine(_paths.DataDir, "hold-hotkey-restore")))
+                    {
+                        if (limit.Elapsed > TimeSpan.FromSeconds(10)) throw new TimeoutException("Hotkey restore fixture was not released");
+                        await Task.Delay(20, _stop.Token);
+                    }
+                }
+                _controller.RegisterHotkeys();
+                if (blockedRestore) File.WriteAllText(Path.Combine(_paths.DataDir, "hotkey-restore-complete"), "complete");
+                return State();
             case "probe-hotkey":
                 var hotkey = Hotkey.TryParse(command.Text ?? "");
                 return new(hotkey is { IsUsable: true } && _platform.RegisterHotkey(9000, hotkey));

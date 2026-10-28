@@ -189,6 +189,18 @@ public sealed partial class AppController : IDisposable
     /// <summary>Typlo's active hotkeys: pressing one is a command, not input that moves the caret.</summary>
     private readonly HashSet<Hotkey> _activeHotkeys = [];
 
+    /// <summary>Closing a settings window must not block its dispatcher on a resident RPC.</summary>
+    internal async Task RestoreHotkeysAsync()
+    {
+        if (_remote is null) { RegisterHotkeys(); return; }
+        try
+        {
+            var reply = await _remote.CallAsync(new("register-hotkeys"));
+            if (Volatile.Read(ref _disposed) == 0) UpdateRemoteState(reply);
+        }
+        catch (Exception e) when (e is IOException or OperationCanceledException) { Log.Error("Background runtime unavailable", e); }
+    }
+
     public void RegisterHotkeys()
     {
         if (_remote is not null)

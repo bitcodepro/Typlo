@@ -165,8 +165,9 @@ public sealed partial class RuntimeChannelTests
         server.Dispose();
         await Assert.ThrowsAsync<EndOfStreamException>(() => call);
         Assert.Equal(1, calls);
-        var diagnostic = Assert.Single(diagnostics);
+        var diagnostic = Assert.Single(diagnostics, d => d.Issue == RuntimeTransportIssue.Failure);
         Assert.False(diagnostic.Server);
+        if (OperatingSystem.IsWindows()) Assert.Equal(Environment.ProcessId, diagnostic.PeerProcessId);
         Assert.Equal("capture-end", diagnostic.Command);
         Assert.True(diagnostic.Trace > 0);
         Assert.Equal(RuntimeTransportPhase.ReplyBody, diagnostic.Phase);

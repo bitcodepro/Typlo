@@ -1869,6 +1869,32 @@ public sealed partial class AppControllerTests : IDisposable
         return new(true, PausedUntil: _controller.PausedUntil);
     }, diagnostic => _output.WriteLine(diagnostic.Summary));
 
+    [Fact]
+    public async Task RemoteHotkeyRestoreReturnsToCallerWhileResidentReplyIsPending()
+    {
+        var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var server = new RuntimeChannel(name, async request =>
+        {
+            if (request.Command != "register-hotkeys") return new(true);
+            entered.TrySetResult();
+            await release.Task;
+            return new(true, FailedHotkeys: ["fixture conflict"]);
+        });
+        using var ui = AppController.CreateRemote(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name));
+        try
+        {
+            var pending = ui.RestoreHotkeysAsync();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.False(pending.IsCompleted);
+            release.TrySetResult();
+            await pending.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(["fixture conflict"], ui.FailedHotkeys);
+        }
+        finally { release.TrySetResult(); }
+    }
+
     private sealed class FakePlatform : IPlatform
     {
         public bool SupportsDirectTextEditing { get; set; }

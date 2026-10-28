@@ -48,3 +48,27 @@ allow older requests without a trace to be read.
 In the app, records go to `typlo.log` / `typlo-ui.log`. Test fixtures include records in xUnit/TRX
 output; CI retains the nested Windows runtime logs as well as test reports. Logging failures do not
 change command delivery. Payload size limits and the existing request/response timeouts remain.
+
+## Windows UI-close regression coverage
+
+Investigating the Windows history-target timeout reproduced a stalled settings `Closed` handler
+in Native AOT. The UI was synchronously waiting on resident hotkey restoration, so it could not
+answer another UI request or finish dismissal. Settings closure now awaits restoration
+asynchronously and holds a `UiOperations` lease until the reply/state update finishes. The UI
+dispatcher stays responsive and the idle timer cannot tear the process down mid-operation.
+
+The Windows integration harness also supports `--ui-target-check <app> <results> <cycles>`.
+Its first cycle holds a diagnostic-only barrier in the resident's `register-hotkeys` handler.
+Dismissal and a dispatcher query must complete before that barrier is released; the process must
+outlive the existing one-second idle interval, and hotkey restoration/exit must complete afterwards.
+This check fails on the old synchronous handler, without relying on a random timeout. CI runs it
+with ten repeated editor → Settings → history → close cycles on the Native AOT executable.
+
+The foreground editor fixture explicitly grants foreground permission to the spawned UI, modelling
+a user action while retaining the actual foreground/target assertions. Test transport logs are
+buffered until completion to avoid file I/O changing request timing. On Windows, explicit diagnostic
+clients also record the server PID for the connected pipe; UI lifecycle records contain only fixed
+action labels, thread IDs and traces. No payloads or window titles are recorded.
+
+The original single CI timeout cannot be attributed retroactively beyond its available logs. These
+checks verify the independently reproduced blocking path rather than treating a green retry as proof.

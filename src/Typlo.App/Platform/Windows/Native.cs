@@ -4,6 +4,12 @@ namespace Typlo.App.Platform.Windows;
 
 internal static partial class Native
 {
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetNamedPipeServerProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint processId);
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AllowSetForegroundWindow(uint processId);
     public const int WM_HOTKEY = 0x0312;
     public const int WM_CLIPBOARDUPDATE = 0x031D;
     public const int WM_INPUTLANGCHANGEREQUEST = 0x0050;

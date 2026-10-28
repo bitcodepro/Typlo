@@ -10,12 +10,12 @@ internal enum RuntimeTransportIssue { Failure, ListenerGap, Accepted }
 internal sealed record RuntimeTransportDiagnostic(RuntimeTransportIssue Issue, bool Server, long Channel, long Connection,
     long Trace, RuntimeTransportPhase Phase, string Command, int CompletedBytes, int ExpectedBytes,
     long ElapsedMilliseconds, string? ExceptionType, int? HResult, SocketError? SocketError, bool Stopping, bool TimedOut,
-    int ServerInstances)
+    int ServerInstances, int PeerProcessId = 0)
 {
     internal string Summary => $"IPC {Issue}: side={(Server ? "server" : "client")} pid={Environment.ProcessId} channel={Channel} " +
         $"connection={Connection} trace={Trace} phase={Phase} command={Command} bytes={CompletedBytes}/{ExpectedBytes} " +
         $"elapsed={ElapsedMilliseconds}ms exception={ExceptionType ?? "none"} hresult={HResult?.ToString("X8") ?? "none"} " +
-        $"socket={SocketError?.ToString() ?? "none"} stopping={Stopping} timeout={TimedOut} instances={ServerInstances}";
+        $"socket={SocketError?.ToString() ?? "none"} stopping={Stopping} timeout={TimedOut} instances={ServerInstances} peer={PeerProcessId}";
 }
 
 internal sealed class RuntimeTransportProgress(bool server, long channel = 0, long connection = 0)
@@ -25,6 +25,7 @@ internal sealed class RuntimeTransportProgress(bool server, long channel = 0, lo
     internal RuntimeTransportPhase Phase;
     internal string Command = "unknown";
     internal int CompletedBytes, ExpectedBytes;
+    internal int PeerProcessId;
     internal bool ServerSide() => server;
 
     internal void Begin(RuntimeTransportPhase phase, int bytes = 0)
@@ -34,7 +35,7 @@ internal sealed class RuntimeTransportProgress(bool server, long channel = 0, lo
     {
         "state" or "settings" or "paste" or "capture-begin" or "capture-end" or "image-write-begin" or
         "image-write-end" or "ui" or "probe-hotkey" or "clear-probes" or "image-fixture" or
-        "history-target-fixture" or "update-fixture" => command,
+        "history-target-fixture" or "update-fixture" or "register-hotkeys" or "suspend-hotkeys" or "refresh-layouts" => command,
         _ => "unknown",
     };
 
@@ -46,7 +47,7 @@ internal sealed class RuntimeTransportProgress(bool server, long channel = 0, lo
             if (inner is SocketException se) { socket = se.SocketErrorCode; break; }
         var entry = new RuntimeTransportDiagnostic(issue, server, channel, connection, Trace, Phase, Command,
             CompletedBytes, ExpectedBytes, (long)Stopwatch.GetElapsedTime(_started).TotalMilliseconds,
-            error?.GetType().FullName, error?.HResult, socket, stopping, timedOut, instances);
+            error?.GetType().FullName, error?.HResult, socket, stopping, timedOut, instances, PeerProcessId);
         // A diagnostic sink must never change whether a command is delivered or retried.
         try
         {

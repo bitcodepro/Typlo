@@ -64,10 +64,12 @@ internal static class BackgroundRuntimeCheck
         finally { cancel.Cancel(); File.Delete(pidFile); }
     }
 
-    internal static async Task<int> RunAsync(string executable, string output)
+    internal static async Task<int> RunAsync(string executable, string output, int targetCycles = 0)
     {
         output = Path.GetFullPath(output); Directory.CreateDirectory(output);
+        Typlo.App.Log.FilePath = Path.Combine(output, "harness.log");
         var lines = new List<string>();
+        var uiTrace = new System.Collections.Concurrent.ConcurrentQueue<string>();
         var paths = new AppPaths(Path.Combine(output, "data-" + Guid.NewGuid().ToString("N")));
         new SettingsStore(paths.SettingsFile).Save(new AppSettings
         {
@@ -91,11 +93,23 @@ internal static class BackgroundRuntimeCheck
             await Until(() => File.Exists(report) && File.ReadAllLines(report).Length >= 3, "host ready");
             var info = File.ReadAllLines(report).Select(l => l.Split('=', 2)).ToDictionary(p => p[0], p => p[1]);
             var runtime = new RuntimeClient(info["channel"]);
-            var ui = new RuntimeClient("Typlo.Ui." + host.Id);
+            var expectedUiPid = 0;
+            var ui = new RuntimeClient("Typlo.Ui." + host.Id, diagnostic: entry =>
+                uiTrace.Enqueue($"{DateTime.UtcNow:O} expected_pid={Volatile.Read(ref expectedUiPid)} {entry.Summary}"));
             var state = await runtime.CallAsync(new("state"));
             Check(state.UiProcessId == 0, "Cold start has no UI child");
             Check(!host.Modules.Cast<ProcessModule>().Any(m => m.ModuleName.Contains("Skia", StringComparison.OrdinalIgnoreCase) || m.ModuleName.Contains("libgles", StringComparison.OrdinalIgnoreCase)), "Background does not load Skia or OpenGL");
             Sample("cold");
+            if (targetCycles > 0)
+            {
+                for (var i = 0; i < targetCycles; i++)
+                {
+                    await CheckHistoryTarget(gateRestore: i == 0);
+                    Check(true, $"UI history target cycle {i + 1}/{targetCycles}");
+                }
+                File.WriteAllLines(Path.Combine(output, "runtime.txt"), lines);
+                return 0;
+            }
 
             var key = Enumerable.Range(13, 12).Select(n => Hotkey.TryParse("Ctrl+Alt+Shift+F" + n)!).First(h => platform.RegisterHotkey(9000, h));
             platform.UnregisterAllHotkeys();
@@ -176,20 +190,7 @@ internal static class BackgroundRuntimeCheck
             Check(!Directory.EnumerateFiles(ocrTemp, "typlo-ocr-*.png").Any(), "Canceled OCR leaves no plaintext temporary image");
             child.Dispose(); child = null;
 
-            // A separate editor process is unnecessary: this harness is external to the resident.
-            using (var editor = new TargetEditor())
-            {
-                platform.ActivateWindow(editor.Handle);
-                await Until(() => platform.ForegroundWindow == editor.Handle, "external editor foreground");
-                await OpenSettings();
-                await Until(() => { var w = platform.ForegroundWindow; Native.GetWindowThreadProcessId(w, out var pid); return pid == child!.Id; }, "UI child foreground");
-                var target = await runtime.CallAsync(new("history-target-fixture"));
-                Check(target.Window == (long)editor.Handle, "Tray history remembers external editor while Settings is foreground");
-                await UntilAsync(async () => (await ui.CallAsync(new("history-target-fixture"))).Window == (long)editor.Handle, "history receives external editor target");
-                await ui.CallAsync(new("ui", Args: ["--dismiss"]));
-                await Until(() => child!.HasExited, "target-check UI exits");
-                child!.Dispose(); child = null;
-            }
+            await CheckHistoryTarget();
 
             await CheckOcrAsync();
             Check(true, "Windows OCR reads PNG from memory; cancellation reaps the helper");
@@ -207,12 +208,49 @@ internal static class BackgroundRuntimeCheck
             Check(true, "No orphan UI after resident exit");
             File.WriteAllLines(Path.Combine(output, "runtime.txt"), lines); return 0;
 
-            async Task OpenSettings()
+            async Task OpenSettings(bool userInitiated = false)
             {
                 Check(IpcServer.Send(["--settings"], info["commands"]), "Settings command accepted");
                 await UntilAsync(async () => (state = await runtime.CallAsync(new("state"))).UiProcessId > 0, "settings UI launched");
                 child = Process.GetProcessById(state.UiProcessId);
+                Volatile.Write(ref expectedUiPid, state.UiProcessId);
+                // The editor fixture is the foreground process. Model the user granting focus to
+                // the newly spawned UI, rather than relying on Windows' foreground-lock timing.
+                if (userInitiated) Native.AllowSetForegroundWindow((uint)state.UiProcessId);
                 await ui.CallAsync(new("ui", Args: ["--settings"]));
+            }
+            async Task CheckHistoryTarget(bool gateRestore = false)
+            {
+                // The editor has its own STA/message pump, external to the resident and UI child.
+                using var editor = new TargetEditor();
+                platform.ActivateWindow(editor.Handle);
+                await Until(() => platform.ForegroundWindow == editor.Handle, "external editor foreground");
+                await OpenSettings(userInitiated: true);
+                await Until(() => { var w = platform.ForegroundWindow; Native.GetWindowThreadProcessId(w, out var pid); return pid == child!.Id; }, "UI child foreground");
+                var target = await runtime.CallAsync(new("history-target-fixture"));
+                Check(target.Window == (long)editor.Handle, "Tray history remembers external editor while Settings is foreground");
+                await UntilAsync(async () => (await ui.CallAsync(new("history-target-fixture"))).Window == (long)editor.Handle, "history receives external editor target");
+                if (gateRestore)
+                {
+                    var hold = Path.Combine(paths.DataDir, "hold-hotkey-restore");
+                    File.WriteAllText(hold, "hold");
+                    try
+                    {
+                        var dismiss = ui.CallAsync(new("ui", Args: ["--dismiss"]));
+                        await Until(() => File.Exists(Path.Combine(paths.DataDir, "hotkey-restore-waiting")), "resident waits at hotkey restore barrier");
+                        await dismiss.WaitAsync(TimeSpan.FromSeconds(5));
+                        Check((await ui.CallAsync(new("history-target-fixture"))).Window == (long)editor.Handle,
+                            "UI dispatcher responds while resident hotkey restore is pending");
+                        await Task.Delay(1500); // Exceeds the existing one-second UI idle lifetime.
+                        Check(!child!.HasExited, "Pending hotkey restoration keeps the UI alive");
+                        File.Delete(hold);
+                        await Until(() => File.Exists(Path.Combine(paths.DataDir, "hotkey-restore-complete")), "resident completes hotkey restoration");
+                    }
+                    finally { File.Delete(hold); }
+                }
+                else await ui.CallAsync(new("ui", Args: ["--dismiss"]));
+                await Until(() => child!.HasExited, "target-check UI exits");
+                child!.Dispose(); child = null;
             }
             void Check(bool condition, string message)
             { if (!condition) throw new InvalidOperationException(message); lines.Add("PASS " + message); }
@@ -241,6 +279,7 @@ internal static class BackgroundRuntimeCheck
         { lines.Add("FAIL " + e); File.WriteAllLines(Path.Combine(output, "runtime.txt"), lines); return 1; }
         finally
         {
+            File.WriteAllLines(Path.Combine(output, "ui-transport.log"), uiTrace);
             try { if (!host.HasExited) { host.Kill(entireProcessTree: true); await host.WaitForExitAsync(); } } catch (InvalidOperationException) { }
             try { if (child is { HasExited: false }) child.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
             child?.Dispose();
