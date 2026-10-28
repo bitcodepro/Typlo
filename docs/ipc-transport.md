@@ -58,11 +58,15 @@ asynchronously and holds a `UiOperations` lease until the reply/state update fin
 dispatcher stays responsive and the idle timer cannot tear the process down mid-operation.
 
 The Windows integration harness also supports `--ui-target-check <app> <results> <cycles>`.
-Its first cycle holds a diagnostic-only barrier in the resident's `register-hotkeys` handler.
+Its first cycle holds a diagnostic-only barrier before resident dispatch of `register-hotkeys`.
 Dismissal and a dispatcher query must complete before that barrier is released; the process must
-outlive the existing one-second idle interval, and hotkey restoration/exit must complete afterwards.
+outlive the existing one-second idle interval. It then reopens Settings before releasing the old
+restore, verifies live hotkeys remain suspended, and closes the new window to restore hotkeys/exit.
+Each settings window increments a session number carried by suspend/restore requests; the resident
+ignores restoration from an older session under the same lock used for UI ownership and suspension.
 This check fails on the old synchronous handler, without relying on a random timeout. CI runs it
 with ten repeated editor → Settings → history → close cycles on the Native AOT executable.
+The reopen assertion also fails on `9d8959d`, which has asynchronous closure but no session guard.
 
 The foreground editor fixture explicitly grants foreground permission to the spawned UI, modelling
 a user action while retaining the actual foreground/target assertions. Test transport logs are

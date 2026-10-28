@@ -97,11 +97,17 @@ internal static class BackgroundRuntimeCheck
             var ui = new RuntimeClient("Typlo.Ui." + host.Id, diagnostic: entry =>
                 uiTrace.Enqueue($"{DateTime.UtcNow:O} expected_pid={Volatile.Read(ref expectedUiPid)} {entry.Summary}"));
             var state = await runtime.CallAsync(new("state"));
+            Hotkey? targetFixtureKey = null;
             Check(state.UiProcessId == 0, "Cold start has no UI child");
             Check(!host.Modules.Cast<ProcessModule>().Any(m => m.ModuleName.Contains("Skia", StringComparison.OrdinalIgnoreCase) || m.ModuleName.Contains("libgles", StringComparison.OrdinalIgnoreCase)), "Background does not load Skia or OpenGL");
             Sample("cold");
             if (targetCycles > 0)
             {
+                targetFixtureKey = Enumerable.Range(13, 12).Select(n => Hotkey.TryParse("Ctrl+Alt+Shift+F" + n)!).First(h => platform.RegisterHotkey(9000, h));
+                platform.UnregisterAllHotkeys();
+                var fixtureSettings = new SettingsStore(paths.SettingsFile).Load();
+                fixtureSettings.ToggleHotkey = targetFixtureKey.ToString();
+                await runtime.CallAsync(new("settings", Settings: fixtureSettings));
                 for (var i = 0; i < targetCycles; i++)
                 {
                     await CheckHistoryTarget(gateRestore: i == 0);
@@ -243,13 +249,18 @@ internal static class BackgroundRuntimeCheck
                             "UI dispatcher responds while resident hotkey restore is pending");
                         await Task.Delay(1500); // Exceeds the existing one-second UI idle lifetime.
                         Check(!child!.HasExited, "Pending hotkey restoration keeps the UI alive");
+                        await ui.CallAsync(new("ui", Args: ["--settings"]));
                         File.Delete(hold);
                         await Until(() => File.Exists(Path.Combine(paths.DataDir, "hotkey-restore-complete")), "resident completes hotkey restoration");
+                        Check(platform.RegisterHotkey(9000, targetFixtureKey!), "Delayed close cannot reactivate shortcuts in reopened Settings");
+                        platform.UnregisterAllHotkeys();
+                        await ui.CallAsync(new("ui", Args: ["--dismiss"]));
                     }
                     finally { File.Delete(hold); }
                 }
                 else await ui.CallAsync(new("ui", Args: ["--dismiss"]));
                 await Until(() => child!.HasExited, "target-check UI exits");
+                if (gateRestore) Check(!platform.RegisterHotkey(9000, targetFixtureKey!), "Closing reopened Settings restores live shortcuts");
                 child!.Dispose(); child = null;
             }
             void Check(bool condition, string message)

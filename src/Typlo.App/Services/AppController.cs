@@ -180,9 +180,10 @@ public sealed partial class AppController : IDisposable
 
     /// <summary>Settings window records shortcuts, so live hotkeys must not fire meanwhile.</summary>
     private volatile bool _editingSettings;
+    private long _settingsSession;
     public void SuspendHotkeys()
     {
-        if (_remote is not null) { _remote.Call(new("suspend-hotkeys")); return; }
+        if (_remote is not null) { _remote.Call(new("suspend-hotkeys", Id: Interlocked.Increment(ref _settingsSession))); return; }
         _editingSettings = true; _platform.UnregisterAllHotkeys();
     }
 
@@ -195,7 +196,7 @@ public sealed partial class AppController : IDisposable
         if (_remote is null) { RegisterHotkeys(); return; }
         try
         {
-            var reply = await _remote.CallAsync(new("register-hotkeys"));
+            var reply = await _remote.CallAsync(new("register-hotkeys", Id: Interlocked.Read(ref _settingsSession)));
             if (Volatile.Read(ref _disposed) == 0) UpdateRemoteState(reply);
         }
         catch (Exception e) when (e is IOException or OperationCanceledException) { Log.Error("Background runtime unavailable", e); }
@@ -205,7 +206,7 @@ public sealed partial class AppController : IDisposable
     {
         if (_remote is not null)
         {
-            try { UpdateRemoteState(_remote.Call(new("register-hotkeys"))); }
+            try { UpdateRemoteState(_remote.Call(new("register-hotkeys", Id: Interlocked.Read(ref _settingsSession)))); }
             catch (Exception e) when (e is IOException or OperationCanceledException) { Log.Error("Background runtime unavailable", e); }
             return;
         }

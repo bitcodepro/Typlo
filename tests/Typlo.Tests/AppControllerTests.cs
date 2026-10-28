@@ -1873,10 +1873,12 @@ public sealed partial class AppControllerTests : IDisposable
     public async Task RemoteHotkeyRestoreReturnsToCallerWhileResidentReplyIsPending()
     {
         var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
+        var requests = new System.Collections.Concurrent.ConcurrentQueue<(string Command, long Session)>();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var server = new RuntimeChannel(name, async request =>
         {
+            if (request.Command is "suspend-hotkeys" or "register-hotkeys") requests.Enqueue((request.Command, request.Id));
             if (request.Command != "register-hotkeys") return new(true);
             entered.TrySetResult();
             await release.Task;
@@ -1885,9 +1887,12 @@ public sealed partial class AppControllerTests : IDisposable
         using var ui = AppController.CreateRemote(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name));
         try
         {
+            ui.SuspendHotkeys();
             var pending = ui.RestoreHotkeysAsync();
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
             Assert.False(pending.IsCompleted);
+            ui.SuspendHotkeys();
+            Assert.Equal([("suspend-hotkeys", 1L), ("register-hotkeys", 1L), ("suspend-hotkeys", 2L)], requests.ToArray());
             release.TrySetResult();
             await pending.WaitAsync(TimeSpan.FromSeconds(3));
             Assert.Equal(["fixture conflict"], ui.FailedHotkeys);
