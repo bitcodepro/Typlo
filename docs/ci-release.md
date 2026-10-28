@@ -118,3 +118,14 @@ kill and reap the owned helper.
 The runtime test uses its own profile, does not monitor external clipboard changes, and never replaces
 the user's clipboard. Resident memory samples are retained in `runtime/runtime.txt`. The same AOT binary
 also runs the existing desktop self-test, separately from the WebView2 editor integration test.
+
+Windows typing uses one native hook for each platform lifetime. Disabling input tracking gates
+event delivery; platform disposal stops the hook and joins its owning thread before returning.
+An isolated native check exercises ten platform lifetimes, alternating immediate disposal during
+startup with disposal after native readiness, including double disposal of each platform.
+libuiohook's final quit-message post can report Failure after its first close message already
+terminated the hook. That result is accepted only after the owning thread has joined and
+`Run` returned successfully; a live or faulted hook still fails the check.
+The WebView2 integration waits for native hook readiness and actual typed-key/browser delivery,
+then verifies recent-input conversion through rapid enable/disable and controller replacement.
+Conversion and Undo assertions remain exact; hook errors include their full stack traces.

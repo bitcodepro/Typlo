@@ -1,7 +1,7 @@
 # Language vocabulary preparation
 
-This branch prepares data and a standalone .NET reader for a future language detector.
-It does not change Typlo's conversion, hotkeys, settings, packaging or application startup.
+These resources and the standalone .NET reader prepare a future language detector.
+The vocabulary does not participate in Typlo's conversion, hotkeys, settings, packaging or startup.
 The data and probe are deliberately outside the application/solution build. Integration
 with automatic language detection remains a separate step. CI runs the Python data
 checks and independently verifies the pack with the .NET reader on all three OSes.

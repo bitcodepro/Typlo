@@ -54,30 +54,58 @@ public sealed class WinPlatform : IPlatform
     internal Func<int, Hotkey, bool>? HotkeyProbe { get; set; }
     internal Action? ClearProbes { get; set; }
     private SharpHook.SimpleGlobalHook? _typingHook;
+    private readonly Lock _typingLock = new();
+    private readonly TaskCompletionSource _typingReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private Thread? _typingThread;
+    private volatile bool _typingWatchEnabled;
+    private volatile bool _typingHookCompleted;
+    private bool _disposed;
+    internal bool TypingHookShutdownCompleted => _typingReady.Task.IsCompletedSuccessfully &&
+        _typingHookCompleted && _typingThread is { IsAlive: false };
 
     public void SetTypingWatch(bool enabled)
     {
         if (_passive) return;
-        if (enabled == (_typingHook is not null)) return;
-        if (!enabled)
+        lock (_typingLock)
         {
-            _typingHook!.Dispose();
-            _typingHook = null;
-            return;
+            if (_disposed) { ObjectDisposedException.ThrowIf(enabled, this); return; }
+            _typingWatchEnabled = enabled;
+            // libuiohook owns one process-wide callback. A stop request is not a completed
+            // shutdown: the old thread can still clear that callback after a new hook starts.
+            // Own one native hook for the platform lifetime; controller changes only gate delivery.
+            if (!enabled || _typingHook is not null) return;
+            try
+            {
+                var hook = new SharpHook.SimpleGlobalHook();
+                _typingHook = hook;
+                hook.HookEnabled += (_, _) => _typingReady.TrySetResult();
+                Shared.TypingEvents.Attach(hook, key => { if (_typingWatchEnabled) KeyTyped?.Invoke(key); },
+                    physicalCharacter: WindowsKeyboardLayouts.PhysicalCharacter);
+                _typingThread = new Thread(() =>
+                {
+                    try
+                    {
+                        // Run (not RunAsync) makes Thread.Join cover SharpHook's callback-clearing
+                        // finally too. Its RunAsync task completes before that finally has run.
+                        hook.Run();
+                        _typingHookCompleted = true;
+                        _typingReady.TrySetException(new InvalidOperationException("Typing hook stopped before becoming ready"));
+                    }
+                    catch (Exception e) { _typingReady.TrySetException(e); Log.Error("Typing hook stopped", e); }
+                }) { IsBackground = true, Name = "Typlo.TypingHook" };
+                _typingThread.Start();
+            }
+            catch (Exception e) { _typingReady.TrySetException(e); Log.Error("Typing hook unavailable", e); }
         }
-        try
-        {
-            _typingHook = new SharpHook.SimpleGlobalHook();
-            Shared.TypingEvents.Attach(_typingHook, key => KeyTyped?.Invoke(key),
-                physicalCharacter: WindowsKeyboardLayouts.PhysicalCharacter);
-            _ = _typingHook.RunAsync().ContinueWith(t => Log.Error("Typing hook stopped", t.Exception!.GetBaseException()),
-                TaskContinuationOptions.OnlyOnFaulted);
-        }
-        catch (Exception e)
-        {
-            Log.Error("Typing hook unavailable", e);
-            _typingHook = null;
-        }
+    }
+
+    /// <summary>Native readiness barrier for integration checks; no guessed startup delay.</summary>
+    internal async Task WaitForTypingWatchAsync()
+    {
+        await _typingReady.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        lock (_typingLock)
+            if (!_typingWatchEnabled || _typingHook is not { IsRunning: true } || _typingThread is not { IsAlive: true })
+                throw new InvalidOperationException("Typing hook is not running");
     }
 
     public string Name => "Windows";
@@ -130,13 +158,14 @@ public sealed class WinPlatform : IPlatform
             if (_foregroundHook == 0) Log.Error("Foreground event hook unavailable; text replacement will be refused");
         }
         _ready.Set();
-        if (_hwnd == 0) return;
-
-        while (GetMessageW(out var msg, 0, 0, 0) > 0)
+        while (_hwnd != 0 && GetMessageW(out var msg, 0, 0, 0) > 0)
         {
             TranslateMessage(msg);
             DispatchMessageW(msg);
         }
+        // The class holds this instance's WndProc pointer. A subsequent platform in
+        // this process must register its own delegate, not reuse the disposed instance.
+        UnregisterClassW(wc.lpszClassName, wc.hInstance);
     }
 
     private nint WindowProc(nint hwnd, uint msg, nint wParam, nint lParam)
@@ -686,9 +715,48 @@ public sealed class WinPlatform : IPlatform
 
     public void Dispose()
     {
-        _typingHook?.Dispose();
-        if (_hwnd != 0) PostMessageW(_hwnd, WM_CLOSE, 0, 0);
-        _thread.Join(TimeSpan.FromSeconds(2));
+        SharpHook.SimpleGlobalHook? hook;
+        Thread? typingThread;
+        lock (_typingLock)
+        {
+            if (_disposed) return;
+            _disposed = true; _typingWatchEnabled = false;
+            hook = _typingHook; typingThread = _typingThread;
+        }
+        try
+        {
+            if (hook is not null)
+            {
+                // Dispose can race initial startup. IsRunning is set before the native hook
+                // is installed, so wait for HookEnabled (or the failed startup) before Stop.
+                try { _typingReady.Task.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult(); }
+                catch
+                {
+                    if (typingThread is { IsAlive: true } && !typingThread.Join(TimeSpan.FromSeconds(5))) throw;
+                    // Failed startup has already been logged by its owning thread.
+                }
+                try { hook.Dispose(); }
+                catch (SharpHook.HookException e) when (e.Result == SharpHook.Data.UioHookResult.Failure)
+                {
+                    // libuiohook posts WM_CLOSE, then WM_QUIT. WM_CLOSE can already terminate
+                    // the thread before PostThreadMessage(WM_QUIT), yielding Failure although
+                    // Run succeeded. Accept only that verified outcome, never a live/faulted hook.
+                    if (typingThread is { IsAlive: true }) typingThread.Join(TimeSpan.FromSeconds(5));
+                    if (typingThread is { IsAlive: true } || !_typingHookCompleted) throw;
+                    Log.Info("Typing hook stopped successfully before its final quit message");
+                }
+                finally
+                {
+                    if (typingThread is { IsAlive: true } && !typingThread.Join(TimeSpan.FromSeconds(5)))
+                        throw new TimeoutException("Typing hook did not finish shutting down");
+                }
+            }
+        }
+        finally
+        {
+            if (_hwnd != 0) PostMessageW(_hwnd, WM_CLOSE, 0, 0);
+            _thread.Join(TimeSpan.FromSeconds(2));
+        }
     }
 
     private sealed class Scope(Action onDispose) : IDisposable
