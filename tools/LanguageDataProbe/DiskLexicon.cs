@@ -4,6 +4,11 @@ using Microsoft.Data.Sqlite;
 
 namespace LanguageDataProbe;
 
+internal readonly record struct WordEvidence(byte[] CorpusWeights, byte SupplementMask)
+{
+    internal bool Includes(int language) => CorpusWeights[language] > 0 || (SupplementMask & (1 << language)) != 0;
+}
+
 /// <summary>Preparation prototype only; no changes to Typlo's conversion/hotkey path.</summary>
 internal sealed class DiskLexicon(string path) : IDisposable
 {
@@ -35,14 +40,14 @@ internal sealed class DiskLexicon(string path) : IDisposable
             command.CommandText = "PRAGMA application_id";
             if (Convert.ToInt32(command.ExecuteScalar()) != 0x54594C44) throw new InvalidDataException("Not a Typlo vocabulary");
             command.CommandText = "PRAGMA user_version";
-            if (Convert.ToInt32(command.ExecuteScalar()) != 1) throw new InvalidDataException("Unsupported vocabulary version");
+            if (Convert.ToInt32(command.ExecuteScalar()) != 2) throw new InvalidDataException("Unsupported vocabulary version");
             command.CommandText = "SELECT value FROM metadata WHERE key='languages'";
             using var languages = JsonDocument.Parse((string?)command.ExecuteScalar() ?? throw new InvalidDataException("Missing languages"));
             _languages = languages.RootElement.EnumerateArray().Select(x => x.GetString()!).ToArray();
             if (_languages.Length != 8 || _languages.Any(string.IsNullOrEmpty) || _languages.Distinct().Count() != 8)
                 throw new InvalidDataException("Invalid languages");
             _lookup = connection.CreateCommand();
-            _lookup.CommandText = "SELECT weights FROM words WHERE word=$word";
+            _lookup.CommandText = "SELECT weights,supplement_mask FROM words WHERE word=$word";
             _lookup.Parameters.Add("$word", SqliteType.Text);
             _lookup.Prepare();
             _connection = connection;
@@ -50,7 +55,7 @@ internal sealed class DiskLexicon(string path) : IDisposable
         catch { _lookup?.Dispose(); _lookup = null; connection.Dispose(); throw; }
     }
 
-    internal byte[]? Lookup(string token)
+    internal WordEvidence? Lookup(string token)
     {
         if (token.Length is 0 or > 128) return null;
         var word = Normalize(token);
@@ -58,8 +63,13 @@ internal sealed class DiskLexicon(string path) : IDisposable
         {
             Open();
             _lookup!.Parameters[0].Value = word;
-            if (_lookup.ExecuteScalar() is not byte[] value) return null;
-            return value.Length == 8 ? value : throw new InvalidDataException("Malformed frequency vector");
+            using var row = _lookup.ExecuteReader();
+            if (!row.Read()) return null;
+            var weights = (byte[])row[0];
+            var mask = row.GetInt32(1);
+            if (weights.Length != 8 || (mask & ~6) != 0 || (mask == 0 && weights.All(x => x == 0)))
+                throw new InvalidDataException("Malformed vocabulary evidence");
+            return new(weights, (byte)mask);
         }
     }
 

@@ -1,11 +1,16 @@
 {
-  "schema": 1,
-  "sha256": "c905a1ac34509a85cd1c661bd5b4b8b71a58b60fc6f168395aa4eb8b61d8fb4c",
-  "content_sha256": "2e508eb9ec0b0c9b0387a5b571ebd11af3776ca4a7a5c0e5947c814144e9bbb7",
-  "bytes": 7086080,
-  "words": 291666,
-  "language_entries": 389858,
-  "ambiguous_words": 52589,
+  "schema": 2,
+  "sha256": "95b2a8beafee57d233a60251e59b8d6ad330fd21fa01dbbb47703644d3a92855",
+  "content_sha256": "3233d03499d09fed1b9119d978f786e3e4839d25c0f05664d8a9dda51a64f077",
+  "bytes": 7458816,
+  "words": 292798,
+  "language_entries": 391148,
+  "ambiguous_words": 52747,
+  "supplement": {
+    "sha256": "d40a614a51e5d6906f9bec669bf185e0a8f2132af88d8218ab96ffcc29e912db",
+    "unique_words": 1137,
+    "families": 122
+  },
   "sqlite_builder_version": "3.53.1",
   "unicode_version": "15.0.0",
   "languages": {
@@ -13,49 +18,73 @@
       "source_rows": 50000,
       "retained_words": 48623,
       "rejected_rows": 1377,
-      "source_total_count": 725119374
+      "source_total_count": 725119374,
+      "supplemental_words": 0,
+      "supplemental_only_words": 0,
+      "combined_words": 48623
     },
     "ru": {
       "source_rows": 50000,
       "retained_words": 48721,
       "rejected_rows": 1279,
-      "source_total_count": 144780175
+      "source_total_count": 144780175,
+      "supplemental_words": 659,
+      "supplemental_only_words": 659,
+      "combined_words": 49380
     },
     "uk": {
       "source_rows": 50000,
       "retained_words": 44728,
       "rejected_rows": 5272,
-      "source_total_count": 4736584
+      "source_total_count": 4736584,
+      "supplemental_words": 634,
+      "supplemental_only_words": 631,
+      "combined_words": 45359
     },
     "fr": {
       "source_rows": 50000,
       "retained_words": 49439,
       "rejected_rows": 561,
-      "source_total_count": 312994233
+      "source_total_count": 312994233,
+      "supplemental_words": 0,
+      "supplemental_only_words": 0,
+      "combined_words": 49439
     },
     "es": {
       "source_rows": 50000,
       "retained_words": 49711,
       "rejected_rows": 289,
-      "source_total_count": 413264052
+      "source_total_count": 413264052,
+      "supplemental_words": 0,
+      "supplemental_only_words": 0,
+      "combined_words": 49711
     },
     "it": {
       "source_rows": 50000,
       "retained_words": 49245,
       "rejected_rows": 755,
-      "source_total_count": 241736295
+      "source_total_count": 241736295,
+      "supplemental_words": 0,
+      "supplemental_only_words": 0,
+      "combined_words": 49245
     },
     "de": {
       "source_rows": 50000,
       "retained_words": 49718,
       "rejected_rows": 282,
-      "source_total_count": 151705378
+      "source_total_count": 151705378,
+      "supplemental_words": 0,
+      "supplemental_only_words": 0,
+      "combined_words": 49718
     },
     "pt": {
       "source_rows": 50000,
       "retained_words": 49673,
       "rejected_rows": 327,
-      "source_total_count": 212103058
+      "source_total_count": 212103058,
+      "supplemental_words": 0,
+      "supplemental_only_words": 0,
+      "combined_words": 49673
     }
   }
 }

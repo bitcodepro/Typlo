@@ -15,15 +15,15 @@ if (args[0] == "verify")
     command.CommandText = "PRAGMA cache_size=-128; PRAGMA mmap_size=0;"; command.ExecuteNonQuery();
     command.CommandText = "PRAGMA integrity_check";
     if ((string?)command.ExecuteScalar() != "ok") throw new InvalidDataException("Integrity check failed");
-    command.CommandText = "SELECT word,weights FROM words ORDER BY word COLLATE BINARY";
+    command.CommandText = "SELECT word,weights,supplement_mask FROM words ORDER BY word COLLATE BINARY";
     using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
     long count = 0;
     using (var rows = command.ExecuteReader())
         while (rows.Read())
         {
-            var word = rows.GetString(0); var weights = (byte[])rows[1];
-            if (word != DiskLexicon.Normalize(word) || weights.Length != 8 || weights.All(x => x == 0)) throw new InvalidDataException("Invalid word/vector");
-            hash.AppendData(Encoding.UTF8.GetBytes(word)); hash.AppendData([0]); hash.AppendData(weights); count++;
+            var word = rows.GetString(0); var weights = (byte[])rows[1]; var mask = rows.GetInt32(2);
+            if (word != DiskLexicon.Normalize(word) || weights.Length != 8 || (mask & ~6) != 0 || (mask == 0 && weights.All(x => x == 0))) throw new InvalidDataException("Invalid word/vector");
+            hash.AppendData(Encoding.UTF8.GetBytes(word)); hash.AppendData([0]); hash.AppendData(weights); hash.AppendData([(byte)mask]); count++;
         }
     var actual = Convert.ToHexStringLower(hash.GetHashAndReset());
     using var manifest = JsonDocument.Parse(File.ReadAllText(Path.ChangeExtension(path, ".manifest.json")));
@@ -32,12 +32,25 @@ if (args[0] == "verify")
     foreach (var pair in new[] { ("en", "hello"), ("ru", "привет"), ("uk", "дякую"), ("fr", "bonjour"), ("es", "gracias"), ("it", "buongiorno"), ("de", "danke"), ("pt", "obrigado") })
     {
         var index = lexicon.Languages.ToList().IndexOf(pair.Item1);
-        if (lexicon.Lookup(pair.Item2)?[index] is not > 0) throw new InvalidDataException("Missing sample: " + pair);
+        if (lexicon.Lookup(pair.Item2)?.Includes(index) is not true) throw new InvalidDataException("Missing sample: " + pair);
     }
     foreach (var word in new[] { "chat", "так" })
-        if (lexicon.Lookup(word)?.Count(x => x > 0) is not > 1) throw new InvalidDataException("Lost ambiguity: " + word);
+        if (lexicon.Lookup(word) is not { } shared || Enumerable.Range(0,8).Count(shared.Includes) <= 1) throw new InvalidDataException("Lost ambiguity: " + word);
     if (lexicon.Lookup("xqzvnotaword987") is not null) throw new InvalidDataException("False positive");
-    if (!(lexicon.Lookup("CAFÉ") ?? []).SequenceEqual(lexicon.Lookup("cafe\u0301") ?? [])) throw new InvalidDataException("Normalization mismatch");
+    var composed = lexicon.Lookup("CAFÉ"); var decomposed = lexicon.Lookup("cafe\u0301");
+    if (composed is null || decomposed is null || !composed.Value.CorpusWeights.SequenceEqual(decomposed.Value.CorpusWeights) || composed.Value.SupplementMask != decomposed.Value.SupplementMask) throw new InvalidDataException("Normalization mismatch");
+    foreach (var (lang, words) in new[] { ("ru", new[] { "ревьюить", "ревьюваешь", "коммитишь", "закоммитили", "запушил", "смерджили" }),
+                                        ("uk", new[] { "рев’ювити", "ревʼювати", "рев'юїти", "комітити", "комітиш", "закомітила", "запушили", "змерджили" }) })
+        foreach (var word in words)
+        {
+            var index = lexicon.Languages.ToList().IndexOf(lang);
+            if (lexicon.Lookup(word) is not { } evidence || (evidence.SupplementMask & (1 << index)) == 0 || !evidence.Includes(index))
+                throw new InvalidDataException("Missing IT form: " + word);
+        }
+    foreach (var word in new[] { "пайплайн", "деплой" })
+        if (lexicon.Lookup(word)?.SupplementMask is not 6) throw new InvalidDataException("Lost RU/UK IT ambiguity: " + word);
+    foreach (var word in new[] { "абракадабрить", "суперпушить", "notarealcommit" })
+        if (lexicon.Lookup(word) is not null) throw new InvalidDataException("Guessed IT suffix: " + word);
     Console.WriteLine($"PASS {count} rows, eight languages, .NET/Python normalization, ambiguous/unknown words, SHA-256={actual}");
     return 0;
 }
@@ -85,7 +98,7 @@ if (args[0] != "lookup") return 2;
 using (var lexicon = new DiskLexicon(path))
     foreach (var token in args.Skip(2))
     {
-        var weights = lexicon.Lookup(token);
-        Console.WriteLine(token + ": " + (weights is null ? "unknown" : string.Join(", ", lexicon.Languages.Select((lang,i) => (lang,weight:weights[i])).Where(x => x.weight > 0).Select(x => $"{x.lang}={x.weight}"))));
+        var evidence = lexicon.Lookup(token);
+        Console.WriteLine(token + ": " + (evidence is null ? "unknown" : string.Join(", ", lexicon.Languages.Select((lang,i) => (lang,weight:evidence.Value.CorpusWeights[i],manual:(evidence.Value.SupplementMask & (1 << i)) != 0)).Where(x => x.weight > 0 || x.manual).Select(x => $"{x.lang}:corpus={x.weight}" + (x.manual ? "+IT" : "")))));
     }
 return 0;

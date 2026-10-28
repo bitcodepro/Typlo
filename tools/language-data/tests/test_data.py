@@ -62,6 +62,21 @@ class SourceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum"):
                 build.checked_source({"language": "en", "bytes": 1, "sha256": "wrong"}, Path(folder), False)
 
+    def test_supplement_validation_rejects_bad_labels_words_and_duplicates(self):
+        for entries in [
+            [{"language": "en", "family": "push", "forms": ["пушить"]}],
+            [{"language": "ru", "family": "push", "forms": ["пуш123"]}],
+            [{"language": "ru", "family": "push", "forms": ["пушить", "пушить"]}],
+            [{"language": "uk", "family": "review", "forms": ["рев’ювати"]}],  # source must be canonical
+            [{"language": "uk", "family": "push", "forms": []}],
+            [{"language": "ru", "family": "push", "forms": ["пушить"]}]*2,
+        ]:
+            with self.subTest(entries=entries), tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / "invalid.json"
+                path.write_text(json.dumps({"schema": 1, "license": "MIT", "entries": entries}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    build.read_supplement(path)
+
 
 class PackTests(unittest.TestCase):
     @classmethod
@@ -75,25 +90,35 @@ class PackTests(unittest.TestCase):
     def test_pack_is_indexed_complete_and_self_attributed(self):
         with sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True) as db:
             self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
             self.assertEqual(db.execute("SELECT count(*) FROM words").fetchone()[0], self.manifest["words"])
             meta = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata")}
             self.assertEqual(meta["languages"], list(build.LANGUAGES))
             self.assertIn("Hermit Dave", meta["notice"])
             self.assertIn("OpenSubtitles", meta["notice"])
             self.assertIn("Section 3", meta["license_text"])
+            self.assertEqual(meta["supplement"]["license"], "MIT")
+            self.assertIn("bitcodepro", meta["supplement"]["license_text"])
             plan = str(db.execute("EXPLAIN QUERY PLAN SELECT weights FROM words WHERE word=?", ("hello",)).fetchall())
             self.assertIn("SEARCH words USING PRIMARY KEY", plan)
             digest = hashlib.sha256()
+            corpus_digest = hashlib.sha256()
             counts = [0]*8
-            for word, weights in db.execute("SELECT word,weights FROM words ORDER BY word COLLATE BINARY"):
+            for word, weights, mask in db.execute("SELECT word,weights,supplement_mask FROM words ORDER BY word COLLATE BINARY"):
                 self.assertEqual(len(weights), 8)
+                self.assertIn(mask, (0,2,4,6))
+                self.assertTrue(any(weights) or mask)
                 for i, weight in enumerate(weights):
-                    if weight:
+                    if weight or (mask & (1 << i)):
                         self.assertTrue(build.valid(word, build.LANGUAGES[i]), (word, i))
                         counts[i] += 1
-                digest.update(word.encode("utf-8") + b"\0" + weights)
+                digest.update(word.encode("utf-8") + b"\0" + weights + bytes([mask]))
+                if any(weights):
+                    corpus_digest.update(word.encode("utf-8") + b"\0" + weights)
             self.assertEqual(digest.hexdigest(), self.manifest["content_sha256"])
-            self.assertEqual(counts, [self.manifest["languages"][l]["retained_words"] for l in build.LANGUAGES])
+            # Adding manual IT vocabulary must leave every original corpus weight unchanged.
+            self.assertEqual(corpus_digest.hexdigest(), "2e508eb9ec0b0c9b0387a5b571ebd11af3776ca4a7a5c0e5947c814144e9bbb7")
+            self.assertEqual(counts, [self.manifest["languages"][l]["combined_words"] for l in build.LANGUAGES])
 
     def test_common_and_ambiguous_words(self):
         with sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True) as db:
@@ -104,6 +129,22 @@ class PackTests(unittest.TestCase):
                 weights = db.execute("SELECT weights FROM words WHERE word=?", (word,)).fetchone()[0]
                 self.assertGreater(sum(w > 0 for w in weights), 1)
             self.assertIsNone(db.execute("SELECT weights FROM words WHERE word='xqzvnotaword987'").fetchone())
+
+    def test_every_curated_it_form_is_stored_with_exact_provenance(self):
+        masks, info = build.read_supplement(HERE / "it-terms.json")
+        self.assertEqual(info["sha256"], self.manifest["supplement"]["sha256"])
+        with sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True) as db:
+            actual = dict(db.execute("SELECT word,supplement_mask FROM words WHERE supplement_mask<>0"))
+            self.assertEqual(actual, masks)
+            for language, words in {"ru": ["ревьюить", "ревьюваешь", "коммитишь", "закоммитил", "пушить", "запушили", "смерджили"],
+                                    "uk": ["рев’ювити", "ревʼювати", "рев'юїти", "комітити", "комітиш", "закомітила", "пушити", "запушили", "змерджили"]}.items():
+                for word in words:
+                    self.assertTrue(actual[build.normalize(word)] & (1 << build.LANGUAGES.index(language)), (language, word))
+            for word in ["пайплайн", "деплой", "пушили"]:
+                self.assertEqual(actual[word], 6)
+            # No runtime morphological/prefix guessing, nor marks for Latin or unrelated languages.
+            for word in ["суперпушить", "абракадабрить", "notarealcommit"]:
+                self.assertIsNone(db.execute("SELECT word FROM words WHERE word=?", (word,)).fetchone())
 
 
 if __name__ == "__main__":
