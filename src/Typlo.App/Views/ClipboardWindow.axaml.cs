@@ -40,7 +40,10 @@ public partial class ClipboardWindow : Window
         };
         PropertyChanged += (_, e) =>
         {
-            if (e.Property == IsVisibleProperty && !IsVisible) _searchCts?.Cancel();
+            if (e.Property == IsVisibleProperty && !IsVisible)
+            {
+                _searchCts?.Cancel(); _items.Clear(); _all.Clear(); _dirty = true;
+            }
         };
     }
 
@@ -69,7 +72,7 @@ public partial class ClipboardWindow : Window
 
     private void Reload()
     {
-        _all = _controller.Store.List().Select(e => new ClipItemViewModel(e)).ToList();
+        _all = _controller.Store.List(includeThumbnails: false).Select(e => new ClipItemViewModel(e, _controller.Store.GetThumbnail)).ToList();
         _dirty = false;
     }
 

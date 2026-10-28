@@ -39,10 +39,21 @@ public sealed class WinPlatform : IPlatform
     public event Action<RawClip>? ClipboardCaptured;
     public event Action<Shared.TypedKey>? KeyTyped;
 
+    private readonly bool _passive;
+    private readonly bool _monitorClipboard;
+    private nint _lastNonShellWindow;
+    internal nint TrayTargetWindow => Invoke(() =>
+    {
+        TrackTrayTarget(GetForegroundWindow());
+        return IsWindow(_lastNonShellWindow) ? _lastNonShellWindow : 0;
+    });
+    internal Func<int, Hotkey, bool>? HotkeyProbe { get; set; }
+    internal Action? ClearProbes { get; set; }
     private SharpHook.SimpleGlobalHook? _typingHook;
 
     public void SetTypingWatch(bool enabled)
     {
+        if (_passive) return;
         if (enabled == (_typingHook is not null)) return;
         if (!enabled)
         {
@@ -71,8 +82,10 @@ public sealed class WinPlatform : IPlatform
     public PlatformCapabilities Capabilities { get; } = new(
         GlobalHotkeys: true, SimulateInput: true, SwitchLayout: true, DetectHotkeyConflicts: true);
 
-    public WinPlatform()
+    public WinPlatform(bool passive = false, bool monitorClipboard = true)
     {
+        _passive = passive;
+        _monitorClipboard = monitorClipboard;
         _fmtPng = RegisterClipboardFormatW("PNG");
         _fmtExclude = RegisterClipboardFormatW("ExcludeClipboardContentFromMonitorProcessing");
         _fmtCanInclude = RegisterClipboardFormatW("CanIncludeInClipboardHistory");
@@ -104,8 +117,9 @@ public sealed class WinPlatform : IPlatform
         _hwnd = CreateWindowEx(0, wc.lpszClassName, "Typlo", 0, 0, 0, 0, 0, HWND_MESSAGE, 0, wc.hInstance, 0);
         if (_hwnd != 0)
         {
-            AddClipboardFormatListener(_hwnd);
+            if (!_passive && _monitorClipboard) AddClipboardFormatListener(_hwnd);
             _lastForeground = GetForegroundWindow();
+            TrackTrayTarget(_lastForeground);
             // OUTOFCONTEXT delivers every queued foreground event on this message-loop thread,
             // including both halves of a brief away/return cycle. Do not skip our own process.
             _foregroundHook = SetWinEventHook(0x0003, 0x0003, 0, _foregroundProc, 0, 0, 0);
@@ -176,6 +190,25 @@ public sealed class WinPlatform : IPlatform
         if (window == _lastForeground) return;
         _lastForeground = window;
         _foregroundVersion++;
+        TrackTrayTarget(window);
+    }
+
+    private unsafe void TrackTrayTarget(nint window)
+    {
+        if (window == 0) return;
+        GetWindowThreadProcessId(window, out var pid);
+        if (pid == 0 || pid == Environment.ProcessId) return;
+        Span<char> name = stackalloc char[128];
+        fixed (char* pointer = name)
+        {
+            var count = GetClassNameW(window, pointer, name.Length);
+            if (count <= 0) return;
+            var value = name[..count];
+            if (value.SequenceEqual("Shell_TrayWnd".AsSpan()) || value.SequenceEqual("Shell_SecondaryTrayWnd".AsSpan()) ||
+                value.SequenceEqual("NotifyIconOverflowWindow".AsSpan()) || value.SequenceEqual("TopLevelWindowForOverflowXamlIsland".AsSpan()) ||
+                value.SequenceEqual("Progman".AsSpan()) || value.SequenceEqual("WorkerW".AsSpan())) return;
+        }
+        _lastNonShellWindow = window;
     }
 
     public long? ForegroundChangeVersion => Invoke<long?>(() =>
@@ -191,6 +224,7 @@ public sealed class WinPlatform : IPlatform
 
     public bool RegisterHotkey(int id, Hotkey hotkey)
     {
+        if (_passive) return HotkeyProbe?.Invoke(id, hotkey) ?? false;
         var vk = VirtualKeys.FromName(hotkey.Key);
         if (vk == 0) return false;
         uint mods = MOD_NOREPEAT;
@@ -207,7 +241,9 @@ public sealed class WinPlatform : IPlatform
         });
     }
 
-    public void UnregisterAllHotkeys() => Invoke(() =>
+    public void UnregisterAllHotkeys() { if (_passive) { ClearProbes?.Invoke(); return; } UnregisterNativeHotkeys(); }
+
+    private void UnregisterNativeHotkeys() => Invoke(() =>
     {
         foreach (var id in _hotkeyIds) UnregisterHotKey(_hwnd, id);
         _hotkeyIds.Clear();

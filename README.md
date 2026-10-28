@@ -74,6 +74,32 @@ pops up a window. When a newer stable release exists, the tray menu shows “⬆
 the archive for the current OS, verifies its SHA-256, swaps the files (keeping `data/`), restarts, and removes
 the old files on the next start. "Check for updates…" (tray menu or Settings) checks right away and asks "Update now / Later". Local `0.0.0-dev` builds do not update; `TYPLO_UPDATE_FEED` overrides the feed URL for tests.
 
+## Memory and background operation
+
+Windows releases use Native AOT. The resident process handles input, layout conversion and the native
+tray without initializing Avalonia. Settings, clipboard history and screenshot windows run in one
+on-demand UI child; it exits one second after the last window is hidden or closed. Text replacement
+and Undo always execute in the resident, including requests made by the UI. A UI crash restores
+shortcuts and releases any screenshot/clipboard lease; stale requests cannot affect a newer UI.
+The automatic update check uses a short-lived helper, so HTTP/TLS resources are released afterwards.
+macOS and Linux retain their existing Avalonia lifetime and platform integration.
+
+History payloads remain AES-GCM encrypted in SQLite on disk. Listing history loads metadata without
+image thumbnails. Virtualized rows load a thumbnail only while realized and dispose it when recycled;
+hiding history clears its items, and closing an image viewer releases its bitmap. File entries store
+paths, not a second in-memory copy of the files. The previous-item shortcut queries one ID directly.
+Image bursts are bounded to one active encoding job and one newest pending image; superseded pending
+images are skipped. Capture timestamps preserve ordering relative to text copied during encoding.
+After large image/clipboard buffers become unreachable, a one-shot idle collection returns unused
+managed-heap regions. It waits for input/conversion/image activity to stop and is throttled to at most
+one collection per 15 seconds; working-set trimming is never used. Active images and screenshots can
+still temporarily require much more memory than the idle resident.
+
+The Windows portable distribution contains `Typlo.exe` and five required native DLLs. Keep these files
+together when installing manually; the updater handles the complete package. Building Windows Native
+AOT requires Windows and the Visual Studio C++ build tools. `publish-all.sh` uses a Windows JIT fallback
+when cross-publishing from other operating systems; CI builds the Windows Native AOT release.
+
 ## Platform support
 
 | | Windows | macOS | Linux X11 | Linux Wayland |

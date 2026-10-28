@@ -98,6 +98,9 @@
         <ListBox x:Name="List" Background="Transparent" Padding="6,0,6,6"
                  ContextMenu="{x:Null}"
                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+          <ListBox.ItemsPanel>
+            <ItemsPanelTemplate><VirtualizingStackPanel CacheLength="0.5" /></ItemsPanelTemplate>
+          </ListBox.ItemsPanel>
           <ListBox.Styles>
             <Style Selector="ListBoxItem">
               <Setter Property="Padding" Value="0" />
@@ -125,7 +128,7 @@
                              MaxLines="4" TextTrimming="CharacterEllipsis" FontSize="13.5" />
                   <Border IsVisible="{Binding IsImage}" HorizontalAlignment="Left" CornerRadius="6" ClipToBounds="True"
                           BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="1">
-                    <Image Source="{Binding Thumbnail}" MaxHeight="110" MaxWidth="360" Stretch="Uniform" />
+                    <v:ClipThumbnail MaxHeight="110" MaxWidth="360" Stretch="Uniform" />
                   </Border>
                   <TextBlock Text="{Binding Meta}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" />
                 </StackPanel>

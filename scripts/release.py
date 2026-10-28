@@ -156,19 +156,27 @@ def verify_archive(archive, version, rid, commit):
                 files[name] = entry
         if not required <= files.keys():
             raise ValueError(f"Missing package entries: {sorted(required - files.keys())}")
-        allowed = TOP_LEVEL | ({"gnome-extension"} if rid.startswith("linux-") else set())
-        extra = sorted({name.split("/")[0] for name in files} - allowed)
-        if extra:
-            raise ValueError(f"Unexpected top-level package entries: {extra}")
-
         def read(name, limit=65536):
             stream = bundle.open(files[name]) if isinstance(bundle, zipfile.ZipFile) else bundle.extractfile(files[name])
             with stream:
                 return stream.read(limit)
 
         manifest = json.loads(read("build-info.json"))
-        if manifest != {"version": version, "rid": rid, "commit": commit}:
+        native = manifest.get("deployment") == "native-aot"
+        expected_manifest = {"version": version, "rid": rid, "commit": commit}
+        if native and rid == "win-x64":
+            expected_manifest["deployment"] = "native-aot"
+        if manifest != expected_manifest:
             raise ValueError("Package source/version/RID mismatch")
+        allowed = TOP_LEVEL | ({"gnome-extension"} if rid.startswith("linux-") else set()) | (WINDOWS_NATIVE_FILES if native else set())
+        extra = sorted({name.split("/")[0] for name in files} - allowed)
+        if extra:
+            raise ValueError(f"Unexpected top-level package entries: {extra}")
+        if native:
+            if not WINDOWS_NATIVE_FILES <= files.keys():
+                raise ValueError("Missing Native AOT runtime libraries")
+            for library in WINDOWS_NATIVE_FILES:
+                validate_executable(read(library, 8192), rid)
         if b"MIT License" not in read("LICENSE") or b"Copyright (c) 2026 bitcodepro" not in read("LICENSE"):
             raise ValueError("Missing Typlo MIT copyright")
         notices = read(NOTICES, 16 * 1024 * 1024)
@@ -199,6 +207,7 @@ def verify_packages(directory, version, commit, rids=RIDS):
 NOTICES = "THIRD-PARTY-NOTICES.txt"
 # Everything an archive may contain at its top level: no extra folders.
 TOP_LEVEL = {"README.md", "LICENSE", NOTICES, "build-info.json", "Typlo.exe", "Typlo", "Typlo.app"}
+WINDOWS_NATIVE_FILES = {"av_libglesv2.dll", "e_sqlite3.dll", "libHarfBuzzSharp.dll", "libSkiaSharp.dll", "uiohook.dll"}
 GNOME_FILES = ("extension.js", "bridge.js", "metadata.json", "install.sh")
 LICENSE_FILE = re.compile(r"(?i)^(license|licence|copying)([._-].*)?(\.txt|\.md)?$")
 NOTICE_FILE = re.compile(r"(?i)^(third[-_]?party[-_]?notices?|notice)(\.txt|\.md)?$")
@@ -295,7 +304,8 @@ def package(directory, version, rid):
         work = Path(temporary)
         publish, staging = work / "publish", work / "staging"
         staging.mkdir()
-        run(["dotnet", "publish", "src/Typlo.App/Typlo.App.csproj", "-c", "Release", "-r", rid, "--self-contained", "true", "-o", str(publish), f"-p:Version={version}", "-p:PublishSingleFile=true", "-p:IncludeNativeLibrariesForSelfExtract=true", "-p:DebugType=none", "-p:DebugSymbols=false"])
+        deployment = ["-p:PublishAot=true"] if rid == "win-x64" else ["-p:PublishSingleFile=true", "-p:IncludeNativeLibrariesForSelfExtract=true"]
+        run(["dotnet", "publish", "src/Typlo.App/Typlo.App.csproj", "-c", "Release", "-r", rid, "--self-contained", "true", "-o", str(publish), f"-p:Version={version}", *deployment, "-p:DebugType=none", "-p:DebugSymbols=false"])
         destination = staging / "Typlo.app/Contents/MacOS" if rid.startswith("osx-") else staging
         destination.mkdir(parents=True, exist_ok=True)
         for file in publish.rglob("*"):
@@ -311,7 +321,10 @@ def package(directory, version, rid):
         for doc in ("README.md", "LICENSE"):
             shutil.copyfile(ROOT / doc, staging / doc)
         collect_notices(staging, rid)
-        (staging / "build-info.json").write_text(json.dumps({"version": version, "rid": rid, "commit": commit}) + "\n", encoding="utf-8")
+        manifest = {"version": version, "rid": rid, "commit": commit}
+        if rid == "win-x64":
+            manifest["deployment"] = "native-aot"
+        (staging / "build-info.json").write_text(json.dumps(manifest) + "\n", encoding="utf-8")
         executable = staging / executable_path(rid)
         executable.chmod(executable.stat().st_mode | 0o111)
         if rid.startswith("osx-"):

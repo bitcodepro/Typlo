@@ -30,7 +30,7 @@ public partial class App : Application
             return;
         }
 
-        var paths = AppPaths.Resolve();
+        var paths = Program.DataPaths;
         Log.FilePath = paths.LogFile;
 
         var selftest = Array.IndexOf(Program.Args, "--selftest");
@@ -59,6 +59,8 @@ public partial class App : Application
             base.OnFrameworkInitializationCompleted();
             return;
         }
+
+        if (Program.IsRemoteUi) { StartRemoteUi(desktop, paths); base.OnFrameworkInitializationCompleted(); return; }
 
         try
         {
@@ -169,6 +171,11 @@ public partial class App : Application
 
     private async Task InstallUpdateAsync()
     {
+        if (Program.IsRemoteUi)
+        {
+            IpcServer.Send(["--install-update"]);
+            (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown(); return;
+        }
         if (_updates is null) return;
         if (await _updates.InstallAsync())
             Dispatcher.UIThread.Post(() => (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown());

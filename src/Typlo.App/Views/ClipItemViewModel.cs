@@ -10,11 +10,11 @@ public sealed class ClipItemViewModel : INotifyPropertyChanged
 {
     private string _badge = "";
     private bool _pinned;
-    private Bitmap? _thumbnail;
+    private readonly Func<long, byte[]?>? _loadThumbnail;
 
-    public ClipItemViewModel(ClipEntry entry)
+    public ClipItemViewModel(ClipEntry entry, Func<long, byte[]?>? loadThumbnail = null)
     {
-        Entry = entry;
+        Entry = entry; _loadThumbnail = loadThumbnail;
         _pinned = entry.Pinned;
         Title = entry.Kind switch
         {
@@ -56,7 +56,7 @@ public sealed class ClipItemViewModel : INotifyPropertyChanged
     public string Meta { get; }
 
     /// <summary>Thumbnails are decoded lazily, only for items that get displayed.</summary>
-    public Bitmap? Thumbnail => _thumbnail ??= Entry.Thumbnail is { Length: > 0 } t ? new Bitmap(new MemoryStream(t)) : null;
+    internal byte[]? LoadThumbnail() => _loadThumbnail?.Invoke(Entry.Id) ?? Entry.Thumbnail;
 
     public string Badge
     {

@@ -78,6 +78,7 @@ jobs:
             TestResults/*.trx
             TestResults/webview2/*.txt
             TestResults/webview2/typlo.log
+            TestResults/webview2/runtime/*.txt
           if-no-files-found: warn
           retention-days: 7
 

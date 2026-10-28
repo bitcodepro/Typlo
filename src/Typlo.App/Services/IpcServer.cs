@@ -13,7 +13,7 @@ public sealed class IpcServer : IDisposable
     private static string PipeName => "Typlo." + Environment.UserName;
     private readonly CancellationTokenSource _cts = new();
 
-    public IpcServer(Action<string[]> onCommand)
+    public IpcServer(Action<string[]> onCommand, string? pipeName = null)
     {
         _ = Task.Run(async () =>
         {
@@ -21,16 +21,27 @@ public sealed class IpcServer : IDisposable
             {
                 try
                 {
-                    await using var server = new NamedPipeServerStream(PipeName, PipeDirection.In, 1,
+                    await using var server = new NamedPipeServerStream(pipeName ?? PipeName, PipeDirection.In, 1,
                         PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                     await server.WaitForConnectionAsync(_cts.Token);
                     using var reader = new StreamReader(server, Encoding.UTF8);
-                    var line = await reader.ReadToEndAsync(_cts.Token);
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                    var buffer = new char[1024];
+                    var text = new StringBuilder();
+                    int count;
+                    while ((count = await reader.ReadAsync(buffer.AsMemory(), timeout.Token)) > 0)
+                    {
+                        if (text.Length + count > 32768) throw new InvalidDataException("IPC command is too large");
+                        text.Append(buffer, 0, count);
+                    }
+                    var line = text.ToString();
                     var args = line.Split('\n', StringSplitOptions.RemoveEmptyEntries);
                     Log.Info("IPC command: " + string.Join(' ', args));
                     onCommand(args);
                 }
-                catch (OperationCanceledException) { return; }
+                catch (OperationCanceledException) when (_cts.IsCancellationRequested) { return; }
+                catch (OperationCanceledException) { }
                 catch (Exception e)
                 {
                     Log.Error("IPC server", e);
@@ -40,11 +51,11 @@ public sealed class IpcServer : IDisposable
         });
     }
 
-    public static bool Send(string[] args)
+    public static bool Send(string[] args, string? pipeName = null)
     {
         try
         {
-            using var client = new NamedPipeClientStream(".", PipeName, PipeDirection.Out, PipeOptions.CurrentUserOnly);
+            using var client = new NamedPipeClientStream(".", pipeName ?? PipeName, PipeDirection.Out, PipeOptions.CurrentUserOnly);
             client.Connect(2000);
             var bytes = Encoding.UTF8.GetBytes(string.Join('\n', args.Length == 0 ? ["--settings"] : args));
             client.Write(bytes);

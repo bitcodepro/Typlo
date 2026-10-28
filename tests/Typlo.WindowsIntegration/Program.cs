@@ -21,6 +21,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.FirstOrDefault() == "--background-runtime-check")
+            return BackgroundRuntimeCheck.RunAsync(args[1], args[2]).GetAwaiter().GetResult();
         if (args.FirstOrDefault() == "--clipboard-helper")
         {
             using var platform = new WinPlatform();

@@ -44,6 +44,7 @@ public sealed class EntryViewWindow : Window
         KeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
 
         var info = new TextBlock { Text = entry.SourceApp ?? "", Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center };
+        Closed += (_, _) => { if (body is ScrollViewer { Content: Image { Source: Bitmap bitmap } image }) { image.Source = null; bitmap.Dispose(); } };
         Content = new DockPanel
         {
             Children =

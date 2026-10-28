@@ -7,6 +7,7 @@ public static partial class Loc
         // Order follows Languages: en, ru, uk, de, es, pt, fr, it, zh, ja.
         var features = new Dictionary<string, string[]>
         {
+            ["settings.saveFailed"] = ["Could not save changes. Try again.", "Не удалось сохранить изменения. Повторите.", "Не вдалося зберегти зміни. Повторіть.", "Änderungen konnten nicht gespeichert werden. Erneut versuchen.", "No se pudieron guardar los cambios. Reintenta.", "Não foi possível salvar as alterações. Tente novamente.", "Impossible d’enregistrer les modifications. Réessayez.", "Impossibile salvare le modifiche. Riprova.", "无法保存更改，请重试。", "変更を保存できませんでした。再試行してください。"],
             ["capture.shape"] = ["Area shape", "Форма области", "Форма області", "Bereichsform", "Forma del área", "Forma da área", "Forme de la zone", "Forma dell’area", "区域形状", "範囲の形状"],
             ["capture.copyFailed"] = ["Could not copy. Try again.", "Не удалось скопировать. Повторите.", "Не вдалося скопіювати. Повторіть.", "Kopieren fehlgeschlagen. Erneut versuchen.", "No se pudo copiar. Reintenta.", "Não foi possível copiar. Tente novamente.", "Copie impossible. Réessayez.", "Copia non riuscita. Riprova.", "无法复制，请重试。", "コピーできませんでした。再試行してください。"],
             ["capture.ready"] = ["Screenshot ready", "Скриншот готов", "Знімок готовий", "Screenshot bereit", "Captura lista", "Captura pronta", "Capture prête", "Schermata pronta", "截图已就绪", "スクリーンショットの準備ができました"],

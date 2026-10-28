@@ -13,11 +13,16 @@ internal sealed class ScreenCaptureService(AppController controller, bool diagno
     private Window? _screenHost;
     private CaptureOverlay.Session? _session;
     private bool _disposed;
+    private CancellationTokenSource? _cancel;
+
+    internal void CancelSelection() { _cancel?.Cancel(); _session?.Finish(); }
 
     public async Task StartAsync(CaptureShape shape, CaptureDestination destination = CaptureDestination.Clipboard)
     {
         if (_disposed || IsActive || _preview?.IsSaving == true || !controller.Platform.SupportsScreenCapture) return;
         IsActive = true;
+        using var cancel = new CancellationTokenSource();
+        _cancel = cancel;
         ImageCodec.Encoded? image = null;
         Window[] hidden = [];
         try
@@ -29,17 +34,18 @@ internal sealed class ScreenCaptureService(AppController controller, bool diagno
                     .Windows.Where(w => w.IsVisible).ToArray() ?? [];
                 var screens = (hidden.FirstOrDefault() ?? (_screenHost ??= new Window())).Screens.All.ToArray();
                 foreach (var window in hidden) window.Hide();
-                await Task.Delay(160); // let the compositor remove our windows and tray menu
+                await Task.Delay(160, cancel.Token); // let the compositor remove our windows and tray menu
                 Log.Info("Screen capture: reading desktop");
                 var frame = await Task.Run(DesktopCapture.Grab);
                 using var session = new CaptureOverlay.Session(frame, shape, diagnostic);
-                if (_disposed) return null;
+                if (_disposed || cancel.IsCancellationRequested) return null;
                 _session = session;
                 Log.Info("Screen capture: opening selection overlay");
                 try { return await session.ShowAsync(screens); }
                 finally { _session = null; }
             }, copyToClipboard: destination == CaptureDestination.Clipboard);
         }
+        catch (OperationCanceledException) when (cancel.IsCancellationRequested) { }
         catch (Exception e)
         {
             Log.Error("Screen capture failed", e);
@@ -58,12 +64,14 @@ internal sealed class ScreenCaptureService(AppController controller, bool diagno
         {
             foreach (var window in _disposed ? [] : hidden)
             {
+                if ((Avalonia.Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Windows.Contains(window) != true) continue;
                 var activate = window.ShowActivated;
                 window.ShowActivated = false;
                 window.Show();
                 window.ShowActivated = activate;
             }
             IsActive = false;
+            _cancel = null;
         }
         if (_disposed || image is null) return;
         _preview = new CapturePreviewWindow(image, mode => _ = StartAsync(mode, destination),
@@ -75,6 +83,7 @@ internal sealed class ScreenCaptureService(AppController controller, bool diagno
     public void Dispose()
     {
         _disposed = true;
+        _cancel?.Cancel();
         _session?.Finish();
         _preview?.Close();
         _screenHost?.Close();
