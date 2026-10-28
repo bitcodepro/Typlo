@@ -105,6 +105,13 @@ commands publishes anything; `publish` refuses a normal local session. The legac
 `scripts/publish-all.sh` and `scripts/package-macos.sh` remain available for local
 unversioned builds; CI uses `scripts/release.py` for verified release artifacts.
 
+Both macOS packages are published and signed on `macos-15-intel`. The ARM package
+still targets `osx-arm64`; its Mach-O architecture, signature, source and checksum
+checks remain required. This avoids reserving a second Apple Silicon runner for
+packaging when that hosted pool is capacity constrained. The `macos-15` build/test
+job still runs natively on Apple Silicon before packaging, and the final combined
+gate still verifies all five platform archives.
+
 
 Windows packages use Native AOT and include the five native libraries recorded by the verifier.
 The manifest marks this deployment as `native-aot`; verification checks the DLL set and PE architecture,
