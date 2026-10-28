@@ -3,7 +3,7 @@ using System.Net.Sockets;
 
 namespace Typlo.App.Services;
 
-internal enum RuntimeTransportPhase { Create, Accept, RequestHeader, RequestBody, RequestJson, Handler, ReplyHeader, ReplyBody, ReplyFlush, RequestFlush, ReplyJson, Complete, Dispose }
+internal enum RuntimeTransportPhase { Create, Accept, RequestHeader, RequestBody, RequestJson, Handler, ReplyHeader, ReplyBody, ReplyFlush, RequestFlush, ReplyJson, Dispose }
 internal enum RuntimeTransportIssue { Failure, ListenerGap, Accepted }
 
 /// <summary>Only transport metadata. Never include frame bytes, arbitrary commands or exception messages.</summary>

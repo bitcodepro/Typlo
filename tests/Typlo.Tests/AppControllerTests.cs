@@ -1835,7 +1835,8 @@ public sealed partial class AppControllerTests : IDisposable
         ImageCodecTests.Initialize();
         var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
         using var server = RemoteServer(name);
-        using var ui = AppController.CreateRemote(new FakePlatform { SupportsScreenCapture = true }, new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name));
+        using var ui = AppController.CreateRemote(new FakePlatform { SupportsScreenCapture = true }, new AppPaths(_dir), new PlainKeyProtector(),
+            new RuntimeClient(name, diagnostic: entry => _output.WriteLine(entry.Summary)));
         Assert.True(await _controller.BeginExternalCaptureAsync());
         Assert.Null(await ui.CaptureScreenshotAsync(() => Task.FromResult<CapturedPixels?>(new(new byte[16], 2, 2))));
         _controller.EndExternalCapture();

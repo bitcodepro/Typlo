@@ -35,23 +35,61 @@ internal sealed class RuntimeChannel : IDisposable
     private async Task ListenAsync()
     {
         var progress = new RuntimeTransportProgress(true, _channel);
+        NamedPipeServerStream? pending = null;
+        NamedPipeServerStream? accepted = null;
         try
         {
+            pending = await CreateStreamAsync().ConfigureAwait(false);
             while (!_stop.IsCancellationRequested)
             {
-                await _clients.WaitAsync(_stop.Token).ConfigureAwait(false);
-                var stream = new NamedPipeServerStream(Name, PipeDirection.InOut, 4, PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-                Interlocked.Increment(ref _instances);
                 progress.Begin(RuntimeTransportPhase.Accept);
-                try { await stream.WaitForConnectionAsync(_stop.Token).ConfigureAwait(false); }
-                catch { stream.Dispose(); Interlocked.Decrement(ref _instances); _clients.Release(); throw; }
-                _ = ServeAsync(stream);
+                await pending.WaitForConnectionAsync(_stop.Token).ConfigureAwait(false);
+                accepted = pending;
+                pending = null;
                 progress.Begin(RuntimeTransportPhase.Create);
+                // On Unix, disposing the last NamedPipeServerStream unlinks/closes its shared
+                // listening socket, including clients already queued there. Establish a successor
+                // BEFORE a fully synchronous ServeAsync can dispose this accepted connection.
+                // Both streams retain capacity permits; no fifth Windows instance is created.
+                pending = await CreateStreamAsync().ConfigureAwait(false);
+                _ = ServeAsync(accepted);
+                accepted = null; // ServeAsync now owns this stream and its capacity permit.
             }
         }
         catch (OperationCanceledException) { }
         catch (Exception e) { if (!_stop.IsCancellationRequested) progress.Report(_diagnostic, RuntimeTransportIssue.Failure, e, false, false, Volatile.Read(ref _instances)); }
+        finally
+        {
+            if (accepted is not null) await ReleaseStreamAsync(accepted, progress).ConfigureAwait(false);
+            if (pending is not null) await ReleaseStreamAsync(pending, progress).ConfigureAwait(false);
+        }
+    }
+    private async Task<NamedPipeServerStream> CreateStreamAsync()
+    {
+        await _clients.WaitAsync(_stop.Token).ConfigureAwait(false);
+        try
+        {
+            var stream = new NamedPipeServerStream(Name, PipeDirection.InOut, 4, PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            Interlocked.Increment(ref _instances);
+            return stream;
+        }
+        catch { _clients.Release(); throw; }
+    }
+    private async ValueTask ReleaseStreamAsync(NamedPipeServerStream stream, RuntimeTransportProgress progress)
+    {
+        progress.Begin(RuntimeTransportPhase.Dispose);
+        try { await stream.DisposeAsync().ConfigureAwait(false); }
+        catch (Exception e)
+        { if (!_stop.IsCancellationRequested) progress.Report(_diagnostic, RuntimeTransportIssue.Failure, e, false, false, Volatile.Read(ref _instances)); }
+        finally
+        {
+            var remaining = Interlocked.Decrement(ref _instances);
+            if (remaining == 0 && !_stop.IsCancellationRequested)
+                progress.Report(_diagnostic, RuntimeTransportIssue.ListenerGap, null, false, false, remaining);
+            // Preserve disposal-before-release: the permit covers the actual OS instance.
+            _clients.Release();
+        }
     }
     private async Task ServeAsync(NamedPipeServerStream stream)
     {
@@ -63,37 +101,23 @@ internal sealed class RuntimeChannel : IDisposable
         timeout.CancelAfter(TimeSpan.FromSeconds(15));
         try
         {
-            await using (stream)
+            var data = await ReadFrameAsync(stream, timeout.Token, progress).ConfigureAwait(false);
+            progress.Begin(RuntimeTransportPhase.RequestJson);
+            var request = JsonSerializer.Deserialize(data, RuntimeJson.Default.RuntimeRequest) ?? throw new InvalidDataException("Missing command");
+            progress.Trace = request.Trace;
+            progress.SetCommand(request.Command);
+            progress.Begin(RuntimeTransportPhase.Handler);
+            RuntimeReply reply;
+            try { reply = await _handle(request).ConfigureAwait(false); }
+            catch (Exception e)
             {
-                try
-                {
-                    var data = await ReadFrameAsync(stream, timeout.Token, progress).ConfigureAwait(false);
-                    progress.Begin(RuntimeTransportPhase.RequestJson);
-                    var request = JsonSerializer.Deserialize(data, RuntimeJson.Default.RuntimeRequest) ?? throw new InvalidDataException("Missing command");
-                    progress.Trace = request.Trace;
-                    progress.SetCommand(request.Command);
-                    progress.Begin(RuntimeTransportPhase.Handler);
-                    RuntimeReply reply;
-                    try { reply = await _handle(request).ConfigureAwait(false); }
-                    catch (Exception e) { progress.Report(_diagnostic, RuntimeTransportIssue.Failure, e, _stop.IsCancellationRequested, timeout.IsCancellationRequested, Volatile.Read(ref _instances)); reply = new(false, "Operation failed"); }
-                    await WriteFrameAsync(stream, JsonSerializer.SerializeToUtf8Bytes(reply, RuntimeJson.Default.RuntimeReply), timeout.Token, progress).ConfigureAwait(false);
-                }
-                catch (Exception e) when (e is IOException or OperationCanceledException or JsonException or InvalidDataException)
-                { if (!_stop.IsCancellationRequested) progress.Report(_diagnostic, RuntimeTransportIssue.Failure, e, false, timeout.IsCancellationRequested, Volatile.Read(ref _instances)); }
-                progress.Begin(RuntimeTransportPhase.Dispose);
+                progress.Report(_diagnostic, RuntimeTransportIssue.Failure, e, _stop.IsCancellationRequested, timeout.IsCancellationRequested, Volatile.Read(ref _instances));
+                reply = new(false, "Operation failed");
             }
+            await WriteFrameAsync(stream, JsonSerializer.SerializeToUtf8Bytes(reply, RuntimeJson.Default.RuntimeReply), timeout.Token, progress).ConfigureAwait(false);
         }
         catch (Exception e) { if (!_stop.IsCancellationRequested) progress.Report(_diagnostic, RuntimeTransportIssue.Failure, e, false, timeout.IsCancellationRequested, Volatile.Read(ref _instances)); }
-        // A permit represents an actual OS pipe instance, including its asynchronous disposal.
-        // Releasing inside await using lets the listener create a fifth instance before this one
-        // closes, exceeding maxNumberOfServerInstances and permanently stopping the listener.
-        finally
-        {
-            var remaining = Interlocked.Decrement(ref _instances);
-            if (remaining == 0 && !_stop.IsCancellationRequested)
-                progress.Report(_diagnostic, RuntimeTransportIssue.ListenerGap, null, false, false, remaining);
-            _clients.Release();
-        }
+        finally { await ReleaseStreamAsync(stream, progress).ConfigureAwait(false); }
     }
     internal static async Task<byte[]> ReadFrameAsync(Stream stream, CancellationToken token, RuntimeTransportProgress? progress = null)
     {
@@ -145,6 +169,7 @@ internal sealed class RuntimeClient(string channel, int uiOwner = 0, Action<Runt
         var progress = new RuntimeTransportProgress(false) { Trace = request.Trace };
         progress.SetCommand(request.Command);
         Interlocked.Increment(ref _pending);
+        RuntimeReply reply;
         try
         {
             using var timeout = new CancellationTokenSource(timeoutMilliseconds);
@@ -154,18 +179,18 @@ internal sealed class RuntimeClient(string channel, int uiOwner = 0, Action<Runt
             await RuntimeChannel.WriteFrameAsync(pipe, JsonSerializer.SerializeToUtf8Bytes(request, RuntimeJson.Default.RuntimeRequest), timeout.Token, progress).ConfigureAwait(false);
             var data = await RuntimeChannel.ReadFrameAsync(pipe, timeout.Token, progress).ConfigureAwait(false);
             progress.Begin(RuntimeTransportPhase.ReplyJson);
-            var reply = JsonSerializer.Deserialize(data, RuntimeJson.Default.RuntimeReply)
+            reply = JsonSerializer.Deserialize(data, RuntimeJson.Default.RuntimeReply)
                 ?? throw new IOException("Missing runtime reply");
-            progress.Begin(RuntimeTransportPhase.Complete);
-            if (!reply.Ok && !allowRejected) throw new IOException(reply.Error ?? "Background process refused the command");
-            return reply;
+            progress.Begin(RuntimeTransportPhase.Dispose);
         }
-        catch (Exception e) when (progress.Phase != RuntimeTransportPhase.Complete)
+        catch (Exception e)
         {
             progress.Report(diagnostic, RuntimeTransportIssue.Failure, e, Volatile.Read(ref _disconnected) != 0, e is OperationCanceledException, 0);
             throw;
         }
         finally { Interlocked.Decrement(ref _pending); }
+        if (!reply.Ok && !allowRejected) throw new IOException(reply.Error ?? "Background process refused the command");
+        return reply;
     }
     internal RuntimeReply Call(RuntimeRequest request, int timeoutMilliseconds = 12000) => CallAsync(request, timeoutMilliseconds).GetAwaiter().GetResult();
 }
