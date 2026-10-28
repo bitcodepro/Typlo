@@ -14,7 +14,7 @@ using Typlo.Core.Imaging;
 
 namespace Typlo.Tests;
 
-public sealed class AppControllerTests : IDisposable
+public sealed partial class AppControllerTests : IDisposable
 {
     private readonly Xunit.Abstractions.ITestOutputHelper _output;
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "typlo-controller-" + Guid.NewGuid().ToString("N"));
@@ -1870,6 +1870,14 @@ public sealed class AppControllerTests : IDisposable
 
     private sealed class FakePlatform : IPlatform
     {
+        public bool SupportsDirectTextEditing { get; set; }
+        public Func<nint, nint, bool>? RetainDirectTarget;
+        public bool CanRetainDirectInputTarget(nint window, nint element) => SupportsDirectTextEditing &&
+            (RetainDirectTarget?.Invoke(window, element) ?? DirectCapture is not null);
+        public nint FocusedInputElement { get; set; } = 11;
+        public Func<nint, nint, Func<bool>, Task<DirectTextCapture>>? DirectCapture;
+        public Task<DirectTextCapture> CaptureDirectTextAsync(nint window, nint element, Func<bool> valid) =>
+            DirectCapture?.Invoke(window, element, valid) ?? Task.FromResult(DirectTextCapture.Unsupported);
         private readonly Dictionary<nint, Document> _documents = [];
         private readonly object _focusGate = new();
         private nint _window = 1;

@@ -12,7 +12,7 @@ using Typlo.App.Platform.Shared;
 namespace Typlo.App.Services;
 
 /// <summary>Wires hotkeys and clipboard events from the platform to conversion and history.</summary>
-public sealed class AppController : IDisposable
+public sealed partial class AppController : IDisposable
 {
     private const int ToggleId = 1;
     private const int ClipboardId = 2;
@@ -368,7 +368,7 @@ public sealed class AppController : IDisposable
     private async Task TransformSelectionCoreAsync(Func<string, KeyboardLayout?, (string Text, KeyboardLayout? SwitchTo)> transform,
         KeyboardLayout? switchToIfNothingSelected = null)
     {
-        if (!_platform.Capabilities.SimulateInput)
+        if (!_platform.Capabilities.SimulateInput && !_platform.SupportsDirectTextEditing)
         {
             Log.Info("Text tools: synthetic input is not available on this platform/session");
             return;
@@ -380,9 +380,15 @@ public sealed class AppController : IDisposable
         {
             var window = _platform.ForegroundWindow;
             var inputVersion = Interlocked.Read(ref _typingVersion);
-            bool NoInputSince() => Interlocked.Read(ref _typingVersion) == inputVersion;
+            var element = PinDirectTarget(ref window);
+            bool NoInputSince() => Volatile.Read(ref _disposed) == 0 && Interlocked.Read(ref _typingVersion) == inputVersion;
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
             timing.Mark("modifiers");
+            if (!NoInputSince()) return;
+            var directHandled = await TryDirectTransformAsync(window, element, inputVersion, NoInputSince, transform, switchToIfNothingSelected);
+            timing.Mark("direct adapter");
+            if (directHandled) return;
+            if (!_platform.Capabilities.SimulateInput || !NoInputSince()) return;
             if (!await _platform.WaitForTargetAsync(window, NoInputSince)) return;
             var run = _recentTyping.Capture(window);
             var last = CaptureLastTransform(window);
@@ -652,7 +658,8 @@ public sealed class AppController : IDisposable
 
     // ---------------------------------------------------------------- undo
 
-    private sealed record TransformRecord(nint Window, string Original, string Result, DateTime At, KeyboardLayout? ResultLayout);
+    private sealed record TransformRecord(nint Window, string Original, string Result, DateTime At, KeyboardLayout? ResultLayout,
+        DirectTextSnapshot? Direct = null, int DirectStart = 0, long DirectVersion = -1);
 
     private TransformRecord? _lastTransform;
 
@@ -665,6 +672,9 @@ public sealed class AppController : IDisposable
         set
         {
             _lastTransform = value;
+            // Input can arrive between a successful write's final check and publishing its record.
+            if (value?.Direct is not null && (value.DirectVersion != Interlocked.Read(ref _typingVersion) || Volatile.Read(ref _disposed) != 0))
+                Interlocked.CompareExchange(ref _lastTransform, null, value);
             UpdateTypingWatch();
         }
     }
@@ -687,14 +697,20 @@ public sealed class AppController : IDisposable
     public async Task UndoLastTransformAsync()
     {
         if (_lastTransform is not { } last || DateTime.UtcNow - last.At > TimeSpan.FromMinutes(2)) return;
-        if (!_platform.Capabilities.SimulateInput || !await _convertGate.WaitAsync(0)) return;
+        if ((!_platform.Capabilities.SimulateInput && last.Direct is null) || !await _convertGate.WaitAsync(0)) return;
         ClipboardSnapshot? snapshot = null;
         try
         {
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
             var window = last.Window;
             // The record is cleared by any user input; re-check it after every wait and before every keystroke.
-            bool StillValid() => ReferenceEquals(_lastTransform, last);
+            bool StillValid() => Volatile.Read(ref _disposed) == 0 && ReferenceEquals(_lastTransform, last) &&
+                (last.Direct is null || last.DirectVersion == Interlocked.Read(ref _typingVersion));
+            if (last.Direct is not null)
+            {
+                await UndoDirectAsync(last, StillValid);
+                return;
+            }
             if (!await _platform.WaitForTargetAsync(window, StillValid))
             {
                 Log.Info("Undo skipped: the conversion can no longer be located");
@@ -742,10 +758,12 @@ public sealed class AppController : IDisposable
 
     // Always on where Typlo can type: snippets need it, and every conversion and Undo needs to know about user input
     // (a conversion published after its paste, an Undo in progress) to never act at a caret the user moved.
-    private void UpdateTypingWatch() => _platform.SetTypingWatch(_platform.Capabilities.SimulateInput);
+    private void UpdateTypingWatch() => _platform.SetTypingWatch(Volatile.Read(ref _disposed) == 0 &&
+        (_platform.Capabilities.SimulateInput || _platform.SupportsDirectTextEditing));
 
     private void OnKeyTyped(TypedKey key)
     {
+        if (Volatile.Read(ref _disposed) != 0) return;
         Interlocked.Exchange(ref _lastInputAt, Environment.TickCount64);
         if (key.Shortcut is { } shortcut)
         {
@@ -766,12 +784,12 @@ public sealed class AppController : IDisposable
             else if (key.Backspace)
             {
                 var window = _platform.ForegroundWindow;
-                _recentTyping.Backspace(window, now, version);
+                _recentTyping.Backspace(window, now, version, _platform.SupportsDirectTextEditing ? _platform.FocusedInputElement : 0);
             }
             else
             {
                 typedWindow = _platform.ForegroundWindow;
-                _recentTyping.Record(key.Char, typedWindow, now, version);
+                _recentTyping.Record(key.Char, typedWindow, now, version, _platform.SupportsDirectTextEditing ? _platform.FocusedInputElement : 0);
             }
         }
         catch (Exception e) { _recentTyping.Reset(version); Log.Error("Cannot track input context", e); }
@@ -1217,6 +1235,9 @@ public sealed class AppController : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _recentTyping.Reset(Interlocked.Increment(ref _typingVersion));
+        _lastTransform = null;
         _memory.Dispose();
         _images.Dispose();
         if (_remote is not null) { Store.Dispose(); return; }

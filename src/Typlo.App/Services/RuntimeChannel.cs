@@ -48,20 +48,26 @@ internal sealed class RuntimeChannel : IDisposable
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
         timeout.CancelAfter(TimeSpan.FromSeconds(15));
-        await using (stream)
+        try
         {
-            try
+            await using (stream)
             {
-                var data = await ReadFrameAsync(stream, timeout.Token).ConfigureAwait(false);
-                var request = JsonSerializer.Deserialize(data, RuntimeJson.Default.RuntimeRequest) ?? throw new InvalidDataException("Missing command");
-                RuntimeReply reply;
-                try { reply = await _handle(request).ConfigureAwait(false); }
-                catch (Exception e) { Log.Error($"Runtime command {request.Command} failed at {e.StackTrace}", e); reply = new(false, "Operation failed"); }
-                await WriteFrameAsync(stream, JsonSerializer.SerializeToUtf8Bytes(reply, RuntimeJson.Default.RuntimeReply), timeout.Token).ConfigureAwait(false);
+                try
+                {
+                    var data = await ReadFrameAsync(stream, timeout.Token).ConfigureAwait(false);
+                    var request = JsonSerializer.Deserialize(data, RuntimeJson.Default.RuntimeRequest) ?? throw new InvalidDataException("Missing command");
+                    RuntimeReply reply;
+                    try { reply = await _handle(request).ConfigureAwait(false); }
+                    catch (Exception e) { Log.Error($"Runtime command {request.Command} failed at {e.StackTrace}", e); reply = new(false, "Operation failed"); }
+                    await WriteFrameAsync(stream, JsonSerializer.SerializeToUtf8Bytes(reply, RuntimeJson.Default.RuntimeReply), timeout.Token).ConfigureAwait(false);
+                }
+                catch (Exception e) when (e is IOException or OperationCanceledException or JsonException or InvalidDataException) { }
             }
-            catch (Exception e) when (e is IOException or OperationCanceledException or JsonException or InvalidDataException) { }
-            finally { _clients.Release(); }
         }
+        // A permit represents an actual OS pipe instance, including its asynchronous disposal.
+        // Releasing inside await using lets the listener create a fifth instance before this one
+        // closes, exceeding maxNumberOfServerInstances and permanently stopping the listener.
+        finally { _clients.Release(); }
     }
     internal static async Task<byte[]> ReadFrameAsync(Stream stream, CancellationToken token)
     {

@@ -10,13 +10,13 @@ internal sealed class RecentTyping
     private const int MaxKeys = 512;
     private readonly Lock _gate = new();
     private readonly StringBuilder _keys = new();
-    private nint _window;
+    private nint _window, _element;
     private long _lastAt, _version;
     private bool _overflow;
 
     public nint Window { get { lock (_gate) return _window; } }
 
-    public void Record(char key, nint window, long now, long version)
+    public void Record(char key, nint window, long now, long version, nint element = 0)
     {
         lock (_gate)
         {
@@ -26,9 +26,10 @@ internal sealed class RecentTyping
                 _version = version;
                 return;
             }
-            if (window != _window || now - _lastAt >= PauseMilliseconds ||
+            if (window != _window || element != _element || now - _lastAt >= PauseMilliseconds ||
                 (_keys.Length > 0 && char.IsWhiteSpace(_keys[^1]) && !char.IsWhiteSpace(key))) Clear();
             _window = window;
+            _element = element;
             _lastAt = now;
             _version = version;
             if (_overflow)
@@ -47,11 +48,11 @@ internal sealed class RecentTyping
         }
     }
 
-    public void Backspace(nint window, long now, long version)
+    public void Backspace(nint window, long now, long version, nint element = 0)
     {
         lock (_gate)
         {
-            if (window != _window || now - _lastAt >= PauseMilliseconds || _overflow) Clear();
+            if (window != _window || element != _element || now - _lastAt >= PauseMilliseconds || _overflow) Clear();
             else if (_keys.Length > 0) _keys.Length--;
             _lastAt = now;
             _version = version;
@@ -73,7 +74,7 @@ internal sealed class RecentTyping
         lock (_gate)
         {
             if (window == 0 || window != _window) { Clear(); return null; }
-            return _keys.Length == 0 || _overflow ? null : new Run(window, _keys.ToString());
+            return _keys.Length == 0 || _overflow ? null : new Run(window, _keys.ToString(), _element);
         }
     }
 
@@ -81,10 +82,11 @@ internal sealed class RecentTyping
     {
         _keys.Clear();
         _window = 0;
+        _element = 0;
         _overflow = false;
     }
 
-    internal sealed record Run(nint Window, string Keys)
+    internal sealed record Run(nint Window, string Keys, nint Element = 0)
     {
         // Match against what the app actually copied. Dead keys, IME, or ignored keystrokes must never
         // make Typlo replace older text just because the number of physical key presses happens to fit.

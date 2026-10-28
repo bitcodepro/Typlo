@@ -7,6 +7,31 @@ namespace Typlo.Tests;
 
 public sealed class RuntimeChannelTests
 {
+    [Fact]
+    public async Task ConcurrentBurstsKeepPipeSlotsUntilStreamsAreDisposed()
+    {
+        var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
+        var received = new System.Collections.Concurrent.ConcurrentDictionary<long, int>();
+        using var server = new RuntimeChannel(name, async request =>
+        {
+            received.AddOrUpdate(request.Id, 1, (_, count) => count + 1);
+            await Task.Yield();
+            return new(true, Window: request.Id);
+        });
+        await Task.WhenAll(Enumerable.Range(0, 4).Select(async worker =>
+        {
+            var client = new RuntimeClient(name);
+            for (var i = 0; i < 100; i++)
+            {
+                var id = worker * 100L + i;
+                Assert.Equal(id, (await client.CallAsync(new("state", Id: id))).Window);
+            }
+            Assert.False(client.IsBusy);
+        }));
+        Assert.Equal(400, received.Count);
+        Assert.All(received.Values, count => Assert.Equal(1, count));
+        Assert.True((await new RuntimeClient(name).CallAsync(new("state", Id: 400))).Ok);
+    }
     [Theory]
     [InlineData(-1)]
     [InlineData(0)]
