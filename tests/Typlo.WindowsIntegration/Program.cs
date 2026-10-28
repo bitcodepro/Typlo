@@ -21,6 +21,14 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.FirstOrDefault() == "--direct-editor-fixture")
+        {
+            ApplicationConfiguration.Initialize();
+            Application.Run(new DirectEditorFixture());
+            return 0;
+        }
+        if (args.FirstOrDefault() == "--direct-edit-check")
+            return DirectEditCheck.RunAsync(args[1]).GetAwaiter().GetResult();
         if (args.FirstOrDefault() == "--typing-hook-lifecycle-check")
         {
             try

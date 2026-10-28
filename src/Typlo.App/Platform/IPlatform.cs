@@ -31,6 +31,10 @@ public enum SelectionStatus { Completed, Interrupted, Cancelled }
 public interface IPlatform : IDisposable
 {
     string Name { get; }
+    bool SupportsDirectTextEditing => false;
+    nint FocusedInputElement => 0;
+    Task<DirectTextCapture> CaptureDirectTextAsync(nint window, nint element, Func<bool> stillValid)
+        => Task.FromResult(DirectTextCapture.Unsupported);
     bool SupportsScreenCapture => false;
     PlatformCapabilities Capabilities { get; }
 

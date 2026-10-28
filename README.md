@@ -10,6 +10,12 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
      Settings → layout cycle lets you enable/reorder sources and refresh after an OS input-settings change.
      Input methods without a direct character map are shown as switch-only sources.
    - Nothing selected? Only the recently typed input is converted (can be turned off).
+     Windows first tries direct replacement in supported native Edit and single-line plain-text RichEdit fields.
+     It binds the exact control and verifies its text and caret before writing, so a notification can take focus
+     without redirecting the operation. This path does not use the clipboard or simulated selection keystrokes.
+     Unsupported fields use the guarded copy/paste path below; a stale or uncertain direct write never retries
+     through the clipboard. Teams/WebView2 and rich-text editors currently use that fallback.
+     See [direct editing](docs/direct-text-edit.md) for adapter limits and verification.
      Windows also recognizes clipboard copies from native child windows hosted by another process,
      such as WebView2 editors in Teams. Copies from unrelated processes still stop the replacement.
      A transient Windows activation pauses input for up to 750 ms instead of immediately cancelling.

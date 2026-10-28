@@ -14,7 +14,7 @@ namespace Typlo.App.Platform.Windows;
 /// WM_HOTKEY and WM_CLIPBOARDUPDATE; all hotkey and clipboard calls are marshalled onto it.
 /// </summary>
 [SupportedOSPlatform("windows")]
-public sealed class WinPlatform : IPlatform
+public sealed partial class WinPlatform : IPlatform
 {
     private const int WM_INVOKE = WM_APP + 1;
     private const int WM_RESUME_CAPTURE = WM_APP + 2;

@@ -6,6 +6,17 @@ namespace Typlo.Tests;
 public sealed class RecentTypingTests
 {
     [Fact]
+    public void SwitchingFieldsInSameWindowStartsNewRun()
+    {
+        var input = new RecentTyping();
+        input.Record('a', 1, 100, 1, 11);
+        input.Record('b', 1, 200, 2, 12);
+        Assert.Equal("b", input.Capture(1)!.Keys);
+        Assert.Equal((nint)12, input.Capture(1)!.Element);
+        input.Backspace(1, 300, 3, 11);
+        Assert.Null(input.Capture(1));
+    }
+    [Fact]
     public void PauseStartsANewRun_ButWaitingForTheHotkeyDoesNotDiscardIt()
     {
         var input = new RecentTyping();

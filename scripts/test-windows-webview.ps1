@@ -20,6 +20,14 @@ try {
         Get-Content -LiteralPath (Join-Path $results 'hook-lifecycle-error.txt')
         throw 'Native typing hook lifecycle check failed'
     }
+    $direct = Start-Process -FilePath $executable -ArgumentList ('--direct-edit-check "' + $results + '"') -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput (Join-Path $results 'direct-stdout.txt') -RedirectStandardError (Join-Path $results 'direct-stderr.txt')
+    if (!$direct.WaitForExit(45000)) { $direct.Kill(); throw 'Native direct editing checks timed out' }
+    Get-Content -LiteralPath (Join-Path $results 'direct-edit.txt')
+    if ($direct.ExitCode -ne 0) {
+        Get-Content -LiteralPath (Join-Path $results 'direct-stderr.txt')
+        throw 'Native direct editing checks failed'
+    }
     & $executable --check-runtime
     if ($LASTEXITCODE -ne 0) {
         if (!$InstallRuntimeIfMissing) { throw 'Install the Microsoft Edge WebView2 Runtime before running this test.' }
