@@ -2,3 +2,6 @@
 *.py text eol=lf
 *.yml text eol=lf
 *.json text eol=lf
+resources/language-detection/*.sqlite3 binary
+resources/language-detection/*.txt text eol=lf
+resources/language-detection/LICENSE-CC-BY-SA-4.0.txt whitespace=-blank-at-eof

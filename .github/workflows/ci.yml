@@ -44,6 +44,8 @@ jobs:
           python-version: '3.13'
       - run: python -m pip install --disable-pip-version-check PyYAML==6.0.3
       - run: python -B -m unittest discover -s tests/release -v
+      - name: Validate language vocabulary data
+        run: python -B -m unittest discover -s tools/language-data/tests -v
       - run: node --test tests/gnome/bridge.test.mjs
 
   build-and-test:
@@ -65,6 +67,8 @@ jobs:
       - run: dotnet restore Typlo.slnx
       - run: dotnet build Typlo.slnx -c Release --no-restore
       - run: dotnet test Typlo.slnx -c Release --no-build --logger trx --results-directory TestResults
+      - name: Verify vocabulary with the .NET reader
+        run: dotnet run --project tools/LanguageDataProbe -c Release -- verify resources/language-detection/words.sqlite3
       - name: Windows WebView2 editor integration
         if: runner.os == 'Windows'
         shell: pwsh

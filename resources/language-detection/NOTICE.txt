@@ -1,0 +1,30 @@
+Typlo language-detection data pack v1
+
+This data pack is adapted from FrequencyWords by Hermit Dave:
+https://github.com/hermitdave/FrequencyWords
+Revision: 525f9b560de45753a5ea01069454e72e9aa541c6
+Source: content/2018/{en,ru,uk,fr,es,it,de,pt}/*_50k.txt
+
+FrequencyWords derives its 2018 frequency lists from OPUS OpenSubtitles 2018:
+https://opus.nlpl.eu/OpenSubtitles2018.php
+Original subtitles: OpenSubtitles and its contributing community:
+https://www.opensubtitles.org/
+
+FrequencyWords declares its content licensed under Creative Commons
+Attribution-ShareAlike 4.0 International (CC BY-SA 4.0):
+https://github.com/hermitdave/FrequencyWords/blob/525f9b560de45753a5ea01069454e72e9aa541c6/README.md#license
+https://creativecommons.org/licenses/by-sa/4.0/
+The adapted words.sqlite3 database is distributed under that same license.
+See LICENSE-CC-BY-SA-4.0.txt for its full text. Its metadata also includes this
+notice, source URLs/checksums and the full license so attribution travels with it.
+
+Changes by the Typlo contributors: NFC/lowercase normalization; normalization
+of apostrophes/hyphens; rejection of numbers, malformed tokens and incompatible
+scripts (Cyrillic orthography for ru/uk, Latin letters including loans for the
+other six languages); combination of normalized duplicates; combination of
+all eight lists with separate frequency weights; logarithmic quantization;
+storage in an indexed SQLite database. No words have been invented or translated.
+This is a frequency vocabulary, not an authoritative spelling dictionary.
+
+The build/reader code remains under the Typlo repository's MIT license. The
+data files in this directory have their own license as specified above.
