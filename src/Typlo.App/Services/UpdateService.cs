@@ -43,7 +43,7 @@ public sealed class UpdateService : IDisposable
         _workDir = workDir;
         // TYPLO_UPDATE_FEED lets tests point the updater at a local server.
         _feed = Environment.GetEnvironmentVariable("TYPLO_UPDATE_FEED") is { Length: > 0 } custom ? custom : DefaultFeed;
-        _http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+        _http = new HttpClient { Timeout = TimeSpan.FromMinutes(5), MaxResponseContentBufferSize = 512 * 1024 };
         _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("Typlo", CurrentVersion.ToString()));
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
     }
@@ -79,15 +79,7 @@ public sealed class UpdateService : IDisposable
         {
             LastCheckError = null;
             LastError = null;
-            var json = await _http.GetStringAsync(_feed);
-            var info = ReleaseFeed.Parse(json, CurrentVersion, Rid!);
-            if (info?.Version != Available?.Version)
-            {
-                Available = info;
-                if (info is not null) Log.Info($"Update available: {info.Version}");
-                Changed?.Invoke();
-            }
-            return info;
+            return AcceptFeed(await FetchFeedAsync(CancellationToken.None));
         }
         catch (Exception e)
         {
@@ -95,6 +87,20 @@ public sealed class UpdateService : IDisposable
             LastCheckError = e is HttpRequestException or TaskCanceledException ? Loc.T("update.noConnection") : e.Message;
             return Available;
         }
+    }
+
+    internal Task<string> FetchFeedAsync(CancellationToken token) => _http.GetStringAsync(_feed, token);
+
+    internal UpdateInfo? AcceptFeed(string json)
+    {
+        var info = ReleaseFeed.Parse(json, CurrentVersion, Rid!);
+        if (info?.Version != Available?.Version)
+        {
+            Available = info;
+            if (info is not null) Log.Info($"Update available: {info.Version}");
+            Changed?.Invoke();
+        }
+        return info;
     }
 
     /// <summary>

@@ -105,6 +105,26 @@ class PackageTests(unittest.TestCase):
             make_archive(self.directory, rid)
         self.assertEqual(len(release.verify_packages(self.directory, VERSION, COMMIT)), 10)
 
+    def test_windows_native_aot_libraries_are_required_and_architecture_checked(self):
+        def aot(files):
+            manifest = json.loads(files["build-info.json"])
+            manifest["deployment"] = "native-aot"
+            files["build-info.json"] = json.dumps(manifest).encode()
+            files.update({name: executable("win-x64") for name in release.WINDOWS_NATIVE_FILES})
+        archive = make_archive(self.directory, "win-x64", aot)
+        release.verify_archive(archive, VERSION, "win-x64", COMMIT)
+        for index, mutation in enumerate((lambda files: files.pop("e_sqlite3.dll"),
+                                          lambda files: files.update({"libSkiaSharp.dll": executable("linux-x64")}),
+                                          lambda files: files.update({"other.dll": executable("win-x64")}))):
+            target = self.directory / str(index)
+            target.mkdir()
+            def change(files):
+                aot(files)
+                mutation(files)
+            archive = make_archive(target, "win-x64", change)
+            with self.assertRaises(ValueError):
+                release.verify_archive(archive, VERSION, "win-x64", COMMIT)
+
     def test_rejects_modified_archive(self):
         archive = make_archive(self.directory, "win-x64")
         with archive.open("ab") as stream:

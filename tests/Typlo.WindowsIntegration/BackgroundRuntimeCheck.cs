@@ -1,0 +1,257 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using Typlo.App.Platform;
+using Typlo.App.Platform.Windows;
+using Typlo.App.Services;
+using Typlo.Core;
+using Typlo.Core.Hotkeys;
+using Typlo.Core.Settings;
+using Typlo.Core.Storage;
+
+namespace Typlo.WindowsIntegration;
+
+internal static class BackgroundRuntimeCheck
+{
+    private sealed class TargetEditor : IDisposable
+    {
+        private readonly Thread _thread;
+        private readonly TaskCompletionSource<(Form, nint)> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Form _form;
+        internal nint Handle { get; }
+        internal TargetEditor()
+        {
+            _thread = new Thread(() =>
+            {
+                var form = new Form { Text = "Typlo isolated target editor", Width = 400, Height = 160 };
+                form.Controls.Add(new TextBox { Dock = DockStyle.Fill, Multiline = true });
+                form.Shown += (_, _) => _ready.SetResult((form, form.Handle));
+                Application.Run(form); form.Dispose();
+            });
+            _thread.SetApartmentState(ApartmentState.STA); _thread.Start();
+            (_form, Handle) = _ready.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+        }
+        public void Dispose() { _form.BeginInvoke(() => _form.Close()); _thread.Join(TimeSpan.FromSeconds(5)); }
+    }
+
+    private static async Task CheckOcrAsync()
+    {
+        using var image = new System.Drawing.Bitmap(800, 180);
+        using (var graphics = System.Drawing.Graphics.FromImage(image))
+        using (var font = new System.Drawing.Font("Arial", 48))
+        { graphics.Clear(System.Drawing.Color.White); graphics.DrawString("HELLO TYPLO", font, System.Drawing.Brushes.Black, 20, 30); }
+        using var stream = new MemoryStream(); image.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
+        var text = await OcrService.RecognizeAsync(stream.ToArray());
+        if (text is null || !text.Contains("HELLO", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Windows in-memory OCR failed: " + text);
+
+        var pidFile = Path.Combine(Path.GetTempPath(), "typlo-ocr-helper-" + Guid.NewGuid().ToString("N") + ".pid");
+        using var cancel = new CancellationTokenSource();
+        var start = new ProcessStartInfo("powershell.exe") { ArgumentList = { "-NoProfile", "-NonInteractive", "-Command",
+            "[IO.File]::WriteAllText($env:TYPLO_TEST_PID, [string]$PID); Start-Sleep -Seconds 60" } };
+        start.Environment["TYPLO_TEST_PID"] = pidFile;
+        try
+        {
+            var pending = OcrService.RunAsync(start, [], cancel.Token);
+            var timer = Stopwatch.StartNew();
+            while (!File.Exists(pidFile)) { if (timer.Elapsed.TotalSeconds > 10) throw new TimeoutException("OCR helper startup"); await Task.Delay(20); }
+            using var process = Process.GetProcessById(int.Parse(File.ReadAllText(pidFile)));
+            cancel.Cancel();
+            try { await pending; throw new InvalidOperationException("OCR cancellation ignored"); }
+            catch (OperationCanceledException) { }
+            if (!process.HasExited) throw new InvalidOperationException("OCR helper outlived cancellation");
+        }
+        finally { cancel.Cancel(); File.Delete(pidFile); }
+    }
+
+    internal static async Task<int> RunAsync(string executable, string output)
+    {
+        output = Path.GetFullPath(output); Directory.CreateDirectory(output);
+        var lines = new List<string>();
+        var paths = new AppPaths(Path.Combine(output, "data-" + Guid.NewGuid().ToString("N")));
+        new SettingsStore(paths.SettingsFile).Save(new AppSettings
+        {
+            ToggleHotkey = "", ClipboardHotkey = "", UndoHotkey = "", CaseHotkey = "", TranslitHotkey = "",
+            ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", LayoutsInitialized = true, StartWithSystem = false, UiLanguage = "en",
+        });
+        var report = Path.Combine(output, "host-" + Guid.NewGuid().ToString("N") + ".txt");
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(executable))!, WindowStyle = ProcessWindowStyle.Hidden };
+        var ocrTemp = Path.Combine(paths.DataDir, "ocr-temp"); Directory.CreateDirectory(ocrTemp);
+        start.Environment["TEMP"] = start.Environment["TMP"] = ocrTemp;
+        using var feed = new TcpListener(IPAddress.Loopback, 0);
+        feed.Start();
+        start.Environment["TYPLO_UPDATE_FEED"] = $"http://127.0.0.1:{((IPEndPoint)feed.LocalEndpoint).Port}/latest";
+        foreach (var arg in new[] { "--background-probe", "--profile", paths.DataDir, "--report", report, "--lifetime-seconds", "180", "--tray" }) start.ArgumentList.Add(arg);
+        using var host = Process.Start(start) ?? throw new IOException("Cannot start background fixture");
+        Process? child = null;
+        using var platform = new WinPlatform();
+        var originalSequence = platform.ClipboardSequence;
+        try
+        {
+            await Until(() => File.Exists(report) && File.ReadAllLines(report).Length >= 3, "host ready");
+            var info = File.ReadAllLines(report).Select(l => l.Split('=', 2)).ToDictionary(p => p[0], p => p[1]);
+            var runtime = new RuntimeClient(info["channel"]);
+            var ui = new RuntimeClient("Typlo.Ui." + host.Id);
+            var state = await runtime.CallAsync(new("state"));
+            Check(state.UiProcessId == 0, "Cold start has no UI child");
+            Check(!host.Modules.Cast<ProcessModule>().Any(m => m.ModuleName.Contains("Skia", StringComparison.OrdinalIgnoreCase) || m.ModuleName.Contains("libgles", StringComparison.OrdinalIgnoreCase)), "Background does not load Skia or OpenGL");
+            Sample("cold");
+
+            var key = Enumerable.Range(13, 12).Select(n => Hotkey.TryParse("Ctrl+Alt+Shift+F" + n)!).First(h => platform.RegisterHotkey(9000, h));
+            platform.UnregisterAllHotkeys();
+            var settings = new SettingsStore(paths.SettingsFile).Load(); settings.ToggleHotkey = key.ToString();
+            await runtime.CallAsync(new("settings", Settings: settings));
+            Check(!platform.RegisterHotkey(9000, key), "Resident owns the shortcut");
+            await OpenSettings();
+            Check(platform.RegisterHotkey(9000, key), "Settings suspends resident shortcuts");
+            platform.UnregisterAllHotkeys();
+            await ui.CallAsync(new("ui", Args: ["--dismiss"]));
+            await Until(() => child!.HasExited, "UI exits after last window closes");
+            child!.Dispose(); child = null;
+            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId == 0, "resident observes UI exit");
+            Check(!platform.RegisterHotkey(9000, key), "Normal UI exit restores the shortcut");
+            Sample("after-settings");
+
+            await OpenSettings();
+            var firstPid = child!.Id;
+            var oldOwner = new RuntimeClient(info["channel"], firstPid);
+            await oldOwner.CallAsync(new("capture-begin"));
+            await oldOwner.CallAsync(new("image-write-begin"));
+            child.Kill(); await child.WaitForExitAsync(); child.Dispose(); child = null;
+            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId == 0, "crashed UI is reaped");
+            Check(!platform.RegisterHotkey(9000, key), "Crashed UI restores the shortcut");
+            await OpenSettings();
+            var nextOwner = new RuntimeClient(info["channel"], child!.Id);
+            Check((await nextOwner.CallAsync(new("capture-begin"))).Ok, "Crashed UI releases capture and clipboard leases");
+            try { await oldOwner.CallAsync(new("capture-end")); throw new InvalidOperationException("Stale UI command was accepted"); }
+            catch (IOException) { Check(true, "Stale UI cannot release a newer UI capture lease"); }
+            await nextOwner.CallAsync(new("capture-end"));
+            await ui.CallAsync(new("ui", Args: ["--dismiss"]));
+            await Until(() => child.HasExited, "replacement UI exits");
+            child.Dispose(); child = null;
+
+            Check(IpcServer.Send(["--capture", "rectangle"], info["commands"]), "Capture command accepted");
+            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId > 0, "capture UI launched");
+            await ui.CallAsync(new("ui", Args: ["--dismiss"]));
+            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId == 0, "canceled capture UI exits");
+            Check(platform.ClipboardSequence == originalSequence, "Canceled capture preserves clipboard");
+
+            var pixels = new byte[2048 * 1024 * 4]; new Random(42).NextBytes(pixels);
+            for (var i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
+            var image = WindowsImageCodec.FromBgra(pixels, 2048, 1024);
+            var crypto = ClipCrypto.LoadOrCreate(paths.KeyFile, PlatformFactory.CreateKeyProtector(diagnostic: true));
+            var fixture = Path.Combine(paths.DataDir, "fixture.image");
+            File.WriteAllBytes(fixture, crypto.Encrypt(image.Png));
+            await runtime.CallAsync(new("image-fixture"));
+            File.Delete(fixture);
+            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).StoredItems > 0, "image stored on disk");
+            Check((await runtime.CallAsync(new("state"))).UiProcessId == 0, "Image processing does not start UI");
+            Check(!host.Modules.Cast<ProcessModule>().Any(m => m.ModuleName.Contains("Skia", StringComparison.OrdinalIgnoreCase)), "Image processing does not initialize Skia in resident");
+            Sample("after-image");
+            await Task.Delay(3000); Sample("image-idle");
+
+            // History hides on Escape/deactivation. Delayed local OCR must outlive the idle timeout.
+            Check(IpcServer.Send(["--history"], info["commands"]), "History command accepted");
+            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId > 0, "history UI launched");
+            child = Process.GetProcessById((await runtime.CallAsync(new("state"))).UiProcessId);
+            await ui.CallAsync(new("ui", Args: ["--ocr-fixture"]));
+            await Until(() => File.Exists(Path.Combine(paths.DataDir, "ocr-started")), "delayed OCR starts");
+            await ui.CallAsync(new("ui", Args: ["--dismiss"]));
+            await Task.Delay(1500);
+            Check(!child.HasExited, "Hidden history keeps UI alive during delayed OCR");
+            await Until(() => File.Exists(Path.Combine(paths.DataDir, "ocr-completed")), "hidden OCR completes");
+            await Until(() => child.HasExited, "UI exits after OCR cleanup");
+            child.Dispose(); child = null;
+            Check(!Directory.EnumerateFiles(ocrTemp, "typlo-ocr-*.png").Any(), "Delayed OCR leaves no plaintext temporary image");
+            File.Delete(Path.Combine(paths.DataDir, "ocr-started"));
+            File.Delete(Path.Combine(paths.DataDir, "ocr-completed"));
+            Check(IpcServer.Send(["--history"], info["commands"]), "Cancellation history command accepted");
+            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId > 0, "cancellation UI launched");
+            child = Process.GetProcessById((await runtime.CallAsync(new("state"))).UiProcessId);
+            await ui.CallAsync(new("ui", Args: ["--ocr-fixture"]));
+            await Until(() => File.Exists(Path.Combine(paths.DataDir, "ocr-started")), "cancelable OCR starts");
+            await ui.CallAsync(new("ui", Args: ["--shutdown"]));
+            await Until(() => child.HasExited, "shutdown awaits OCR cancellation and cleanup");
+            Check(File.Exists(Path.Combine(paths.DataDir, "ocr-canceled")) && File.Exists(Path.Combine(paths.DataDir, "ocr-completed")), "Explicit UI shutdown cancels and drains OCR before exit");
+            Check(!Directory.EnumerateFiles(ocrTemp, "typlo-ocr-*.png").Any(), "Canceled OCR leaves no plaintext temporary image");
+            child.Dispose(); child = null;
+
+            // A separate editor process is unnecessary: this harness is external to the resident.
+            using (var editor = new TargetEditor())
+            {
+                platform.ActivateWindow(editor.Handle);
+                await Until(() => platform.ForegroundWindow == editor.Handle, "external editor foreground");
+                await OpenSettings();
+                await Until(() => { var w = platform.ForegroundWindow; Native.GetWindowThreadProcessId(w, out var pid); return pid == child!.Id; }, "UI child foreground");
+                var target = await runtime.CallAsync(new("history-target-fixture"));
+                Check(target.Window == (long)editor.Handle, "Tray history remembers external editor while Settings is foreground");
+                await UntilAsync(async () => (await ui.CallAsync(new("history-target-fixture"))).Window == (long)editor.Handle, "history receives external editor target");
+                await ui.CallAsync(new("ui", Args: ["--dismiss"]));
+                await Until(() => child!.HasExited, "target-check UI exits");
+                child!.Dispose(); child = null;
+            }
+
+            await CheckOcrAsync();
+            Check(true, "Windows OCR reads PNG from memory; cancellation reaps the helper");
+            var feedTask = ServeFeedAsync();
+            await runtime.CallAsync(new("update-fixture"));
+            await feedTask;
+            state = await runtime.CallAsync(new("state"));
+            Check(state.AvailableVersion == "9.9.9" && state.UiProcessId == 0, "Automatic update helper exits and publishes the available version without UI");
+            Sample("after-update-check");
+
+            await OpenSettings();
+            Check(child!.Id != firstPid, "UI is recreated on demand");
+            host.Kill(); await host.WaitForExitAsync();
+            await Until(() => child.HasExited, "UI exits when resident crashes");
+            Check(true, "No orphan UI after resident exit");
+            File.WriteAllLines(Path.Combine(output, "runtime.txt"), lines); return 0;
+
+            async Task OpenSettings()
+            {
+                Check(IpcServer.Send(["--settings"], info["commands"]), "Settings command accepted");
+                await UntilAsync(async () => (state = await runtime.CallAsync(new("state"))).UiProcessId > 0, "settings UI launched");
+                child = Process.GetProcessById(state.UiProcessId);
+                await ui.CallAsync(new("ui", Args: ["--settings"]));
+            }
+            void Check(bool condition, string message)
+            { if (!condition) throw new InvalidOperationException(message); lines.Add("PASS " + message); }
+            void Sample(string stage)
+            { host.Refresh(); lines.Add($"MEMORY {stage}: working-set={host.WorkingSet64} private-commit={host.PrivateMemorySize64}"); }
+
+            async Task ServeFeedAsync()
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                using var connection = await feed.AcceptTcpClientAsync(timeout.Token);
+                using var stream = connection.GetStream();
+                var request = new List<byte>();
+                var one = new byte[1];
+                while (request.Count < 8192)
+                {
+                    if (await stream.ReadAsync(one, timeout.Token) == 0) throw new IOException("Incomplete feed request");
+                    request.Add(one[0]);
+                    if (request.Count >= 4 && request.TakeLast(4).SequenceEqual(new byte[] { 13, 10, 13, 10 })) break;
+                }
+                const string body = "{\"tag_name\":\"v9.9.9\",\"draft\":false,\"prerelease\":false,\"html_url\":\"https://github.com/bitcodepro/Typlo/releases/tag/v9.9.9\",\"assets\":[{\"name\":\"Typlo-9.9.9-win-x64.zip\",\"browser_download_url\":\"https://github.com/bitcodepro/Typlo/releases/download/v9.9.9/Typlo-9.9.9-win-x64.zip\"},{\"name\":\"Typlo-9.9.9-win-x64.zip.sha256\",\"browser_download_url\":\"https://github.com/bitcodepro/Typlo/releases/download/v9.9.9/Typlo-9.9.9-win-x64.zip.sha256\"}]}";
+                var response = Encoding.UTF8.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {Encoding.UTF8.GetByteCount(body)}\r\nConnection: close\r\n\r\n{body}");
+                await stream.WriteAsync(response, timeout.Token);
+            }
+        }
+        catch (Exception e)
+        { lines.Add("FAIL " + e); File.WriteAllLines(Path.Combine(output, "runtime.txt"), lines); return 1; }
+        finally
+        {
+            try { if (!host.HasExited) { host.Kill(entireProcessTree: true); await host.WaitForExitAsync(); } } catch (InvalidOperationException) { }
+            try { if (child is { HasExited: false }) child.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            child?.Dispose();
+        }
+        async Task Until(Func<bool> condition, string message)
+        { await UntilAsync(async () => { await Task.CompletedTask; return condition(); }, message); }
+        async Task UntilAsync(Func<Task<bool>> condition, string message)
+        {
+            var deadline = Stopwatch.StartNew();
+            while (!await condition())
+            { if (deadline.Elapsed > TimeSpan.FromSeconds(20)) throw new TimeoutException(message); await Task.Delay(50); }
+        }
+    }
+}

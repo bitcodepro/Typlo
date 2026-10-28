@@ -15,6 +15,7 @@ public static class ImageCodec
     /// <summary>Decodes PNG/BMP bytes and produces a normalized PNG plus a thumbnail PNG.</summary>
     public static Encoded Encode(byte[] imageBytes, bool alreadyPng)
     {
+        if (OperatingSystem.IsWindows()) return Platform.Windows.WindowsImageCodec.Encode(imageBytes, alreadyPng);
         using var bitmap = new Bitmap(new MemoryStream(imageBytes));
         var size = bitmap.PixelSize;
         byte[] png;
@@ -30,6 +31,7 @@ public static class ImageCodec
 
     public static Encoded FromBgra(byte[] bgra, int width, int height)
     {
+        if (OperatingSystem.IsWindows()) return Platform.Windows.WindowsImageCodec.FromBgra(bgra, width, height);
         if (width < 1 || height < 1 || (long)width * height > Core.Imaging.CaptureRegion.MaxPixels ||
             bgra.LongLength != (long)width * height * 4) throw new ArgumentException("Invalid image dimensions.");
         using var bitmap = new WriteableBitmap(new PixelSize(width, height), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Unpremul);
@@ -43,6 +45,7 @@ public static class ImageCodec
 
     public static byte[] ToJpeg(byte[] png)
     {
+        if (OperatingSystem.IsWindows()) return Platform.Windows.WindowsImageCodec.ToJpeg(png);
         var (pixels, width, height) = DecodeBgra(png);
         // JPEG has no alpha channel. Composite freehand pixels on white at full source resolution.
         for (var i = 0; i < pixels.Length; i += 4)
@@ -73,6 +76,7 @@ public static class ImageCodec
     /// <summary>Top-down BGRA pixels of a PNG, for building a Windows CF_DIB.</summary>
     public static (byte[] Bgra, int Width, int Height) DecodeBgra(byte[] png)
     {
+        if (OperatingSystem.IsWindows()) return Platform.Windows.WindowsImageCodec.DecodeBgra(png);
         using var bitmap = new Bitmap(new MemoryStream(png));
         var size = bitmap.PixelSize;
         var stride = size.Width * 4;

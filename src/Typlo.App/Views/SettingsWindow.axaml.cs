@@ -296,7 +296,8 @@ public partial class SettingsWindow : Window
             ExportStatus.Text = Loc.T("settings.importFailed");
             return;
         }
-        _controller.ApplySettings(imported);
+        try { _controller.ApplySettings(imported); }
+        catch (Exception e) { Log.Error("Applying imported settings failed", e); ExportStatus.Text = Loc.T("settings.importFailed"); return; }
         _saved = true;
         Close();
         Reopen?.Invoke();
@@ -394,7 +395,8 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        _controller.ApplySettings(_draft);
+        try { _controller.ApplySettings(_draft); }
+        catch (Exception e) { Log.Error("Saving settings failed", e); SaveStatus.Text = Loc.T("settings.saveFailed"); return; }
         _saved = true;
         if (_controller.FailedHotkeys.Count > 0)
         {

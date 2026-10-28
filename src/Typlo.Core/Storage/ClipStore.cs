@@ -35,12 +35,12 @@ public sealed record ClipContent(ClipKind Kind, string? Text, byte[]? ImagePng, 
     public byte[] PayloadBytes() => Kind == ClipKind.Image ? ImagePng ?? [] : Encoding.UTF8.GetBytes(Text ?? "");
 
     internal byte[]? FormattingBytes() => HasFormatting
-        ? System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, string?> { ["html"] = Html, ["rtf"] = Rtf })
+        ? System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, string?> { ["html"] = Html, ["rtf"] = Rtf }, ClipFormattingJson.Default.DictionaryStringString)
         : null;
 
     internal static (string? Html, string? Rtf) ParseFormatting(byte[] bytes)
     {
-        var map = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string?>>(bytes) ?? [];
+        var map = System.Text.Json.JsonSerializer.Deserialize(bytes, ClipFormattingJson.Default.DictionaryStringString) ?? [];
         return (map.GetValueOrDefault("html"), map.GetValueOrDefault("rtf"));
     }
 }
@@ -83,6 +83,15 @@ public sealed class ClipStore : IDisposable
     private StoreLimits _limits;
 
     public event Action? Changed;
+    private long _dataVersion;
+
+    /// <summary>UI connections notice commits made by the resident process without loading payloads.</summary>
+    public void CheckExternalChanges()
+    {
+        long version;
+        lock (_lock) { using var cmd = Cmd("PRAGMA data_version"); version = (long)cmd.ExecuteScalar()!; }
+        if (Interlocked.Exchange(ref _dataVersion, version) != version) Changed?.Invoke();
+    }
 
     public ClipStore(string dbPath, ClipCrypto crypto, StoreLimits limits)
     {
@@ -124,7 +133,7 @@ public sealed class ClipStore : IDisposable
     }
 
     /// <summary>Stores content or bumps an identical existing clip to the top. Returns null if rejected by limits.</summary>
-    public long? Add(ClipContent content)
+    public long? Add(ClipContent content, DateTimeOffset? capturedAt = null)
     {
         var payload = content.PayloadBytes();
         if (payload.Length == 0) return null;
@@ -136,14 +145,14 @@ public sealed class ClipStore : IDisposable
         if (content.Kind == ClipKind.Image && payload.Length > _limits.MaxImageBytes) return null;
 
         long id;
-        lock (_lock) id = AddLocked(content, payload);
+        lock (_lock) id = AddLocked(content, payload, capturedAt);
         Changed?.Invoke();
         return id;
     }
 
-    private long AddLocked(ClipContent content, byte[] payload)
+    private long AddLocked(ClipContent content, byte[] payload, DateTimeOffset? capturedAt)
     {
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var now = (capturedAt ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds();
         var hash = _crypto.Hash(content.Kind, payload);
         var formatting = content.FormattingBytes();
         object extra = formatting is null ? DBNull.Value : _crypto.Encrypt(formatting);
@@ -153,8 +162,8 @@ public sealed class ClipStore : IDisposable
             {
                 // Same text again: keep the newest formatting if the source offered any, and count its size.
                 using var bump = formatting is null
-                    ? Cmd("UPDATE clips SET last_used=$t WHERE id=$id", ("$t", now), ("$id", existing))
-                    : Cmd("UPDATE clips SET last_used=$t, extra=$x, size=$s WHERE id=$id",
+                    ? Cmd("UPDATE clips SET last_used=MAX(last_used,$t) WHERE id=$id", ("$t", now), ("$id", existing))
+                    : Cmd("UPDATE clips SET last_used=MAX(last_used,$t), extra=$x, size=$s WHERE id=$id",
                         ("$t", now), ("$x", extra), ("$s", payload.LongLength + formatting.LongLength), ("$id", existing));
                 bump.ExecuteNonQuery();
                 if (formatting is not null) Enforce();
@@ -180,20 +189,21 @@ public sealed class ClipStore : IDisposable
         }
     }
 
-    public IReadOnlyList<ClipEntry> List()
+    public IReadOnlyList<ClipEntry> List(bool includeThumbnails = true, int? limit = null)
     {
         var list = new List<ClipEntry>();
         lock (_lock)
         {
             using var cmd = Cmd("""
-                SELECT id, kind, created, last_used, pinned, size, width, height, preview, app, extra IS NOT NULL
-                FROM clips ORDER BY pinned DESC, last_used DESC, id DESC
-                """);
+                SELECT id, kind, created, last_used, pinned, size, width, height,
+                       CASE WHEN kind=2 AND $thumb=0 THEN NULL ELSE preview END, app, extra IS NOT NULL
+                FROM clips ORDER BY pinned DESC, last_used DESC, id DESC LIMIT $limit
+                """, ("$thumb", includeThumbnails ? 1 : 0), ("$limit", limit is null ? -1 : Math.Max(0, limit.Value)));
             using var r = cmd.ExecuteReader();
             while (r.Read())
             {
                 var kind = (ClipKind)r.GetInt32(1);
-                var preview = (byte[])r[8];
+                var preview = r.IsDBNull(8) ? [] : (byte[])r[8];
                 try
                 {
                     list.Add(new ClipEntry
@@ -207,7 +217,7 @@ public sealed class ClipStore : IDisposable
                         Width = r.GetInt32(6),
                         Height = r.GetInt32(7),
                         PreviewText = kind == ClipKind.Image ? "" : _crypto.DecryptString(preview),
-                        Thumbnail = kind == ClipKind.Image ? _crypto.Decrypt(preview) : null,
+                        Thumbnail = kind == ClipKind.Image && includeThumbnails ? _crypto.Decrypt(preview) : null,
                         SourceApp = r.IsDBNull(9) ? null : _crypto.DecryptString((byte[])r[9]),
                         HasFormatting = r.GetInt64(10) != 0,
                     });
@@ -272,6 +282,26 @@ public sealed class ClipStore : IDisposable
                 catch (System.Security.Cryptography.CryptographicException) { }
             }
             lastId = rows[^1].Id;
+        }
+    }
+
+    /// <summary>Decrypt only the small preview for a visible image row, never its full payload.</summary>
+    public byte[]? GetThumbnail(long id)
+    {
+        lock (_lock)
+        {
+            using var cmd = Cmd("SELECT preview FROM clips WHERE id=$id AND kind=2", ("$id", id));
+            return cmd.ExecuteScalar() is byte[] bytes ? _crypto.Decrypt(bytes) : null;
+        }
+    }
+
+    /// <summary>The previous item needs only one ID, not every decrypted preview in the database.</summary>
+    public long? PreviousId()
+    {
+        lock (_lock)
+        {
+            using var cmd = Cmd("SELECT id FROM clips ORDER BY last_used DESC, id DESC LIMIT 1 OFFSET 1");
+            return cmd.ExecuteScalar() is long id ? id : null;
         }
     }
 
@@ -391,3 +421,6 @@ public sealed class ClipStore : IDisposable
         lock (_lock) _db.Dispose();
     }
 }
+
+[System.Text.Json.Serialization.JsonSerializable(typeof(Dictionary<string, string?>))]
+internal partial class ClipFormattingJson : System.Text.Json.Serialization.JsonSerializerContext;

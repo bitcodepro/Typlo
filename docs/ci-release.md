@@ -104,3 +104,17 @@ but macOS bundles must be assembled and ad-hoc signed on macOS. None of these
 commands publishes anything; `publish` refuses a normal local session. The legacy
 `scripts/publish-all.sh` and `scripts/package-macos.sh` remain available for local
 unversioned builds; CI uses `scripts/release.py` for verified release artifacts.
+
+
+Windows packages use Native AOT and include the five native libraries recorded by the verifier.
+The manifest marks this deployment as `native-aot`; verification checks the DLL set and PE architecture,
+while still recognizing older single-file package manifests. Windows CI additionally publishes Native
+AOT, exercises on-demand UI shutdown/crash/restart, shortcut restoration, screenshot cancellation,
+encrypted image ingestion, idle memory reclamation, and the isolated update helper against a local feed.
+It also hides history during delayed OCR, cancels OCR on UI shutdown, checks that no plaintext PNG is
+written to the temporary directory, and verifies tray history targets the external editor while Settings
+belongs to the foreground UI child. A real Windows OCR check reads its PNG from stdin; cancellation must
+kill and reap the owned helper.
+The runtime test uses its own profile, does not monitor external clipboard changes, and never replaces
+the user's clipboard. Resident memory samples are retained in `runtime/runtime.txt`. The same AOT binary
+also runs the existing desktop self-test, separately from the WebView2 editor integration test.

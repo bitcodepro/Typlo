@@ -40,4 +40,20 @@ try {
         Get-Content -LiteralPath (Join-Path $results 'stderr.txt')
         throw 'WebView2 editor checks failed'
     }
+    $runtimeApp = Join-Path $results 'runtime-app'
+    dotnet publish src/Typlo.App -c Release -r win-x64 --self-contained true -o $runtimeApp -m:1 -p:UseSharedCompilation=false --disable-build-servers
+    if ($LASTEXITCODE -ne 0) { throw 'Background Native AOT build failed' }
+    $runtimeResults = Join-Path $results 'runtime'
+    $runtimeExe = Join-Path $runtimeApp 'Typlo.exe'
+    $arguments = '--background-runtime-check "' + $runtimeExe + '" "' + $runtimeResults + '"'
+    $runtimeProcess = Start-Process -FilePath $executable -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    if (!$runtimeProcess.WaitForExit(120000)) { $runtimeProcess.Kill(); throw 'Background runtime checks timed out' }
+    Get-Content -LiteralPath (Join-Path $runtimeResults 'runtime.txt')
+    if ($runtimeProcess.ExitCode -ne 0) { throw 'Background runtime checks failed' }
+    $selftestReport = Join-Path $runtimeResults 'desktop-selftest.txt'
+    $selftest = Start-Process -FilePath $runtimeExe -ArgumentList ('--selftest "' + $selftestReport + '"') -WindowStyle Hidden -PassThru
+    if (!$selftest.WaitForExit(90000)) { $selftest.Kill(); throw 'Native AOT desktop checks timed out' }
+    Get-Content -LiteralPath $selftestReport
+    if ($selftest.ExitCode -ne 0) { throw 'Native AOT desktop checks failed' }
+
 } finally { Pop-Location }

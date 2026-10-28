@@ -50,6 +50,64 @@ public sealed class ClipStoreTests : IDisposable
     }
 
     [Fact]
+    public void MetadataListingDoesNotLoadThumbnailsOrImagePayloads()
+    {
+        using var store = Open();
+        var id = store.Add(ClipContent.FromImage([1, 2, 3], [4, 5, 6], 320, 180))!.Value;
+        var metadata = Assert.Single(store.List(includeThumbnails: false));
+        Assert.Null(metadata.Thumbnail);
+        Assert.Equal((320, 180), (metadata.Width, metadata.Height));
+        Assert.Equal(new byte[] { 4, 5, 6 }, store.GetThumbnail(id));
+        Assert.Null(store.GetThumbnail(long.MaxValue));
+        Assert.Empty(store.List(includeThumbnails: false, limit: 0));
+    }
+
+    [Fact]
+    public void SlowImageEncodingPreservesCaptureOrderAndDoesNotUndoALaterPasteTouch()
+    {
+        using var store = Open();
+        var captured = DateTimeOffset.Parse("2020-01-01T00:00:00Z");
+        var text = store.Add(ClipContent.FromText("newer text"), captured.AddSeconds(1));
+        var image = ClipContent.FromImage([1, 2, 3], [4], 1, 1);
+        var id = store.Add(image, captured)!.Value;
+        Assert.Equal(text, store.List(includeThumbnails: false)[0].Id);
+        store.Touch(id);
+        store.Add(image, captured);
+        Assert.Equal(id, store.List(includeThumbnails: false)[0].Id);
+    }
+
+    [Fact]
+    public void PreviousItemQueryUsesRecencyInsteadOfPinnedDisplayOrder()
+    {
+        using var store = Open();
+        Assert.Null(store.PreviousId());
+        var start = DateTimeOffset.Parse("2020-01-01T00:00:00Z");
+        var pinned = store.Add(ClipContent.FromText("old pinned"), start)!.Value;
+        var previous = store.Add(ClipContent.FromImage([1, 2], [3], 1, 1), start.AddSeconds(1));
+        store.Add(ClipContent.FromText("newest"), start.AddSeconds(2));
+        store.SetPinned(pinned, true);
+        Assert.Equal(previous, store.PreviousId());
+    }
+
+    [Fact]
+    public void UiConnectionNoticesExternalCommitsWithoutLoadingHistory()
+    {
+        using var resident = Open();
+        using var ui = Open();
+        ui.CheckExternalChanges();
+        var changed = 0;
+        ui.Changed += () => changed++;
+        ui.CheckExternalChanges();
+        Assert.Equal(0, changed);
+        var id = resident.Add(ClipContent.FromText("from resident"))!.Value;
+        ui.CheckExternalChanges();
+        Assert.Equal(1, changed);
+        Assert.Equal("from resident", ui.Get(id)!.Text);
+        ui.CheckExternalChanges();
+        Assert.Equal(1, changed);
+    }
+
+    [Fact]
     public void Formatting_RoundTrips_Encrypted()
     {
         const string html = "<table><tr><td><b>secret-cell</b></td></tr></table>";

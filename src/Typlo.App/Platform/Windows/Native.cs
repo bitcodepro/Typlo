@@ -10,6 +10,7 @@ internal static partial class Native
     public const int WM_APP = 0x8000;
     public const int WM_CLOSE = 0x0010;
     public const int WM_DESTROY = 0x0002;
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)] public static unsafe partial int GetClassNameW(nint window, char* name, int count);
 
     public const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2, MOD_SHIFT = 0x4, MOD_WIN = 0x8, MOD_NOREPEAT = 0x4000;
 

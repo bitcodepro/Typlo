@@ -50,19 +50,33 @@ public sealed class AppController : IDisposable
 
     /// <summary>Self-test/screenshot run: never touches system-wide settings such as autostart.</summary>
     private readonly bool _diagnostic;
+    private readonly RuntimeClient? _remote;
+    private readonly LatestImageWorker _images;
+    private readonly IdleMemoryReclaimer _memory;
+    private long _lastInputAt = Environment.TickCount64;
 
     public AppController(IPlatform platform, AppPaths paths, IKeyProtector keyProtector, bool diagnostic = false)
+        : this(platform, paths, keyProtector, diagnostic, null) { }
+
+    internal static AppController CreateRemote(IPlatform platform, AppPaths paths, IKeyProtector protector, RuntimeClient remote)
+        => new(platform, paths, protector, true, remote);
+
+    private AppController(IPlatform platform, AppPaths paths, IKeyProtector keyProtector, bool diagnostic, RuntimeClient? remote)
     {
+        _remote = remote;
+        _images = new LatestImageWorker(StoreCapturedImage);
+        _memory = new IdleMemoryReclaimer(() => _convertGate.CurrentCount > 0 && !_capturingScreen && !_editingSettings && !_images.IsBusy && Environment.TickCount64 - Interlocked.Read(ref _lastInputAt) > 1500);
         _diagnostic = diagnostic;
         _platform = platform;
         _settingsStore = new SettingsStore(paths.SettingsFile);
         Settings = _settingsStore.Load();
         DiscoverLayouts();
         LayoutCatalog.Synchronize(Settings);
-        _settingsStore.Save(Settings);
+        if (_remote is null) _settingsStore.Save(Settings);
         Loc.SetLanguage(Settings.UiLanguage);
         Store = new ClipStore(paths.HistoryDb, ClipCrypto.LoadOrCreate(paths.KeyFile, keyProtector), Limits(Settings));
         BuildConverter();
+        if (_remote is not null) { UpdateRemoteState(_remote.Call(new("state"))); return; }
         ApplyKeepAwake();
         _platform.HotkeyPressed += OnHotkey;
         _platform.KeyTyped += OnKeyTyped;
@@ -87,8 +101,21 @@ public sealed class AppController : IDisposable
         catch (Exception e) { Log.Error("System keyboard layout discovery failed", e); }
     }
 
+    /// <summary>Text fixtures can exercise both directions without installing input sources on the test machine.</summary>
+    internal void ConfigureDiagnosticLayouts(IEnumerable<KeyboardLayout> layouts)
+    {
+        if (!_diagnostic) throw new InvalidOperationException("Diagnostic layouts are disabled");
+        LayoutCatalog = new(layouts);
+        BuildConverter();
+    }
+
     public void RefreshKeyboardLayouts()
     {
+        if (_remote is not null)
+        {
+            UpdateRemoteState(_remote.Call(new("refresh-layouts")));
+            DiscoverLayouts(); LayoutCatalog.Synchronize(Settings); BuildConverter(); return;
+        }
         DiscoverLayouts();
         LayoutCatalog.Synchronize(Settings);
         _settingsStore.Save(Settings);
@@ -101,6 +128,11 @@ public sealed class AppController : IDisposable
 
     public void ApplySettings(AppSettings settings)
     {
+        if (_remote is not null)
+        {
+            UpdateRemoteState(_remote.Call(new("settings", Settings: settings)));
+            SettingsChanged?.Invoke(); return;
+        }
         settings.Normalize();
         LayoutCatalog.Synchronize(settings);
         Settings = settings;
@@ -148,13 +180,23 @@ public sealed class AppController : IDisposable
 
     /// <summary>Settings window records shortcuts, so live hotkeys must not fire meanwhile.</summary>
     private volatile bool _editingSettings;
-    public void SuspendHotkeys() { _editingSettings = true; _platform.UnregisterAllHotkeys(); }
+    public void SuspendHotkeys()
+    {
+        if (_remote is not null) { _remote.Call(new("suspend-hotkeys")); return; }
+        _editingSettings = true; _platform.UnregisterAllHotkeys();
+    }
 
     /// <summary>Typlo's active hotkeys: pressing one is a command, not input that moves the caret.</summary>
     private readonly HashSet<Hotkey> _activeHotkeys = [];
 
     public void RegisterHotkeys()
     {
+        if (_remote is not null)
+        {
+            try { UpdateRemoteState(_remote.Call(new("register-hotkeys"))); }
+            catch (Exception e) when (e is IOException or OperationCanceledException) { Log.Error("Background runtime unavailable", e); }
+            return;
+        }
         _editingSettings = false;
         _platform.UnregisterAllHotkeys();
         lock (_activeHotkeys) _activeHotkeys.Clear();
@@ -217,6 +259,16 @@ public sealed class AppController : IDisposable
     internal async Task<ImageCodec.Encoded?> CaptureScreenshotAsync(Func<Task<CapturedPixels?>> capture, bool copyToClipboard = true)
     {
         if (!_platform.SupportsScreenCapture || !await _convertGate.WaitAsync(0)) return null;
+        if (_remote is not null)
+        {
+            try
+            {
+                var reply = await _remote.CallAsync(new("capture-begin"), allowRejected: true);
+                if (!reply.Ok) { _convertGate.Release(); return null; }
+                UpdateRemoteState(reply);
+            }
+            catch { _convertGate.Release(); throw; }
+        }
         _capturingScreen = true;
         try
         {
@@ -228,11 +280,23 @@ public sealed class AppController : IDisposable
             if (copyToClipboard) PublishScreenshot(image, pixels.Bgra);
             return image;
         }
-        finally { _capturingScreen = false; _convertGate.Release(); }
+        finally
+        {
+            _capturingScreen = false; _convertGate.Release();
+            if (_remote is not null) await _remote.CallAsync(new("capture-end"));
+        }
     }
 
     internal async Task<bool> CopyScreenshotAsync(ImageCodec.Encoded image)
     {
+        if (_remote is not null)
+        {
+            var reply = await _remote.CallAsync(new("capture-begin"), allowRejected: true);
+            if (!reply.Ok) return false;
+            UpdateRemoteState(reply);
+            try { var (pixels, _, _) = ImageCodec.DecodeBgra(image.Png); PublishScreenshot(image, pixels); return true; }
+            finally { await _remote.CallAsync(new("capture-end")); }
+        }
         if (!await _convertGate.WaitAsync(0)) return false;
         try
         {
@@ -245,12 +309,18 @@ public sealed class AppController : IDisposable
 
     private void PublishScreenshot(ImageCodec.Encoded image, byte[] bgra)
     {
-        using (_platform.SuspendCapture())
+        if (_remote is not null) _remote.Call(new("image-write-begin"));
+        try
         {
-            _adoptedCopy = null;
-            _platform.SetImage(image.Png, bgra, image.Width, image.Height);
+            using (_platform.SuspendCapture())
+            {
+                _adoptedCopy = null;
+                _platform.SetImage(image.Png, bgra, image.Width, image.Height);
+            }
+            if (ShouldRecord(new RawClip(null, null, true, "Typlo")))
+                Store.Add(ClipContent.FromImage(image.Png, image.Thumbnail, image.Width, image.Height, "Typlo"));
         }
-        OnClipboardCaptured(new RawClip(null, image.Png, true, "Typlo"));
+        finally { if (_remote is not null) _remote.Call(new("image-write-end")); }
     }
 
     /// <summary>Copies the selection, converts it to <paramref name="target"/> (null = toggle) and pastes it back.</summary>
@@ -463,6 +533,7 @@ public sealed class AppController : IDisposable
     /// </summary>
     private void RestoreIfUnchanged(ClipboardSnapshot snapshot)
     {
+        if (snapshot.Formats.Sum(f => (long)f.Data.Length) >= 1024 * 1024) _memory.Schedule();
         _verifiedSelection = null;
         try
         {
@@ -675,6 +746,7 @@ public sealed class AppController : IDisposable
 
     private void OnKeyTyped(TypedKey key)
     {
+        Interlocked.Exchange(ref _lastInputAt, Environment.TickCount64);
         if (key.Shortcut is { } shortcut)
         {
             bool own;
@@ -1019,23 +1091,36 @@ public sealed class AppController : IDisposable
 
     private Timer? _pauseTimer;
 
+    private bool ShouldRecord(RawClip raw) => Settings.HistoryEnabled && !IsPaused &&
+        !(raw.SourceApp is { } app && Settings.ExcludedApps.Any(x => string.Equals(x.Trim(), app, StringComparison.OrdinalIgnoreCase)));
+
     private void OnClipboardCaptured(RawClip raw)
     {
-        if (!Settings.HistoryEnabled || IsPaused) return;
-        if (raw.SourceApp is { } app &&
-            Settings.ExcludedApps.Any(x => string.Equals(x.Trim(), app, StringComparison.OrdinalIgnoreCase))) return;
+        if (!ShouldRecord(raw)) return;
         try
         {
             if (raw.Files is { Count: > 0 } files) Store.Add(ClipContent.FromFiles(files, raw.SourceApp));
             else if (raw.Text is not null) Store.Add(ClipContent.FromText(raw.Text, raw.SourceApp, raw.Html, raw.Rtf));
-            else if (raw.Image is not null)
-            {
-                if (raw.Image.LongLength > Settings.MaxImageBytes * 4) return; // BMPs are big; PNG is checked by the store
-                var img = ImageCodec.Encode(raw.Image, raw.ImageIsPng);
-                Store.Add(ClipContent.FromImage(img.Png, img.Thumbnail, img.Width, img.Height, raw.SourceApp));
-            }
+            else if (raw.Image is { } bytes && bytes.LongLength <= Settings.MaxImageBytes * 4) _images.Post(raw);
         }
         catch (Exception e) { Log.Error("Storing clip failed", e); }
+    }
+
+    private void StoreCapturedImage(RawClip raw, DateTimeOffset capturedAt)
+    {
+        if (!ShouldRecord(raw) || raw.Image is not { } bytes) return;
+        try
+        {
+            var img = ImageCodec.Encode(bytes, raw.ImageIsPng);
+            if (ShouldRecord(raw)) Store.Add(ClipContent.FromImage(img.Png, img.Thumbnail, img.Width, img.Height, raw.SourceApp), capturedAt);
+        }
+        finally { if (bytes.Length >= 1024 * 1024) _memory.Schedule(); }
+    }
+
+    internal void IngestDiagnosticImage(byte[] png)
+    {
+        if (!_diagnostic) throw new InvalidOperationException("Diagnostic image input is disabled");
+        OnClipboardCaptured(new RawClip(null, png, true, "Typlo diagnostic"));
     }
 
     /// <summary>
@@ -1044,12 +1129,15 @@ public sealed class AppController : IDisposable
     /// </summary>
     public async Task PasteAsync(long id, nint targetWindow, bool paste = true, bool plainText = false)
     {
+        if (_remote is not null) { await _remote.CallAsync(new("paste", id, (long)targetWindow, plainText, paste ? "paste" : "copy")); return; }
+        var largeImage = false;
         // One clipboard operation at a time: a paste must not interleave with a conversion or snippet.
         if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(3))) return;
         try
         {
             var content = Store.Get(id);
             if (content is null) return;
+            largeImage = content.ImagePng is { Length: >= 1024 * 1024 };
             LastTransform = null;
             _recentTyping.Consume(Interlocked.Read(ref _typingVersion));
             _expectedSequence = _platform.ClipboardSequence;
@@ -1070,7 +1158,7 @@ public sealed class AppController : IDisposable
                     break;
             }
             Store.Touch(id);
-            if (!paste || !_platform.Capabilities.SimulateInput) return;
+            if (!paste || targetWindow == 0 || !_platform.Capabilities.SimulateInput) return;
             _platform.ActivateWindow(targetWindow);
             await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromMilliseconds(500));
             await Task.Delay(60);
@@ -1087,18 +1175,52 @@ public sealed class AppController : IDisposable
         }
         catch (ClipboardTakenException) { Log.Info("Paste stopped: another app changed the clipboard meanwhile"); }
         catch (Exception e) { Log.Error("Paste failed", e); }
-        finally { _convertGate.Release(); }
+        finally { _convertGate.Release(); if (largeImage) _memory.Schedule(); }
     }
 
     /// <summary>Pastes the item copied before the current one (second hotkey press in the history popup).</summary>
     public Task PastePreviousAsync(nint targetWindow, bool paste = true)
     {
-        var previous = Store.List().OrderByDescending(e => e.LastUsed).Skip(1).FirstOrDefault();
-        return previous is null ? Task.CompletedTask : PasteAsync(previous.Id, targetWindow, paste);
+        if (_remote is not null) return _remote.CallAsync(new("paste-previous", Window: (long)targetWindow, Flag: paste));
+        var previous = Store.PreviousId();
+        return previous is null ? Task.CompletedTask : PasteAsync(previous.Value, targetWindow, paste);
+    }
+
+    private void UpdateRemoteState(RuntimeReply reply)
+    {
+        Settings = _settingsStore.Load(); Loc.SetLanguage(Settings.UiLanguage); LayoutCatalog.Synchronize(Settings); BuildConverter();
+        Store.UpdateLimits(Limits(Settings));
+        FailedHotkeys = reply.FailedHotkeys ?? [];
+        PausedUntil = reply.PausedUntil;
+    }
+
+    private int _externalCapture;
+    private IDisposable? _externalClipboardWrite;
+    internal async Task<bool> BeginExternalCaptureAsync()
+    {
+        if (!await _convertGate.WaitAsync(0)) return false;
+        _externalCapture = 1; _capturingScreen = true; LastTransform = null;
+        _recentTyping.Reset(Interlocked.Read(ref _typingVersion)); return true;
+    }
+    internal void BeginExternalClipboardWrite()
+    {
+        if (Volatile.Read(ref _externalCapture) == 0) throw new InvalidOperationException("No active capture lease");
+        var scope = _platform.SuspendCapture();
+        if (Interlocked.CompareExchange(ref _externalClipboardWrite, scope, null) is not null) scope.Dispose();
+    }
+    internal void EndExternalClipboardWrite() => Interlocked.Exchange(ref _externalClipboardWrite, null)?.Dispose();
+    internal void EndExternalCapture()
+    {
+        if (Interlocked.Exchange(ref _externalCapture, 0) == 0) return;
+        try { EndExternalClipboardWrite(); } finally { _capturingScreen = false; _convertGate.Release(); }
     }
 
     public void Dispose()
     {
+        _memory.Dispose();
+        _images.Dispose();
+        if (_remote is not null) { Store.Dispose(); return; }
+        EndExternalCapture();
         _platform.HotkeyPressed -= OnHotkey;
         _platform.KeyTyped -= OnKeyTyped;
         _platform.SetTypingWatch(false);

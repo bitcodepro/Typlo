@@ -16,6 +16,7 @@ public partial class ClipboardWindow : Window
     private readonly ObservableCollection<ClipItemViewModel> _items = [];
     private List<ClipItemViewModel> _all = [];
     private nint _targetWindow;
+    internal nint TargetWindow => _targetWindow;
     private volatile bool _dirty = true;
 
     public ClipboardWindow() : this(null!) { } // designer
@@ -40,7 +41,10 @@ public partial class ClipboardWindow : Window
         };
         PropertyChanged += (_, e) =>
         {
-            if (e.Property == IsVisibleProperty && !IsVisible) _searchCts?.Cancel();
+            if (e.Property == IsVisibleProperty && !IsVisible)
+            {
+                _searchCts?.Cancel(); _items.Clear(); _all.Clear(); _dirty = true;
+            }
         };
     }
 
@@ -69,7 +73,7 @@ public partial class ClipboardWindow : Window
 
     private void Reload()
     {
-        _all = _controller.Store.List().Select(e => new ClipItemViewModel(e)).ToList();
+        _all = _controller.Store.List(includeThumbnails: false).Select(e => new ClipItemViewModel(e, _controller.Store.GetThumbnail)).ToList();
         _dirty = false;
     }
 
@@ -259,12 +263,17 @@ public partial class ClipboardWindow : Window
     }
 
     /// <summary>OCR on the selected image: the text goes to the clipboard and to the top of the history.</summary>
-    private async Task CopyTextFromImageAsync()
+    internal async Task CopyTextFromImageAsync(Func<byte[], CancellationToken, Task<string?>>? recognize = null)
     {
         if (Selected is not { IsImage: true } item || !OcrService.Available) return;
+        using var work = UiOperations.Shared.Begin();
+        if (work is null) return;
         CountText.Text = Loc.T("history.ocrBusy");
         var png = _controller.Store.Get(item.Entry.Id)?.ImagePng;
-        var text = png is null ? null : await Task.Run(() => OcrService.RecognizeAsync(png));
+        string? text;
+        try { text = png is null ? null : await (recognize ?? OcrService.RecognizeAsync)(png, work.Token); }
+        catch (OperationCanceledException) { return; }
+        if (work.Token.IsCancellationRequested) return;
         if (text is null)
         {
             CountText.Text = Loc.T("history.ocrNone");

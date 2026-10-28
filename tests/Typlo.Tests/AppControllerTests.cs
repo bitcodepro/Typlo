@@ -169,8 +169,11 @@ public sealed class AppControllerTests : IDisposable
     public void FiveInstalledLayouts_InitializeOnlyThreeShortcuts()
     {
         var en = KeyboardLayouts.English;
-        var platform = new FakePlatform { Installed = Enumerable.Range(0, 5)
-            .Select(i => new KeyboardLayout("native:" + i, "Language " + i, i, en.Normal, en.Shifted, "lang" + i)).ToArray() };
+        var platform = new FakePlatform
+        {
+            Installed = Enumerable.Range(0, 5)
+            .Select(i => new KeyboardLayout("native:" + i, "Language " + i, i, en.Normal, en.Shifted, "lang" + i)).ToArray()
+        };
         using var controller = new AppController(platform, new AppPaths(Path.Combine(_dir, "five")), new PlainKeyProtector(), diagnostic: true);
         Assert.Equal(5, controller.AvailableLayouts.Count);
         Assert.Equal(5, controller.Settings.Layouts.Count);
@@ -1765,6 +1768,105 @@ public sealed class AppControllerTests : IDisposable
             Type("");
         }
     }
+
+    [Fact]
+    public async Task RemoteHistoryPasteRunsOnlyInResidentController()
+    {
+        var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
+        using var server = RemoteServer(name);
+        var passive = new FakePlatform();
+        using var ui = AppController.CreateRemote(passive, new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name));
+        var id = _controller.Store.Add(ClipContent.FromText("resident paste"))!.Value;
+        await ui.PasteAsync(id, 1);
+        Assert.Equal("resident paste", _platform.Document.Text);
+        Assert.Equal(1, _platform.PasteCount);
+        Assert.Equal(0, passive.PasteCount);
+        Assert.False(passive.TypingWatch);
+    }
+
+    [Fact]
+    public async Task HistoryWithNoTargetCopiesWithoutPastingIntoAnUnrelatedWindow()
+    {
+        var id = _controller.Store.Add(ClipContent.FromText("copy without target"))!.Value;
+        await _controller.PasteAsync(id, 0);
+        Assert.Equal("copy without target", _platform.ClipboardText);
+        Assert.Equal(0, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task ExternalCaptureLeaseDoesNotSuppressUnrelatedClipboardChangesAndReleasesIdempotently()
+    {
+        Assert.True(await _controller.BeginExternalCaptureAsync());
+        Assert.True(_controller.IsCapturingScreen);
+        Assert.Equal(0, _platform.SuspendDepth);
+        Assert.False(await _controller.BeginExternalCaptureAsync());
+        _controller.BeginExternalClipboardWrite();
+        Assert.Equal(1, _platform.SuspendDepth);
+        _controller.EndExternalCapture();
+        _controller.EndExternalCapture();
+        Assert.Equal(0, _platform.SuspendDepth);
+        Assert.False(_controller.IsCapturingScreen);
+        Assert.Throws<InvalidOperationException>(_controller.BeginExternalClipboardWrite);
+        Assert.True(await _controller.BeginExternalCaptureAsync());
+        _controller.EndExternalCapture();
+    }
+
+    [Theory]
+    [InlineData(false, 1)]
+    [InlineData(true, 0)]
+    public async Task RemoteScreenshotCopyUsesResidentPauseState(bool paused, int count)
+    {
+        ImageCodecTests.Initialize();
+        if (paused) _controller.PauseHistory(null);
+        var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
+        using var server = RemoteServer(name);
+        var passive = new FakePlatform { SupportsScreenCapture = true };
+        using var ui = AppController.CreateRemote(passive, new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name));
+        var image = ImageCodec.FromBgra(new byte[16], 2, 2);
+        Assert.True(await ui.CopyScreenshotAsync(image));
+        Assert.Equal(count, _controller.Store.List().Count);
+        Assert.Equal(0, _platform.SuspendDepth);
+        Assert.False(_controller.IsCapturingScreen);
+    }
+
+    [Fact]
+    public async Task RemoteScreenshotWhileResidentIsBusyIsDeclinedWithoutLeakingTheUiGate()
+    {
+        ImageCodecTests.Initialize();
+        var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
+        using var server = RemoteServer(name);
+        using var ui = AppController.CreateRemote(new FakePlatform { SupportsScreenCapture = true }, new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name));
+        Assert.True(await _controller.BeginExternalCaptureAsync());
+        Assert.Null(await ui.CaptureScreenshotAsync(() => Task.FromResult<CapturedPixels?>(new(new byte[16], 2, 2))));
+        _controller.EndExternalCapture();
+        Assert.NotNull(await ui.CaptureScreenshotAsync(() => Task.FromResult<CapturedPixels?>(new(new byte[16], 2, 2))));
+    }
+
+    [Fact]
+    public void RemoteSettingsRefreshesTheUiStoresPayloadLimits()
+    {
+        var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
+        using var server = RemoteServer(name);
+        using var ui = AppController.CreateRemote(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name));
+        var settings = ui.Settings.Clone(); settings.MaxImageMegabytes = 1;
+        ui.ApplySettings(settings);
+        Assert.Null(ui.Store.Add(ClipContent.FromImage(new byte[2 * 1024 * 1024], [1], 1, 1)));
+        Assert.Empty(_controller.Store.List());
+    }
+
+    private RuntimeChannel RemoteServer(string name) => new(name, async request =>
+    {
+        switch (request.Command)
+        {
+            case "settings": _controller.ApplySettings(request.Settings!); break;
+            case "paste": await _controller.PasteAsync(request.Id, (nint)request.Window, request.Text != "copy", request.Flag); break;
+            case "capture-begin": if (!await _controller.BeginExternalCaptureAsync()) return new(false); break;
+            case "capture-end": _controller.EndExternalCapture(); break;
+            case "image-write-begin": _controller.BeginExternalClipboardWrite(); break;
+            case "image-write-end": _controller.EndExternalClipboardWrite(); break;
+        }
+        return new(true, PausedUntil: _controller.PausedUntil);
+    });
 
     private sealed class FakePlatform : IPlatform
     {
