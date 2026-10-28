@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using static Typlo.App.Platform.Windows.Native;
 
@@ -19,34 +20,38 @@ internal sealed class NativeEditSnapshot : DirectTextSnapshot
         ReplaceSel = 0x00c2, GetTextMode = 0x0400 + 90;
     private readonly Identity _identity;
     private readonly Func<uint, bool> _excluded;
+    private readonly Action<NativeEditDiagnostic>? _diagnostic;
 
-    private NativeEditSnapshot(Identity identity, string text, int start, int end, Func<uint, bool> excluded)
-        : base(identity.Window, identity.Element, text, start, end) => (_identity, _excluded) = (identity, excluded);
+    private NativeEditSnapshot(Identity identity, string text, int start, int end, Func<uint, bool> excluded,
+        Action<NativeEditDiagnostic>? diagnostic)
+        : base(identity.Window, identity.Element, text, start, end) => (_identity, _excluded, _diagnostic) = (identity, excluded, diagnostic);
 
-    internal static DirectTextCapture Capture(nint window, nint element, Func<bool> valid, Func<uint, bool> excluded)
+    internal static DirectTextCapture Capture(nint window, nint element, Func<bool> valid, Func<uint, bool> excluded,
+        Action<NativeEditDiagnostic>? diagnostic = null)
     {
-        if (!valid()) return DirectTextCapture.Cancelled;
+        if (!valid()) { diagnostic?.Invoke(new("capture", "caller-cancelled", 0)); return DirectTextCapture.Cancelled; }
         var identity = Identify(window, element, excluded);
-        if (identity is null) return DirectTextCapture.Unsupported;
-        var deadline = new Deadline();
+        if (identity is null) { diagnostic?.Invoke(new("capture", "unsupported-identity", 0)); return DirectTextCapture.Unsupported; }
+        var deadline = new Deadline(diagnostic);
         if (!deadline.Send(element, GetLength, 0, 0, out var size)) return DirectTextCapture.Cancelled;
-        if (size > MaxText) return DirectTextCapture.Unsupported;
+        if (size > MaxText) { deadline.Record("capture", "document-too-large"); return DirectTextCapture.Unsupported; }
         if (identity.Rich)
         {
             // Scalar-only message above WM_USER: no remote pointer. Rich formatting is not flattened.
             if (!deadline.Send(element, GetTextMode, 0, 0, out var mode)) return DirectTextCapture.Cancelled;
-            if ((mode & 1) == 0) return DirectTextCapture.Unsupported;
+            if ((mode & 1) == 0) { deadline.Record("capture", "rich-mode"); return DirectTextCapture.Unsupported; }
         }
         var state = Read(identity, excluded, valid, deadline);
         if (state is null) return DirectTextCapture.Cancelled;
         // RichEdit uses internal CR offsets whereas WM_GETTEXT can return CRLF. Until an adapter
         // explicitly maps them, decline multiline content rather than selecting the wrong characters.
-        if (identity.Rich && state.Text.IndexOfAny(['\r', '\n']) >= 0) return DirectTextCapture.Unsupported;
+        if (identity.Rich && state.Text.IndexOfAny(['\r', '\n']) >= 0) { deadline.Record("capture", "rich-multiline"); return DirectTextCapture.Unsupported; }
+        deadline.Record("capture", "ready");
         return new(DirectCaptureStatus.Ready, state);
     }
 
     public override Task<DirectTextSnapshot?> RefreshAsync(Func<bool> stillValid)
-        => Task.Run<DirectTextSnapshot?>(() => Read(_identity, _excluded, stillValid, new Deadline()));
+        => Task.Run<DirectTextSnapshot?>(() => Read(_identity, _excluded, stillValid, new Deadline(_diagnostic)));
 
     public override Task<DirectTextEditResult> ReplaceAsync(int start, int length, string replacement, Func<bool> stillValid)
         => Task.Run(() => Replace(start, length, replacement, stillValid));
@@ -56,7 +61,7 @@ internal sealed class NativeEditSnapshot : DirectTextSnapshot
         if (start < 0 || length < 0 || start > Text.Length - length || replacement.Contains('\0') ||
             Text.Length - length + replacement.Length > MaxText || !Boundary(Text, start) || !Boundary(Text, start + length) ||
             (_identity.Rich && replacement.IndexOfAny(['\r', '\n']) >= 0)) return new(DirectEditStatus.Unsupported);
-        var deadline = new Deadline();
+        var deadline = new Deadline(_diagnostic);
         var current = Read(_identity, _excluded, valid, deadline);
         if (current is null || !SameContext(current) || !valid()) return new(DirectEditStatus.Cancelled);
         // After the first mutating message, all failures are indeterminate; never keyboard-fallback.
@@ -78,19 +83,29 @@ internal sealed class NativeEditSnapshot : DirectTextSnapshot
 
     private static unsafe NativeEditSnapshot? Read(Identity identity, Func<uint, bool> excluded, Func<bool> valid, Deadline deadline)
     {
-        if (!valid() || Identify(identity.Window, identity.Element, excluded) != identity) return null;
-        if (identity.Rich && (!deadline.Send(identity.Element, GetTextMode, 0, 0, out var mode) || (mode & 1) == 0)) return null;
-        if (!deadline.Send(identity.Element, GetLength, 0, 0, out var length) || length > MaxText) return null;
+        if (!valid()) { deadline.Record("read", "caller-cancelled"); return null; }
+        if (Identify(identity.Window, identity.Element, excluded) != identity) { deadline.Record("read", "identity-changed"); return null; }
+        if (identity.Rich)
+        {
+            if (!deadline.Send(identity.Element, GetTextMode, 0, 0, out var mode)) return null;
+            if ((mode & 1) == 0) { deadline.Record("read", "rich-mode"); return null; }
+        }
+        if (!deadline.Send(identity.Element, GetLength, 0, 0, out var length)) return null;
+        if (length > MaxText) { deadline.Record("read", "document-too-large"); return null; }
         var buffer = new char[(int)length + 1];
         nuint copied;
         fixed (char* chars = buffer)
             if (!deadline.Send(identity.Element, GetText, (nuint)buffer.Length, (nint)chars, out copied)) return null;
-        if (copied != length || !deadline.Send(identity.Element, GetSel, 0, 0, out var selection) ||
-            !deadline.Send(identity.Element, GetLength, 0, 0, out var afterLength) || afterLength != length) return null;
+        if (copied != length) { deadline.Record("read", "text-length-mismatch"); return null; }
+        if (!deadline.Send(identity.Element, GetSel, 0, 0, out var selection) ||
+            !deadline.Send(identity.Element, GetLength, 0, 0, out var afterLength)) return null;
+        if (afterLength != length) { deadline.Record("read", "length-changed"); return null; }
         var start = (int)(selection & 0xffff);
         var end = (int)((selection >> 16) & 0xffff);
-        if (start > end || end > (int)length || !valid() || Identify(identity.Window, identity.Element, excluded) != identity) return null;
-        return new(identity, new string(buffer, 0, (int)copied), start, end, excluded);
+        if (start > end || end > (int)length) { deadline.Record("read", "invalid-selection"); return null; }
+        if (!valid()) { deadline.Record("read", "caller-cancelled"); return null; }
+        if (Identify(identity.Window, identity.Element, excluded) != identity) { deadline.Record("read", "identity-changed"); return null; }
+        return new(identity, new string(buffer, 0, (int)copied), start, end, excluded, deadline.Diagnostic);
     }
 
     private sealed record Identity(nint Window, nint Element, uint RootThread, uint RootPid, uint Thread, uint Pid, string Class, bool Rich);
@@ -113,15 +128,30 @@ internal sealed class NativeEditSnapshot : DirectTextSnapshot
         return edit || rich ? new(window, element, rootThread, rootPid, thread, pid, cls, rich) : null;
     }
 
-    private sealed class Deadline
+    private sealed class Deadline(Action<NativeEditDiagnostic>? diagnostic)
     {
+        internal Action<NativeEditDiagnostic>? Diagnostic => diagnostic;
         private readonly long _start = Stopwatch.GetTimestamp();
+        internal void Record(string operation, string outcome) =>
+            diagnostic?.Invoke(new(operation, outcome, Stopwatch.GetElapsedTime(_start).TotalMilliseconds));
         internal bool Send(nint window, uint message, nuint wParam, nint lParam, out nuint result)
         {
             result = 0;
             var remaining = 250 - (int)Stopwatch.GetElapsedTime(_start).TotalMilliseconds;
-            return remaining > 0 && SendMessageTimeoutW(window, message, wParam, lParam, 0x1 | 0x2 | 0x20,
+            if (remaining <= 0)
+            {
+                diagnostic?.Invoke(new("send", "budget-exhausted", Stopwatch.GetElapsedTime(_start).TotalMilliseconds, Message: message));
+                return false;
+            }
+            var start = diagnostic is null ? 0 : Stopwatch.GetTimestamp();
+            var sent = SendMessageTimeoutW(window, message, wParam, lParam, 0x1 | 0x2 | 0x20,
                 (uint)Math.Min(40, remaining), out result) != 0;
+            var error = sent ? 0 : Marshal.GetLastPInvokeError();
+            // Only documented scalar read results; write-message return values are unspecified.
+            var diagnosticResult = message is GetLength or GetText or GetSel or GetTextMode ? result : 0;
+            diagnostic?.Invoke(new("send", sent ? "ok" : "failed", Stopwatch.GetElapsedTime(_start).TotalMilliseconds,
+                Stopwatch.GetElapsedTime(start).TotalMilliseconds, message, diagnosticResult, error));
+            return sent;
         }
     }
 }

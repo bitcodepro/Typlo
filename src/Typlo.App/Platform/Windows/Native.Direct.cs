@@ -23,7 +23,7 @@ internal static partial class Native
     internal static partial bool IsWindowEnabled(nint window);
     [LibraryImport("user32.dll", EntryPoint = "GetWindowLongW")]
     internal static partial int GetWindowStyle(nint window, int index);
-    [LibraryImport("user32.dll")]
+    [LibraryImport("user32.dll", SetLastError = true)]
     internal static partial nint SendMessageTimeoutW(nint window, uint message, nuint wParam, nint lParam,
         uint flags, uint timeout, out nuint result);
 }

@@ -18,7 +18,11 @@ public sealed partial class WinPlatform
     }
 
     public Task<DirectTextCapture> CaptureDirectTextAsync(nint window, nint element, Func<bool> stillValid)
+        => CaptureDirectTextAsync(window, element, stillValid, diagnostic: null);
+
+    internal Task<DirectTextCapture> CaptureDirectTextAsync(nint window, nint element, Func<bool> stillValid,
+        Action<NativeEditDiagnostic>? diagnostic)
         => !SupportsDirectTextEditing ? Task.FromResult(DirectTextCapture.Unsupported) :
             Task.Run(() => NativeEditSnapshot.Capture(window, element, stillValid,
-                pid => Volatile.Read(ref _disposed) || IsOwnProcess(pid)));
+                pid => Volatile.Read(ref _disposed) || IsOwnProcess(pid), diagnostic));
 }
