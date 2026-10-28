@@ -101,6 +101,14 @@ public sealed class AppController : IDisposable
         catch (Exception e) { Log.Error("System keyboard layout discovery failed", e); }
     }
 
+    /// <summary>Text fixtures can exercise both directions without installing input sources on the test machine.</summary>
+    internal void ConfigureDiagnosticLayouts(IEnumerable<KeyboardLayout> layouts)
+    {
+        if (!_diagnostic) throw new InvalidOperationException("Diagnostic layouts are disabled");
+        LayoutCatalog = new(layouts);
+        BuildConverter();
+    }
+
     public void RefreshKeyboardLayouts()
     {
         if (_remote is not null)

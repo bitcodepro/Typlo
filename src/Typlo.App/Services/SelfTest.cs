@@ -53,6 +53,11 @@ internal static class SelfTest
         try
         {
             controller = new AppController(platform, new AppPaths(dir), PlatformFactory.CreateKeyProtector(diagnostic: true), diagnostic: true);
+            // CI commonly has only English installed. The RU/EN text fixtures need both maps,
+            // but must not change the user's configured/system-active input sources.
+            var nativeLayouts = controller.AvailableLayouts;
+            controller.ConfigureDiagnosticLayouts(nativeLayouts.Concat(new[] { KeyboardLayouts.English, KeyboardLayouts.Russian }
+                .Where(fixture => !nativeLayouts.Any(l => l.SupportsConversion && l.LanguageCode == fixture.LanguageCode))));
             controller.ApplySettings(Tweak(controller.Settings));
 
             await Check("every interface language has every string with the same placeholders", () =>
@@ -93,7 +98,7 @@ internal static class SelfTest
 
             await Check("system layouts provide native identities and physical-key maps", () =>
             {
-                var installed = controller.AvailableLayouts;
+                var installed = platform.GetKeyboardLayouts();
                 return Task.FromResult<string?>(installed.Count == 0 ? "no installed layouts discovered" :
                     installed.Any(l => l.Normal.Length != KeyboardLayouts.English.Normal.Length) ? "physical key counts differ" : null);
             });
