@@ -39,7 +39,7 @@ internal sealed class BackgroundHost : IDisposable
         _tray = new BackgroundTray(Menu, () => ShowUi(["--settings"]), () => _platform.TrayTargetWindow);
         _updates.Changed += () => _tray.SetTip(_updates.Available is { } update ? Loc.T("update.tooltip", "v" + update.Version) : "Typlo");
         _updateProbe = diagnostic ? Task.CompletedTask : UpdateProbe.RunAsync(_updates, paths.DataDir, _stop.Token);
-        _controller.ShowHistoryRequested += window => ShowUi(["--history", "--target", ((long)window).ToString(CultureInfo.InvariantCulture)]);
+        _controller.ShowHistoryRequested += _ => ShowUi(["--history", "--target", ((long)_platform.TrayTargetWindow).ToString(CultureInfo.InvariantCulture)]);
         _controller.ScreenshotRequested += destination => ShowUi(destination == Core.Imaging.CaptureDestination.File ? ["--capture", _controller.Settings.ScreenshotShape == Core.Imaging.CaptureShape.Freehand ? "freehand" : "rectangle", "--save"] : ["--capture", _controller.Settings.ScreenshotShape == Core.Imaging.CaptureShape.Freehand ? "freehand" : "rectangle"]);
         _commands = new IpcServer(Command, diagnostic ? _runtime.Name + ".commands" : null);
         Log.Info($"Background runtime v{UpdateService.CurrentVersion}, PID {Environment.ProcessId}");
@@ -101,6 +101,10 @@ internal sealed class BackgroundHost : IDisposable
     {
         switch (command.Command)
         {
+            case "history-target-fixture" when _diagnostic:
+                var target = _platform.TrayTargetWindow;
+                Menu()[0].Click!(target);
+                return new(true, Window: (long)target);
             case "image-fixture" when _diagnostic:
                 var crypto = ClipCrypto.LoadOrCreate(_paths.KeyFile, PlatformFactory.CreateKeyProtector(diagnostic: true));
                 var fixture = Path.Combine(_paths.DataDir, "fixture.image");
@@ -157,7 +161,7 @@ internal sealed class BackgroundHost : IDisposable
             var target = i + 1 < args.Length ? args[i + 1] : "toggle"; var layout = _controller.FindLayout(target);
             if (target == "toggle" || layout is not null) _ = _controller.ConvertSelectionAsync(layout); return;
         }
-        if (args.Contains("--history") && !args.Contains("--target")) args = [.. args, "--target", ((long)_platform.ForegroundWindow).ToString(CultureInfo.InvariantCulture)];
+        if (args.Contains("--history") && !args.Contains("--target")) args = [.. args, "--target", ((long)_platform.TrayTargetWindow).ToString(CultureInfo.InvariantCulture)];
         ShowUi(args.Length == 0 ? ["--settings"] : args);
     }
     private async Task InstallUpdateAsync()
@@ -194,20 +198,22 @@ internal sealed class BackgroundHost : IDisposable
                 if (string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath), "dotnet", StringComparison.OrdinalIgnoreCase))
                     start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Typlo.dll"));
                 foreach (var arg in new[] { "--ui", "--runtime-channel", _runtime.Name, "--ui-pipe", _uiPipe, "--profile", _paths.DataDir, "--parent-pid", Environment.ProcessId.ToString(CultureInfo.InvariantCulture) }) start.ArgumentList.Add(arg);
+                if (_diagnostic) start.ArgumentList.Add("--diagnostic-ui");
                 foreach (var arg in args) start.ArgumentList.Add(arg);
                 var child = Process.Start(start) ?? throw new IOException("Cannot start UI"); _ui = child;
+                _platform.UiProcessId = child.Id;
                 child.EnableRaisingEvents = true;
                 child.Exited += (_, _) =>
                 {
                     lock (_uiLock)
                     {
                         if (!ReferenceEquals(_ui, child)) return;
-                        _ui = null; _controller.EndExternalCapture();
+                        _ui = null; _platform.UiProcessId = 0; _controller.EndExternalCapture();
                         if (!_stopping) _controller.RegisterHotkeys();
                         child.Dispose();
                     }
                 };
-                if (child.HasExited) { _ui = null; _controller.EndExternalCapture(); _controller.RegisterHotkeys(); child.Dispose(); }
+                if (child.HasExited) { _ui = null; _platform.UiProcessId = 0; _controller.EndExternalCapture(); _controller.RegisterHotkeys(); child.Dispose(); }
             }
         }
         catch (Exception e) { Log.Error("Cannot open UI", e); }

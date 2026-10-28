@@ -4,86 +4,88 @@ using Typlo.App.Platform.Shared;
 
 namespace Typlo.App.Services;
 
-/// <summary>
-/// Reads text from an image, offline: the built-in Windows OCR (Windows.Media.Ocr, through Windows PowerShell's
-/// WinRT bridge, in the languages installed in Windows) or <c>tesseract</c> on Linux when it is installed.
-/// </summary>
+/// <summary>Offline OCR using Windows OCR or an installed Linux tesseract. Images stay in memory.</summary>
 public static class OcrService
 {
     public static bool Available =>
         OperatingSystem.IsWindows() || (OperatingSystem.IsLinux() && Proc.Has("tesseract"));
 
-    /// <summary>Recognized text (lines separated by newlines), or null if nothing was found or OCR failed.</summary>
-    public static async Task<string?> RecognizeAsync(byte[] png)
+    public static async Task<string?> RecognizeAsync(byte[] png, CancellationToken cancellationToken = default)
     {
-        var file = Path.Combine(Path.GetTempPath(), "typlo-ocr-" + Guid.NewGuid().ToString("N") + ".png");
-        await File.WriteAllBytesAsync(file, png);
         try
         {
-            var text = OperatingSystem.IsWindows() ? await WindowsAsync(file) : OperatingSystem.IsLinux() ? Tesseract(file) : null;
+            cancellationToken.ThrowIfCancellationRequested();
+            string? text = null;
+            if (OperatingSystem.IsWindows())
+                text = await RunAsync(new("powershell.exe")
+                {
+                    ArgumentList = { "-NoProfile", "-NonInteractive", "-Command", WindowsScript },
+                }, png, cancellationToken).ConfigureAwait(false);
+            else if (OperatingSystem.IsLinux())
+            {
+                var installed = await RunAsync(new("tesseract") { ArgumentList = { "--list-langs" } }, [], cancellationToken).ConfigureAwait(false) ?? "";
+                var langs = string.Join('+', new[] { "eng", "rus", "ukr" }.Where(l => installed.Split('\n').Any(s => s.Trim() == l)));
+                var start = new ProcessStartInfo("tesseract") { ArgumentList = { "stdin", "stdout" } };
+                if (langs.Length > 0) { start.ArgumentList.Add("-l"); start.ArgumentList.Add(langs); }
+                text = await RunAsync(start, png, cancellationToken).ConfigureAwait(false);
+            }
             text = text?.Replace("\r\n", "\n").Trim();
             return string.IsNullOrEmpty(text) ? null : text;
         }
-        catch (Exception e)
-        {
-            Log.Error("OCR failed", e);
-            return null;
-        }
-        finally
-        {
-            try { File.Delete(file); } catch (IOException) { }
-        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception e) { Log.Error("OCR failed", e); return null; }
     }
 
     private const string WindowsScript = """
         $ErrorActionPreference = 'Stop'
         [Console]::OutputEncoding = [Text.Encoding]::UTF8
         Add-Type -AssemblyName System.Runtime.WindowsRuntime
-        $null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
         $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
         $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType = WindowsRuntime]
         $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
             $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
         function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(); $t.Result }
-        $file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($env:TYPLO_OCR_FILE)) ([Windows.Storage.StorageFile])
-        $stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
-        $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
-        $bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
-        $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
-        if ($null -eq $engine) { exit 2 }
-        $result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-        $result.Lines | ForEach-Object { $_.Text }
-        $stream.Dispose()
+        $memory = [IO.MemoryStream]::new()
+        [Console]::OpenStandardInput().CopyTo($memory)
+        $memory.Position = 0
+        $stream = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($memory)
+        try {
+            $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+            $bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+            try {
+                $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+                if ($null -eq $engine) { exit 2 }
+                $result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+                $result.Lines | ForEach-Object { $_.Text }
+            } finally { if ($null -ne $bitmap) { $bitmap.Dispose() } }
+        } finally { $stream.Dispose(); $memory.Dispose() }
         """;
 
-    private static async Task<string?> WindowsAsync(string file)
+    // One timeout covers stdin, recognition and output. Cancellation kills and reaps the owned helper
+    // before releasing the UI lease; no plaintext image is ever written to a temporary file.
+    internal static async Task<string?> RunAsync(ProcessStartInfo start, byte[] input, CancellationToken stop)
     {
-        var psi = new ProcessStartInfo("powershell.exe")
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        start.UseShellExecute = false;
+        start.CreateNoWindow = true;
+        start.RedirectStandardInput = start.RedirectStandardOutput = start.RedirectStandardError = true;
+        start.StandardOutputEncoding = Encoding.UTF8;
+        using var process = Process.Start(start) ?? throw new IOException("Cannot start OCR helper");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        try
         {
-            ArgumentList = { "-NoProfile", "-NonInteractive", "-Command", WindowsScript },
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            CreateNoWindow = true,
-        };
-        psi.Environment["TYPLO_OCR_FILE"] = file; // never interpolate paths into the script
-        using var p = Process.Start(psi)!;
-        var output = p.StandardOutput.ReadToEndAsync();
-        var error = p.StandardError.ReadToEndAsync();
-        if (!p.WaitForExit(30_000)) { p.Kill(true); return null; }
-        await p.WaitForExitAsync();
-        if (p.ExitCode != 0) Log.Error($"Windows OCR exit {p.ExitCode}: {(await error).Split('\n').FirstOrDefault()}");
-        return p.ExitCode == 0 ? await output : null;
-    }
-
-    private static string? Tesseract(string file)
-    {
-        // Use the languages Typlo works with when their data is installed.
-        var installed = Proc.Run("tesseract", ["--list-langs"]).Text;
-        var langs = string.Join('+', new[] { "eng", "rus", "ukr" }.Where(l => installed.Contains(l)));
-        var args = new List<string> { file, "-" };
-        if (langs.Length > 0) args.AddRange(["-l", langs]);
-        var r = Proc.Run("tesseract", args, timeoutMs: 30_000);
-        return r.Ok ? r.Text : null;
+            await process.StandardInput.BaseStream.WriteAsync(input, timeout.Token).ConfigureAwait(false);
+            process.StandardInput.Close();
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            if (process.ExitCode != 0) Log.Error($"OCR exit {process.ExitCode}: {(await error.ConfigureAwait(false)).Split('\n').FirstOrDefault()}");
+            return process.ExitCode == 0 ? await output.ConfigureAwait(false) : null;
+        }
+        finally
+        {
+            if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync().ConfigureAwait(false); }
+            await Task.WhenAll(output, error).ConfigureAwait(false);
+        }
     }
 }

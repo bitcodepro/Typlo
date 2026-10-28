@@ -42,10 +42,14 @@ public sealed class WinPlatform : IPlatform
     private readonly bool _passive;
     private readonly bool _monitorClipboard;
     private nint _lastNonShellWindow;
+    private uint _lastNonShellPid;
+    private int _uiProcessId;
+    internal int UiProcessId { set => Invoke(() => { _uiProcessId = value; }); }
     internal nint TrayTargetWindow => Invoke(() =>
     {
         TrackTrayTarget(GetForegroundWindow());
-        return IsWindow(_lastNonShellWindow) ? _lastNonShellWindow : 0;
+        GetWindowThreadProcessId(_lastNonShellWindow, out var pid);
+        return IsWindow(_lastNonShellWindow) && pid == _lastNonShellPid && !IsOwnProcess(pid) ? _lastNonShellWindow : 0;
     });
     internal Func<int, Hotkey, bool>? HotkeyProbe { get; set; }
     internal Action? ClearProbes { get; set; }
@@ -193,11 +197,13 @@ public sealed class WinPlatform : IPlatform
         TrackTrayTarget(window);
     }
 
+    private bool IsOwnProcess(uint pid) => pid == Environment.ProcessId || pid == _uiProcessId;
+
     private unsafe void TrackTrayTarget(nint window)
     {
         if (window == 0) return;
         GetWindowThreadProcessId(window, out var pid);
-        if (pid == 0 || pid == Environment.ProcessId) return;
+        if (pid == 0 || IsOwnProcess(pid)) return;
         Span<char> name = stackalloc char[128];
         fixed (char* pointer = name)
         {
@@ -209,6 +215,7 @@ public sealed class WinPlatform : IPlatform
                 value.SequenceEqual("Progman".AsSpan()) || value.SequenceEqual("WorkerW".AsSpan())) return;
         }
         _lastNonShellWindow = window;
+        _lastNonShellPid = pid;
     }
 
     public long? ForegroundChangeVersion => Invoke<long?>(() =>

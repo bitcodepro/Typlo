@@ -14,6 +14,56 @@ namespace Typlo.WindowsIntegration;
 
 internal static class BackgroundRuntimeCheck
 {
+    private sealed class TargetEditor : IDisposable
+    {
+        private readonly Thread _thread;
+        private readonly TaskCompletionSource<(Form, nint)> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Form _form;
+        internal nint Handle { get; }
+        internal TargetEditor()
+        {
+            _thread = new Thread(() =>
+            {
+                var form = new Form { Text = "Typlo isolated target editor", Width = 400, Height = 160 };
+                form.Controls.Add(new TextBox { Dock = DockStyle.Fill, Multiline = true });
+                form.Shown += (_, _) => _ready.SetResult((form, form.Handle));
+                Application.Run(form); form.Dispose();
+            });
+            _thread.SetApartmentState(ApartmentState.STA); _thread.Start();
+            (_form, Handle) = _ready.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+        }
+        public void Dispose() { _form.BeginInvoke(() => _form.Close()); _thread.Join(TimeSpan.FromSeconds(5)); }
+    }
+
+    private static async Task CheckOcrAsync()
+    {
+        using var image = new System.Drawing.Bitmap(800, 180);
+        using (var graphics = System.Drawing.Graphics.FromImage(image))
+        using (var font = new System.Drawing.Font("Arial", 48))
+        { graphics.Clear(System.Drawing.Color.White); graphics.DrawString("HELLO TYPLO", font, System.Drawing.Brushes.Black, 20, 30); }
+        using var stream = new MemoryStream(); image.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
+        var text = await OcrService.RecognizeAsync(stream.ToArray());
+        if (text is null || !text.Contains("HELLO", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Windows in-memory OCR failed: " + text);
+
+        var pidFile = Path.Combine(Path.GetTempPath(), "typlo-ocr-helper-" + Guid.NewGuid().ToString("N") + ".pid");
+        using var cancel = new CancellationTokenSource();
+        var start = new ProcessStartInfo("powershell.exe") { ArgumentList = { "-NoProfile", "-NonInteractive", "-Command",
+            "[IO.File]::WriteAllText($env:TYPLO_TEST_PID, [string]$PID); Start-Sleep -Seconds 60" } };
+        start.Environment["TYPLO_TEST_PID"] = pidFile;
+        try
+        {
+            var pending = OcrService.RunAsync(start, [], cancel.Token);
+            var timer = Stopwatch.StartNew();
+            while (!File.Exists(pidFile)) { if (timer.Elapsed.TotalSeconds > 10) throw new TimeoutException("OCR helper startup"); await Task.Delay(20); }
+            using var process = Process.GetProcessById(int.Parse(File.ReadAllText(pidFile)));
+            cancel.Cancel();
+            try { await pending; throw new InvalidOperationException("OCR cancellation ignored"); }
+            catch (OperationCanceledException) { }
+            if (!process.HasExited) throw new InvalidOperationException("OCR helper outlived cancellation");
+        }
+        finally { cancel.Cancel(); File.Delete(pidFile); }
+    }
+
     internal static async Task<int> RunAsync(string executable, string output)
     {
         output = Path.GetFullPath(output); Directory.CreateDirectory(output);
@@ -26,6 +76,8 @@ internal static class BackgroundRuntimeCheck
         });
         var report = Path.Combine(output, "host-" + Guid.NewGuid().ToString("N") + ".txt");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(executable))!, WindowStyle = ProcessWindowStyle.Hidden };
+        var ocrTemp = Path.Combine(paths.DataDir, "ocr-temp"); Directory.CreateDirectory(ocrTemp);
+        start.Environment["TEMP"] = start.Environment["TMP"] = ocrTemp;
         using var feed = new TcpListener(IPAddress.Loopback, 0);
         feed.Start();
         start.Environment["TYPLO_UPDATE_FEED"] = $"http://127.0.0.1:{((IPEndPoint)feed.LocalEndpoint).Port}/latest";
@@ -98,6 +150,49 @@ internal static class BackgroundRuntimeCheck
             Sample("after-image");
             await Task.Delay(3000); Sample("image-idle");
 
+            // History hides on Escape/deactivation. Delayed local OCR must outlive the idle timeout.
+            Check(IpcServer.Send(["--history"], info["commands"]), "History command accepted");
+            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId > 0, "history UI launched");
+            child = Process.GetProcessById((await runtime.CallAsync(new("state"))).UiProcessId);
+            await ui.CallAsync(new("ui", Args: ["--ocr-fixture"]));
+            await Until(() => File.Exists(Path.Combine(paths.DataDir, "ocr-started")), "delayed OCR starts");
+            await ui.CallAsync(new("ui", Args: ["--dismiss"]));
+            await Task.Delay(1500);
+            Check(!child.HasExited, "Hidden history keeps UI alive during delayed OCR");
+            await Until(() => File.Exists(Path.Combine(paths.DataDir, "ocr-completed")), "hidden OCR completes");
+            await Until(() => child.HasExited, "UI exits after OCR cleanup");
+            child.Dispose(); child = null;
+            Check(!Directory.EnumerateFiles(ocrTemp, "typlo-ocr-*.png").Any(), "Delayed OCR leaves no plaintext temporary image");
+            File.Delete(Path.Combine(paths.DataDir, "ocr-started"));
+            File.Delete(Path.Combine(paths.DataDir, "ocr-completed"));
+            Check(IpcServer.Send(["--history"], info["commands"]), "Cancellation history command accepted");
+            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId > 0, "cancellation UI launched");
+            child = Process.GetProcessById((await runtime.CallAsync(new("state"))).UiProcessId);
+            await ui.CallAsync(new("ui", Args: ["--ocr-fixture"]));
+            await Until(() => File.Exists(Path.Combine(paths.DataDir, "ocr-started")), "cancelable OCR starts");
+            await ui.CallAsync(new("ui", Args: ["--shutdown"]));
+            await Until(() => child.HasExited, "shutdown awaits OCR cancellation and cleanup");
+            Check(File.Exists(Path.Combine(paths.DataDir, "ocr-canceled")) && File.Exists(Path.Combine(paths.DataDir, "ocr-completed")), "Explicit UI shutdown cancels and drains OCR before exit");
+            Check(!Directory.EnumerateFiles(ocrTemp, "typlo-ocr-*.png").Any(), "Canceled OCR leaves no plaintext temporary image");
+            child.Dispose(); child = null;
+
+            // A separate editor process is unnecessary: this harness is external to the resident.
+            using (var editor = new TargetEditor())
+            {
+                platform.ActivateWindow(editor.Handle);
+                await Until(() => platform.ForegroundWindow == editor.Handle, "external editor foreground");
+                await OpenSettings();
+                await Until(() => { var w = platform.ForegroundWindow; Native.GetWindowThreadProcessId(w, out var pid); return pid == child!.Id; }, "UI child foreground");
+                var target = await runtime.CallAsync(new("history-target-fixture"));
+                Check(target.Window == (long)editor.Handle, "Tray history remembers external editor while Settings is foreground");
+                await UntilAsync(async () => (await ui.CallAsync(new("history-target-fixture"))).Window == (long)editor.Handle, "history receives external editor target");
+                await ui.CallAsync(new("ui", Args: ["--dismiss"]));
+                await Until(() => child!.HasExited, "target-check UI exits");
+                child!.Dispose(); child = null;
+            }
+
+            await CheckOcrAsync();
+            Check(true, "Windows OCR reads PNG from memory; cancellation reaps the helper");
             var feedTask = ServeFeedAsync();
             await runtime.CallAsync(new("update-fixture"));
             await feedTask;

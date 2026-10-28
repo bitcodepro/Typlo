@@ -16,6 +16,7 @@ public partial class ClipboardWindow : Window
     private readonly ObservableCollection<ClipItemViewModel> _items = [];
     private List<ClipItemViewModel> _all = [];
     private nint _targetWindow;
+    internal nint TargetWindow => _targetWindow;
     private volatile bool _dirty = true;
 
     public ClipboardWindow() : this(null!) { } // designer
@@ -262,12 +263,17 @@ public partial class ClipboardWindow : Window
     }
 
     /// <summary>OCR on the selected image: the text goes to the clipboard and to the top of the history.</summary>
-    private async Task CopyTextFromImageAsync()
+    internal async Task CopyTextFromImageAsync(Func<byte[], CancellationToken, Task<string?>>? recognize = null)
     {
         if (Selected is not { IsImage: true } item || !OcrService.Available) return;
+        using var work = UiOperations.Shared.Begin();
+        if (work is null) return;
         CountText.Text = Loc.T("history.ocrBusy");
         var png = _controller.Store.Get(item.Entry.Id)?.ImagePng;
-        var text = png is null ? null : await Task.Run(() => OcrService.RecognizeAsync(png));
+        string? text;
+        try { text = png is null ? null : await (recognize ?? OcrService.RecognizeAsync)(png, work.Token); }
+        catch (OperationCanceledException) { return; }
+        if (work.Token.IsCancellationRequested) return;
         if (text is null)
         {
             CountText.Text = Loc.T("history.ocrNone");
