@@ -13,6 +13,20 @@ public sealed partial class AppControllerTests
             : DirectTextCapture.Cancelled);
     }
 
+    [Fact]
+    public async Task ClosedOrUnsupportedPriorFieldDoesNotStealNewWindowsExplicitSelection()
+    {
+        EnableDirect();
+        _platform.Type("ghb");
+        _platform.RetainDirectTarget = (window, _) => window != 1;
+        _platform.Window = 2;
+        _platform.Document.Type("ghb");
+        _platform.Document.SelectAll();
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("ghb", _platform.DocumentFor(1).Text);
+        Assert.Equal("при", _platform.DocumentFor(2).Text);
+    }
+
     private sealed class FakeDirect : DirectTextSnapshot
     {
         private readonly FakePlatform _platform;

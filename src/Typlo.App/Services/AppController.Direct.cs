@@ -17,12 +17,14 @@ public sealed partial class AppController
         var run = _recentTyping.Capture(_recentTyping.Window);
         if (run is { Element: not 0 })
         {
-            if (run.Window != window) { window = run.Window; return run.Element; }
-            if (run.Element != element) _recentTyping.Consume(Interlocked.Read(ref _typingVersion));
+            if (run.Window != window && _platform.CanRetainDirectInputTarget(run.Window, run.Element))
+            { window = run.Window; return run.Element; }
+            if (run.Window != window || run.Element != element) _recentTyping.Consume(Interlocked.Read(ref _typingVersion));
         }
         if (_lastTransform is { Direct: { } direct } last)
         {
             if (last.DirectVersion != Interlocked.Read(ref _typingVersion)) { LastTransform = null; return element; }
+            if (!_platform.CanRetainDirectInputTarget(last.Window, direct.Element)) { LastTransform = null; return element; }
             if (window != last.Window) { window = last.Window; return direct.Element; }
             if (element != direct.Element) LastTransform = null;
         }

@@ -4,7 +4,9 @@ Layout conversion, case conversion and transliteration ask `IPlatform.CaptureDir
 bound control before copying anything. A `DirectTextSnapshot` contains the root window, field,
 bounded document text and selection offsets. Recent physical input also carries field identity,
 so two fields in one window cannot share a typing run. A retained run or verified last replacement
-can identify the editor when a notification has already become foreground; actual user input
+can identify the editor when a notification has already become foreground, provided the platform
+still recognizes it as a live eligible target. Unsupported or closed prior fields cannot redirect
+a command away from the current window's explicit selection. Actual user input
 invalidates it. There is no search for a caret in unrelated background windows.
 
 ## Capability and commit results

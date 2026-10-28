@@ -33,6 +33,8 @@ public interface IPlatform : IDisposable
     string Name { get; }
     bool SupportsDirectTextEditing => false;
     nint FocusedInputElement => 0;
+    /// <summary>Cheap liveness/eligibility check before retaining recent input in a background field.</summary>
+    bool CanRetainDirectInputTarget(nint window, nint element) => false;
     Task<DirectTextCapture> CaptureDirectTextAsync(nint window, nint element, Func<bool> stillValid)
         => Task.FromResult(DirectTextCapture.Unsupported);
     bool SupportsScreenCapture => false;

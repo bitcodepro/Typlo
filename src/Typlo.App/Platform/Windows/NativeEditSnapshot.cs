@@ -13,6 +13,8 @@ namespace Typlo.App.Platform.Windows;
 internal sealed class NativeEditSnapshot : DirectTextSnapshot
 {
     internal const int MaxText = 32760;
+    internal static bool CanRetain(nint window, nint element, Func<uint, bool> excluded)
+        => Identify(window, element, excluded) is not null;
     private const uint GetLength = 0x000e, GetText = 0x000d, GetSel = 0x00b0, SetSel = 0x00b1,
         ReplaceSel = 0x00c2, GetTextMode = 0x0400 + 90;
     private readonly Identity _identity;

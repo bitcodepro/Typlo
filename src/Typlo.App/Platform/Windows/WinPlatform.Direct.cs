@@ -6,6 +6,8 @@ namespace Typlo.App.Platform.Windows;
 public sealed partial class WinPlatform
 {
     public bool SupportsDirectTextEditing => !_passive && !Volatile.Read(ref _disposed);
+    public bool CanRetainDirectInputTarget(nint window, nint element) => SupportsDirectTextEditing &&
+        NativeEditSnapshot.CanRetain(window, element, IsOwnProcess);
     public nint FocusedInputElement
     {
         get
