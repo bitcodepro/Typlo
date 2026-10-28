@@ -5,7 +5,7 @@ using Typlo.App.Services;
 
 namespace Typlo.Tests;
 
-public sealed class RuntimeChannelTests
+public sealed partial class RuntimeChannelTests
 {
     [Fact]
     public async Task ConcurrentBurstsKeepPipeSlotsUntilStreamsAreDisposed()

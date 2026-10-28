@@ -1866,7 +1866,7 @@ public sealed partial class AppControllerTests : IDisposable
             case "image-write-end": _controller.EndExternalClipboardWrite(); break;
         }
         return new(true, PausedUntil: _controller.PausedUntil);
-    });
+    }, diagnostic => _output.WriteLine(diagnostic.Summary));
 
     private sealed class FakePlatform : IPlatform
     {
