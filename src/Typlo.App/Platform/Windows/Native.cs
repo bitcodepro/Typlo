@@ -85,6 +85,10 @@ internal static partial class Native
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern ushort RegisterClassEx(ref WNDCLASSEX wc);
 
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool UnregisterClassW(string name, nint instance);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern nint CreateWindowEx(uint exStyle, string className, string windowName, uint style,
         int x, int y, int w, int h, nint parent, nint menu, nint instance, nint param);

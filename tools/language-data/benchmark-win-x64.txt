@@ -1,0 +1,20 @@
+Measured 2026-10-28, Windows NT 10.0.26300 x64, .NET 10 Native AOT.
+Pack SHA-256: 95b2a8beafee57d233a60251e59b8d6ad330fd21fa01dbbb47703644d3a92855
+Reader: tools/LanguageDataProbe, read-only immutable SQLite, cache target 128 KiB.
+Filesystem/SQLite native runtime warmed before measurement; see README.md.
+Not a total Typlo memory measurement or classifier accuracy evaluation.
+
+file_bytes=7458816; queries=100000; distinct_keys=1423; hits=81940
+first_open_lookup_ms=1.042; median_us=16.600; p95_us=45.200; p99_us=95.500
+first_open_private_delta_bytes=-344064
+retained_managed_delta_bytes=15872
+stress_private_commit_delta_bytes=6012928
+sqlite_page_cache_target_kib=128; mmap=0; pooling=false
+
+Process private-commit snapshots include allocator/GC/cache noise. The negative
+first-open delta is NOT a memory saving or the dictionary's memory footprint.
+The retained managed delta excludes native SQLite memory. The 100k-query stress
+phase increased process private commit by about 5.7 MiB despite little retained
+managed data; the GC can retain allocation capacity. The 128 KiB cache target is
+not a total process memory budget. Production integration and its idle-memory
+measurement remain to be done; this branch does not initialize a reader in Typlo.

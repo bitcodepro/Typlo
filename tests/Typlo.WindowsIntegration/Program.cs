@@ -21,6 +21,26 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.FirstOrDefault() == "--typing-hook-lifecycle-check")
+        {
+            try
+            {
+                for (var i = 0; i < 10; i++)
+                {
+                    Console.WriteLine("Native hook lifetime " + i);
+                    using var platform = new WinPlatform(monitorClipboard: false);
+                    _ = platform.ForegroundChangeVersion; // each recreated message window dispatches to its own platform
+                    platform.SetTypingWatch(true);
+                    // Alternate immediate disposal during startup with disposal after native readiness.
+                    if (i % 2 != 0) platform.WaitForTypingWatchAsync().GetAwaiter().GetResult();
+                    platform.Dispose(); // also exercise idempotent disposal by the using scope
+                    if (!platform.TypingHookShutdownCompleted) throw new InvalidOperationException("Native hook did not start and finish cleanly");
+                }
+                Console.WriteLine("PASS native typing hook startup/disposal/recreation (10 platform lifetimes)");
+                return 0;
+            }
+            catch (Exception e) { Console.Error.WriteLine(e); return 1; }
+        }
         if (args.FirstOrDefault() == "--background-runtime-check")
             return BackgroundRuntimeCheck.RunAsync(args[1], args[2]).GetAwaiter().GetResult();
         if (args.FirstOrDefault() == "--clipboard-helper")
@@ -116,11 +136,44 @@ internal sealed class EditorCheck : Form
                 await ExpectText("при");
             });
 
+            await Check("typing hook survives rapid disable and controller replacement", async () =>
+            {
+                // The selected-text controller above has already disabled delivery. Replacing
+                // controllers repeatedly must not overlap native hook start/stop callbacks.
+                for (var i = 0; i < 5; i++)
+                {
+                    using var controller = Controller(platform, "hook-lifecycle-" + i, recent: true);
+                    TypingEvents.AcceptSimulated = true;
+                    await platform.WaitForTypingWatchAsync();
+                    if (i == 0)
+                    {
+                        await Prepare("", select: false);
+                        var disabledEvents = 0;
+                        void ObserveDisabled(TypedKey _) => Interlocked.Increment(ref disabledEvents);
+                        platform.SetTypingWatch(false);
+                        platform.KeyTyped += ObserveDisabled;
+                        try
+                        {
+                            platform.SendChord(KeyModifiers.None, "G");
+                            await ExpectTextEventually("g");
+                            if (Volatile.Read(ref disabledEvents) != 0) throw new InvalidOperationException("Disabled typing watch still delivered input");
+                        }
+                        finally { platform.KeyTyped -= ObserveDisabled; platform.SetTypingWatch(true); }
+                    }
+                    for (var toggle = 0; toggle < 20; toggle++)
+                    { platform.SetTypingWatch(false); platform.SetTypingWatch(true); }
+                    await Prepare("готовое ", select: false);
+                    await TypeFixture(platform);
+                    await controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+                    await ExpectText("готовое при");
+                }
+            });
+
             await Check("three recently typed letters in a WebView2 contenteditable", async () =>
             {
                 using var controller = Controller(platform, "recent", recent: true);
                 TypingEvents.AcceptSimulated = true;
-                await Task.Delay(500); // The native typing hook starts asynchronously.
+                await platform.WaitForTypingWatchAsync();
                 await Prepare("", select: false);
                 await TypeFixture(platform);
                 await ExpectText("ghb");
@@ -132,7 +185,7 @@ internal sealed class EditorCheck : Form
             {
                 using var controller = Controller(platform, "suffix", recent: true);
                 TypingEvents.AcceptSimulated = true;
-                await Task.Delay(500);
+                await platform.WaitForTypingWatchAsync();
                 await Prepare("готовое ", select: false);
                 await TypeFixture(platform);
                 await ExpectText("готовое ghb");
@@ -146,7 +199,7 @@ internal sealed class EditorCheck : Form
             {
                 using var controller = Controller(platform, "formatted", recent: true);
                 TypingEvents.AcceptSimulated = true;
-                await Task.Delay(500);
+                await platform.WaitForTypingWatchAsync();
                 await Prepare("готовое ", select: false, formatted: true);
                 await TypeFixture(platform);
                 await controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
@@ -158,7 +211,7 @@ internal sealed class EditorCheck : Form
                 {
                     using var controller = Controller(platform, "notification-" + takesFocus, recent: true);
                     TypingEvents.AcceptSimulated = true;
-                    await Task.Delay(500);
+                    await platform.WaitForTypingWatchAsync();
                     await Prepare("", select: false);
                     for (var i = 0; i < 300; i++)
                     {
@@ -339,7 +392,7 @@ internal sealed class EditorCheck : Form
     private async Task Check(string name, Func<Task> check)
     {
         try { await check(); _report.Add("PASS " + name); }
-        catch (Exception e) { _report.Add("FAIL " + name + ": " + e.Message); }
+        catch (Exception e) { _report.Add("FAIL " + name + ": " + e); }
     }
 
     private async Task Prepare(string text, bool select, bool formatted = false)
@@ -391,12 +444,25 @@ internal sealed class EditorCheck : Form
 
     private async Task TypeFixture(WinPlatform platform)
     {
-        foreach (var key in new[] { "G", "H", "B" })
+        await platform.WaitForTypingWatchAsync();
+        var before = JsonSerializer.Deserialize<string>(await _browser.ExecuteScriptAsync("document.getElementById('editor').innerText")) ?? "";
+        var observed = new System.Collections.Concurrent.ConcurrentQueue<char>();
+        void Observe(TypedKey key) { if (!key.Reset && !key.Backspace) observed.Enqueue(key.Char); }
+        platform.KeyTyped += Observe;
+        try
         {
-            if (platform.ForegroundWindow != Handle) throw new InvalidOperationException("The fixture window lost focus before typing");
-            platform.SendChord(KeyModifiers.None, key);
-            await Task.Delay(60);
+            var count = 0;
+            foreach (var key in new[] { "G", "H", "B" })
+            {
+                if (platform.ForegroundWindow != Handle) throw new InvalidOperationException("The fixture window lost focus before typing");
+                platform.SendChord(KeyModifiers.None, key);
+                var expectedCount = ++count;
+                await Until(() => observed.Count >= expectedCount, "Native hook did not deliver fixture key " + key);
+            }
+            if (new string(observed.ToArray()) != "ghb") throw new InvalidOperationException("Native hook delivered unexpected/duplicate fixture keys");
+            await ExpectTextEventually(before + "ghb"); // Browser input delivery is asynchronous too.
         }
+        finally { platform.KeyTyped -= Observe; }
     }
 
     private async Task ExpectText(string expected)

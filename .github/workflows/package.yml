@@ -22,7 +22,9 @@ jobs:
           - {rid: win-x64, os: windows-2025}
           - {rid: linux-x64, os: ubuntu-24.04}
           - {rid: linux-arm64, os: ubuntu-24.04-arm}
-          - {rid: osx-arm64, os: macos-15}
+          # Cross-publish/sign on Intel macOS: the arm64 hosted pool can cancel queued jobs.
+          # RID and Mach-O validation stay arm64; native ARM build/tests remain in ci.yml.
+          - {rid: osx-arm64, os: macos-15-intel}
           - {rid: osx-x64, os: macos-15-intel}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -105,6 +105,13 @@ commands publishes anything; `publish` refuses a normal local session. The legac
 `scripts/publish-all.sh` and `scripts/package-macos.sh` remain available for local
 unversioned builds; CI uses `scripts/release.py` for verified release artifacts.
 
+Both macOS packages are published and signed on `macos-15-intel`. The ARM package
+still targets `osx-arm64`; its Mach-O architecture, signature, source and checksum
+checks remain required. This avoids reserving a second Apple Silicon runner for
+packaging when that hosted pool is capacity constrained. The `macos-15` build/test
+job still runs natively on Apple Silicon before packaging, and the final combined
+gate still verifies all five platform archives.
+
 
 Windows packages use Native AOT and include the five native libraries recorded by the verifier.
 The manifest marks this deployment as `native-aot`; verification checks the DLL set and PE architecture,
@@ -118,3 +125,14 @@ kill and reap the owned helper.
 The runtime test uses its own profile, does not monitor external clipboard changes, and never replaces
 the user's clipboard. Resident memory samples are retained in `runtime/runtime.txt`. The same AOT binary
 also runs the existing desktop self-test, separately from the WebView2 editor integration test.
+
+Windows typing uses one native hook for each platform lifetime. Disabling input tracking gates
+event delivery; platform disposal stops the hook and joins its owning thread before returning.
+An isolated native check exercises ten platform lifetimes, alternating immediate disposal during
+startup with disposal after native readiness, including double disposal of each platform.
+libuiohook's final quit-message post can report Failure after its first close message already
+terminated the hook. That result is accepted only after the owning thread has joined and
+`Run` returned successfully; a live or faulted hook still fails the check.
+The WebView2 integration waits for native hook readiness and actual typed-key/browser delivery,
+then verifies recent-input conversion through rapid enable/disable and controller replacement.
+Conversion and Undo assertions remain exact; hook errors include their full stack traces.

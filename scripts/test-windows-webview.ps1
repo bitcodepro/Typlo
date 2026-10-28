@@ -12,6 +12,14 @@ try {
     dotnet build tests/Typlo.WindowsIntegration -c Release -m:1 -p:UseSharedCompilation=false --disable-build-servers
     if ($LASTEXITCODE -ne 0) { throw 'WebView2 test build failed' }
     $executable = Join-Path $projectRoot 'tests/Typlo.WindowsIntegration/bin/Release/net10.0-windows/Typlo.WindowsIntegration.exe'
+    $hookCheck = Start-Process -FilePath $executable -ArgumentList '--typing-hook-lifecycle-check' -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput (Join-Path $results 'hook-lifecycle.txt') -RedirectStandardError (Join-Path $results 'hook-lifecycle-error.txt')
+    if (!$hookCheck.WaitForExit(30000)) { $hookCheck.Kill(); throw 'Native typing hook lifecycle check timed out' }
+    Get-Content -LiteralPath (Join-Path $results 'hook-lifecycle.txt')
+    if ($hookCheck.ExitCode -ne 0) {
+        Get-Content -LiteralPath (Join-Path $results 'hook-lifecycle-error.txt')
+        throw 'Native typing hook lifecycle check failed'
+    }
     & $executable --check-runtime
     if ($LASTEXITCODE -ne 0) {
         if (!$InstallRuntimeIfMissing) { throw 'Install the Microsoft Edge WebView2 Runtime before running this test.' }
