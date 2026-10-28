@@ -41,11 +41,18 @@ public partial class App
             _screenCapture = new ScreenCaptureService(_controller);
             var lastRequest = Environment.TickCount64;
             var shuttingDown = false;
+            var diagnosticUi = Program.Args.Contains("--diagnostic-ui");
+            void TraceUi(string phase, long trace = 0, string action = "none")
+            {
+                if (diagnosticUi) Log.Info($"UI lifecycle pid={Environment.ProcessId} tid={Platform.Windows.Native.GetCurrentThreadId()} phase={phase} trace={trace} action={action} stopping={Volatile.Read(ref shuttingDown)}");
+            }
             async void Shutdown()
             {
                 if (shuttingDown) return;
                 shuttingDown = true;
+                TraceUi("shutdown-start");
                 await UiOperations.Shared.StopAsync();
+                TraceUi("shutdown-drained");
                 desktop.Shutdown();
             }
             void Command(string[] args)
@@ -55,7 +62,12 @@ public partial class App
                 if (args.Contains("--dismiss"))
                 {
                     _screenCapture.CancelSelection();
-                    foreach (var window in desktop.Windows.ToArray()) window.Close();
+                    foreach (var window in desktop.Windows.ToArray())
+                    {
+                        TraceUi("close-begin", action: window.GetType().Name);
+                        window.Close();
+                        TraceUi("close-end", action: window.GetType().Name);
+                    }
                     return;
                 }
                 if (args.Contains("--ocr-fixture") && Program.Args.Contains("--diagnostic-ui"))
@@ -97,11 +109,24 @@ public partial class App
             }
             _uiChannel = new RuntimeChannel(uiPipe, async request =>
             {
+                var action = request.Command == "history-target-fixture" ? "target-query" :
+                    request.Args?.Contains("--dismiss") == true ? "dismiss" : request.Args?.Contains("--settings") == true ? "settings" :
+                    request.Args?.Contains("--history") == true ? "history" : "other";
+                TraceUi("queued", request.Trace, action);
                 if (request.Command == "history-target-fixture" && Program.Args.Contains("--diagnostic-ui"))
-                    return await Dispatcher.UIThread.InvokeAsync(() => new RuntimeReply(true, Window: (long)(_historyWindow?.TargetWindow ?? 0)));
+                    return await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        TraceUi("query", request.Trace, action);
+                        return new RuntimeReply(true, Window: (long)(_historyWindow?.TargetWindow ?? 0));
+                    });
                 if (request.Command != "ui" || request.Args is null) return new(false, "Unknown UI command");
                 Interlocked.Exchange(ref lastRequest, Environment.TickCount64);
-                await Dispatcher.UIThread.InvokeAsync(() => Command(request.Args));
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    TraceUi("begin", request.Trace, action);
+                    Command(request.Args);
+                    TraceUi("end", request.Trace, action);
+                });
                 return new(true);
             });
             var parent = Process.GetProcessById(int.Parse(Program.Argument("--parent-pid") ?? throw new ArgumentException("Missing parent")));
@@ -119,6 +144,7 @@ public partial class App
             desktop.Exit += (_, _) => { timer.Stop(); parent.Dispose(); _uiChannel.Dispose(); Cleanup(); };
             timer.Start();
             Command(Program.Args);
+            TraceUi("startup-complete");
         }
         catch (Exception e) { Log.Error("UI startup failed", e); _uiChannel?.Dispose(); Cleanup(); desktop.Shutdown(1); }
     }

@@ -66,6 +66,12 @@ try {
     if (!$runtimeProcess.WaitForExit(120000)) { $runtimeProcess.Kill(); throw 'Background runtime checks timed out' }
     Get-Content -LiteralPath (Join-Path $runtimeResults 'runtime.txt')
     if ($runtimeProcess.ExitCode -ne 0) { throw 'Background runtime checks failed' }
+    $targetResults = Join-Path $runtimeResults 'ui-target'
+    $targetArguments = '--ui-target-check "' + $runtimeExe + '" "' + $targetResults + '" 10'
+    $targetCheck = Start-Process -FilePath $executable -ArgumentList $targetArguments -WindowStyle Hidden -PassThru
+    if (!$targetCheck.WaitForExit(90000)) { $targetCheck.Kill($true); throw 'Repeated UI target checks timed out' }
+    Get-Content -LiteralPath (Join-Path $targetResults 'runtime.txt')
+    if ($targetCheck.ExitCode -ne 0) { throw 'Repeated UI target checks failed' }
     $selftestReport = Join-Path $runtimeResults 'desktop-selftest.txt'
     $selftest = Start-Process -FilePath $runtimeExe -ArgumentList ('--selftest "' + $selftestReport + '"') -WindowStyle Hidden -PassThru
     if (!$selftest.WaitForExit(90000)) { $selftest.Kill(); throw 'Native AOT desktop checks timed out' }

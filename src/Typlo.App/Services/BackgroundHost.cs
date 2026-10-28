@@ -23,6 +23,7 @@ internal sealed class BackgroundHost : IDisposable
     private readonly Lock _uiLock = new();
     private readonly SemaphoreSlim _uiCommands = new(1, 1);
     private Process? _ui;
+    private long _settingsSession;
     private readonly string _uiPipe = "Typlo.Ui." + Environment.ProcessId;
     private bool _stopping;
     private bool _installing;
@@ -78,6 +79,26 @@ internal sealed class BackgroundHost : IDisposable
     }
     private Task<RuntimeReply> DispatchAsync(RuntimeRequest command)
     {
+        if (_diagnostic && command.Command == "register-hotkeys" && File.Exists(Path.Combine(_paths.DataDir, "hold-hotkey-restore")))
+            return HoldHotkeyRestoreAsync(command);
+        return DispatchCore(command);
+    }
+    private async Task<RuntimeReply> HoldHotkeyRestoreAsync(RuntimeRequest command)
+    {
+        var hold = Path.Combine(_paths.DataDir, "hold-hotkey-restore");
+        File.WriteAllText(Path.Combine(_paths.DataDir, "hotkey-restore-waiting"), "waiting");
+        var limit = Stopwatch.StartNew();
+        while (File.Exists(hold))
+        {
+            if (limit.Elapsed > TimeSpan.FromSeconds(10)) throw new TimeoutException("Hotkey restore fixture was not released");
+            await Task.Delay(20, _stop.Token);
+        }
+        var reply = await DispatchCore(command);
+        File.WriteAllText(Path.Combine(_paths.DataDir, "hotkey-restore-complete"), "complete");
+        return reply;
+    }
+    private Task<RuntimeReply> DispatchCore(RuntimeRequest command)
+    {
         lock (_uiLock)
         {
             if (command.UiOwner > 0)
@@ -116,8 +137,14 @@ internal sealed class BackgroundHost : IDisposable
             case "state": return State();
             case "settings": if (command.Settings is null) return new(false, "Missing settings"); _controller.ApplySettings(command.Settings); return State();
             case "refresh-layouts": _controller.RefreshKeyboardLayouts(); return State();
-            case "suspend-hotkeys": _controller.SuspendHotkeys(); return State();
-            case "register-hotkeys": _controller.RegisterHotkeys(); return State();
+            case "suspend-hotkeys":
+                if (command.Id < _settingsSession) return State();
+                _settingsSession = command.Id;
+                _controller.SuspendHotkeys(); return State();
+            case "register-hotkeys":
+                // A close from an older window must not undo a newer window's suspension.
+                if (command.Id == _settingsSession) _controller.RegisterHotkeys();
+                return State();
             case "probe-hotkey":
                 var hotkey = Hotkey.TryParse(command.Text ?? "");
                 return new(hotkey is { IsUsable: true } && _platform.RegisterHotkey(9000, hotkey));
@@ -201,6 +228,7 @@ internal sealed class BackgroundHost : IDisposable
                 if (_diagnostic) start.ArgumentList.Add("--diagnostic-ui");
                 foreach (var arg in args) start.ArgumentList.Add(arg);
                 var child = Process.Start(start) ?? throw new IOException("Cannot start UI"); _ui = child;
+                _settingsSession = 0;
                 _platform.UiProcessId = child.Id;
                 child.EnableRaisingEvents = true;
                 child.Exited += (_, _) =>

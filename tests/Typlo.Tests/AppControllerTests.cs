@@ -1835,7 +1835,8 @@ public sealed partial class AppControllerTests : IDisposable
         ImageCodecTests.Initialize();
         var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
         using var server = RemoteServer(name);
-        using var ui = AppController.CreateRemote(new FakePlatform { SupportsScreenCapture = true }, new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name));
+        using var ui = AppController.CreateRemote(new FakePlatform { SupportsScreenCapture = true }, new AppPaths(_dir), new PlainKeyProtector(),
+            new RuntimeClient(name, diagnostic: entry => _output.WriteLine(entry.Summary)));
         Assert.True(await _controller.BeginExternalCaptureAsync());
         Assert.Null(await ui.CaptureScreenshotAsync(() => Task.FromResult<CapturedPixels?>(new(new byte[16], 2, 2))));
         _controller.EndExternalCapture();
@@ -1866,7 +1867,38 @@ public sealed partial class AppControllerTests : IDisposable
             case "image-write-end": _controller.EndExternalClipboardWrite(); break;
         }
         return new(true, PausedUntil: _controller.PausedUntil);
-    });
+    }, diagnostic => _output.WriteLine(diagnostic.Summary));
+
+    [Fact]
+    public async Task RemoteHotkeyRestoreReturnsToCallerWhileResidentReplyIsPending()
+    {
+        var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
+        var requests = new System.Collections.Concurrent.ConcurrentQueue<(string Command, long Session)>();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var server = new RuntimeChannel(name, async request =>
+        {
+            if (request.Command is "suspend-hotkeys" or "register-hotkeys") requests.Enqueue((request.Command, request.Id));
+            if (request.Command != "register-hotkeys") return new(true);
+            entered.TrySetResult();
+            await release.Task;
+            return new(true, FailedHotkeys: ["fixture conflict"]);
+        });
+        using var ui = AppController.CreateRemote(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name));
+        try
+        {
+            ui.SuspendHotkeys();
+            var pending = ui.RestoreHotkeysAsync();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.False(pending.IsCompleted);
+            ui.SuspendHotkeys();
+            Assert.Equal([("suspend-hotkeys", 1L), ("register-hotkeys", 1L), ("suspend-hotkeys", 2L)], requests.ToArray());
+            release.TrySetResult();
+            await pending.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(["fixture conflict"], ui.FailedHotkeys);
+        }
+        finally { release.TrySetResult(); }
+    }
 
     private sealed class FakePlatform : IPlatform
     {

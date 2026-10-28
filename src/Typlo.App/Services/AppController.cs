@@ -180,20 +180,33 @@ public sealed partial class AppController : IDisposable
 
     /// <summary>Settings window records shortcuts, so live hotkeys must not fire meanwhile.</summary>
     private volatile bool _editingSettings;
+    private long _settingsSession;
     public void SuspendHotkeys()
     {
-        if (_remote is not null) { _remote.Call(new("suspend-hotkeys")); return; }
+        if (_remote is not null) { _remote.Call(new("suspend-hotkeys", Id: Interlocked.Increment(ref _settingsSession))); return; }
         _editingSettings = true; _platform.UnregisterAllHotkeys();
     }
 
     /// <summary>Typlo's active hotkeys: pressing one is a command, not input that moves the caret.</summary>
     private readonly HashSet<Hotkey> _activeHotkeys = [];
 
+    /// <summary>Closing a settings window must not block its dispatcher on a resident RPC.</summary>
+    internal async Task RestoreHotkeysAsync()
+    {
+        if (_remote is null) { RegisterHotkeys(); return; }
+        try
+        {
+            var reply = await _remote.CallAsync(new("register-hotkeys", Id: Interlocked.Read(ref _settingsSession)));
+            if (Volatile.Read(ref _disposed) == 0) UpdateRemoteState(reply);
+        }
+        catch (Exception e) when (e is IOException or OperationCanceledException) { Log.Error("Background runtime unavailable", e); }
+    }
+
     public void RegisterHotkeys()
     {
         if (_remote is not null)
         {
-            try { UpdateRemoteState(_remote.Call(new("register-hotkeys"))); }
+            try { UpdateRemoteState(_remote.Call(new("register-hotkeys", Id: Interlocked.Read(ref _settingsSession)))); }
             catch (Exception e) when (e is IOException or OperationCanceledException) { Log.Error("Background runtime unavailable", e); }
             return;
         }
