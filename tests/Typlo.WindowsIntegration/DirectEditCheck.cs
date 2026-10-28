@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Typlo.App.Platform;
 using Typlo.App.Platform.Windows;
@@ -16,6 +17,7 @@ internal sealed class DirectEditorFixture : Form
     private readonly Dictionary<string, TextBoxBase> _fields = [];
     private readonly Form _popup = new() { Text = "Typlo notification fixture", Width = 300, Height = 100 };
     private readonly SlowTextBox _edit = new() { Multiline = true, Width = 450, Height = 80 };
+    private nint _plainRichInitialHandle;
     internal DirectEditorFixture()
     {
         Text = "Typlo native edit fixture"; Width = 550; Height = 500;
@@ -23,14 +25,14 @@ internal sealed class DirectEditorFixture : Form
         _fields["password"] = new TextBox { PasswordChar = '*' };
         _fields["readonly"] = new TextBox { ReadOnly = true };
         _fields["rich"] = new RichTextBox();
-        _fields["plainrich"] = new RichTextBox();
+        _fields["plainrich"] = new PlainTextRichTextBox();
         var y = 10;
         foreach (var field in _fields.Values) { field.Top = y; field.Left = 10; Controls.Add(field); y += 85; }
         Shown += (_, _) =>
         {
             _popup.Show(); Activate(); _edit.Focus();
-            Native.SendMessageTimeoutW(_fields["plainrich"].Handle, 0x400 + 89, 1, 0, 0x23, 100, out _);
-            Console.WriteLine("READY");
+            _plainRichInitialHandle = _fields["plainrich"].Handle;
+            Console.WriteLine(((PlainTextRichTextBox)_fields["plainrich"]).Setup);
             _ = Task.Run(ReadCommands);
         };
         FormClosed += (_, _) => _popup.Dispose();
@@ -58,17 +60,83 @@ internal sealed class DirectEditorFixture : Form
             Activate(); field.Focus();
         }
         if (op == "delay") _edit.Delay = root.GetProperty("milliseconds").GetInt32();
+        if (op == "recreate") ((PlainTextRichTextBox)field).RecreateForTest();
+        var modeReadSent = Native.SendMessageTimeoutW(_fields["plainrich"].Handle, 0x400 + 90, 0, 0, 0x23, 100, out var mode) != 0;
+        var nativeLengthSent = Native.SendMessageTimeoutW(field.Handle, 0x000e, 0, 0, 0x23, 100, out var nativeLength) != 0;
+        var nativeLengthError = nativeLengthSent ? 0 : Marshal.GetLastPInvokeError();
         Console.WriteLine(JsonSerializer.Serialize(new
         {
             window = (long)Handle, element = (long)field.Handle, popup = (long)_popup.Handle,
             text = field.Text, start = field.SelectionStart, length = field.SelectionLength, writes = _edit.Writes,
+            modeReadSent, plainRichMode = (ulong)mode, plainRichHandleChanged = _fields["plainrich"].Handle != _plainRichInitialHandle,
+            plainRichSetup = ((PlainTextRichTextBox)_fields["plainrich"]).Setup,
+            nativeLengthSent, nativeLengthError, nativeLength = (ulong)nativeLength, keyboardMessages = _edit.KeyboardMessages,
         }));
+        if (op == "delay-read") _edit.ReadDelay = root.GetProperty("milliseconds").GetInt32();
+    }
+    private sealed class PlainTextRichTextBox : RichTextBox
+    {
+        internal string Setup { get; private set; } = "";
+        internal void RecreateForTest() => RecreateHandle();
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            // WinForms restores rich text when recreating HWND. EM_SETTEXTMODE only works on an
+            // empty control, so preserve the fixture's plain content/selection around setup.
+            // RichTextBox.Text deliberately returns an empty string during RecreatingHandle.
+            // Read the native contents that base.OnHandleCreated has just restored instead.
+            var text = ReadNativeText();
+            var selectionReadSent = Native.SendMessageTimeoutW(Handle, 0x00b0, 0, 0, 0x23, 100, out var selection) != 0;
+            var start = (int)(selection & 0xffff);
+            var end = (int)((selection >> 16) & 0xffff);
+            var cleared = SetNativeText("");
+            var timer = Stopwatch.StartNew();
+            var modeSetSent = Native.SendMessageTimeoutW(Handle, 0x400 + 89, 1, 0, 0x23, 100, out var modeSetResult) != 0;
+            var modeSetError = modeSetSent ? 0 : Marshal.GetLastPInvokeError();
+            var textRestored = SetNativeText(text);
+            var selectionRestored = Native.SendMessageTimeoutW(Handle, 0x00b1, (nuint)start, end, 0x23, 100, out _) != 0;
+            var modeReadSent = Native.SendMessageTimeoutW(Handle, 0x400 + 90, 0, 0, 0x23, 100, out var mode) != 0;
+            var modeReadError = modeReadSent ? 0 : Marshal.GetLastPInvokeError();
+            Setup = JsonSerializer.Serialize(new
+            {
+                ready = cleared && modeSetSent && modeSetResult == 0 && modeReadSent && (mode & 1) != 0 &&
+                    textRestored && selectionReadSent && selectionRestored,
+                modeSetSent, modeSetResult = (ulong)modeSetResult, modeSetError, modeReadSent, modeReadError,
+                mode = (ulong)mode, cleared, textRestored, selectionReadSent, selectionRestored,
+                preservedLength = text.Length, preservedStart = start, elapsedMs = timer.Elapsed.TotalMilliseconds,
+            });
+        }
+        private string ReadNativeText()
+        {
+            if (Native.SendMessageTimeoutW(Handle, 0x000e, 0, 0, 0x23, 100, out var length) == 0 || length > NativeEditSnapshot.MaxText)
+                throw new InvalidOperationException("Cannot read fixture RichEdit length");
+            var chars = Marshal.AllocHGlobal(checked(((int)length + 1) * sizeof(char)));
+            try
+            {
+                if (Native.SendMessageTimeoutW(Handle, 0x000d, length + 1, chars, 0x23, 100, out var copied) == 0 || copied != length)
+                    throw new InvalidOperationException("Cannot read fixture RichEdit contents");
+                return Marshal.PtrToStringUni(chars, (int)copied)!;
+            }
+            finally { Marshal.FreeHGlobal(chars); }
+        }
+        private bool SetNativeText(string text)
+        {
+            var chars = Marshal.StringToHGlobalUni(text);
+            try { return Native.SendMessageTimeoutW(Handle, 0x000c, 0, chars, 0x23, 100, out var result) != 0 && result != 0; }
+            finally { Marshal.FreeHGlobal(chars); }
+        }
     }
     private sealed class SlowTextBox : TextBox
     {
-        internal int Delay, Writes;
+        internal int Delay, ReadDelay, Writes, KeyboardMessages;
         protected override void WndProc(ref Message m)
         {
+            if (m.Msg is >= 0x100 and <= 0x109) KeyboardMessages++;
+            if (m.Msg == 0x0d)
+            {
+                var delay = Interlocked.Exchange(ref ReadDelay, 0);
+                if (delay > 0) Thread.Sleep(delay); // intentional unresponsive read fixture
+            }
             if (m.Msg == 0xc2)
             {
                 Writes++;
@@ -87,6 +155,8 @@ internal static class DirectEditCheck
         Directory.CreateDirectory(work);
         Typlo.App.Log.FilePath = Path.Combine(work, "direct-edit.log");
         var report = new List<string>();
+        var diagnostics = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var nativeTrace = new System.Collections.Concurrent.ConcurrentQueue<NativeEditDiagnostic>();
         var previous = Native.GetForegroundWindow();
         using var platform = new WinPlatform(monitorClipboard: false);
         var info = new ProcessStartInfo(Environment.ProcessPath!, "--direct-editor-fixture")
@@ -97,19 +167,30 @@ internal static class DirectEditCheck
         using var child = Process.Start(info)!;
         try
         {
-            Require(await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)) == "READY", "fixture readiness");
+            var ready = await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            diagnostics.Enqueue("fixture-setup " + ready);
+            using (var setup = JsonDocument.Parse(ready!)) Require(setup.RootElement.GetProperty("ready").GetBoolean(), "fixture plain-text mode setup: " + ready);
             async Task<JsonElement> Command(object command)
             {
-                await child.StandardInput.WriteLineAsync(JsonSerializer.Serialize(command));
+                var request = JsonSerializer.SerializeToElement(command);
+                await child.StandardInput.WriteLineAsync(request.GetRawText());
                 await child.StandardInput.FlushAsync();
                 var line = await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
                 using var doc = JsonDocument.Parse(line!);
+                diagnostics.Enqueue($"fixture-state op={request.GetProperty("op")} text_length={doc.RootElement.GetProperty("text").GetString()!.Length} native_length={doc.RootElement.GetProperty("nativeLength")} length_sent={doc.RootElement.GetProperty("nativeLengthSent")} length_error={doc.RootElement.GetProperty("nativeLengthError")} selection_start={doc.RootElement.GetProperty("start")} selection_length={doc.RootElement.GetProperty("length")} writes={doc.RootElement.GetProperty("writes")} keyboard_messages={doc.RootElement.GetProperty("keyboardMessages")} mode_read={doc.RootElement.GetProperty("modeReadSent")} mode={doc.RootElement.GetProperty("plainRichMode")} handle_changed={doc.RootElement.GetProperty("plainRichHandleChanged")} setup={doc.RootElement.GetProperty("plainRichSetup").GetString()}");
                 return doc.RootElement.Clone();
             }
-            async Task<DirectTextCapture> Capture(JsonElement state) => await platform.CaptureDirectTextAsync(
-                (nint)state.GetProperty("window").GetInt64(), (nint)state.GetProperty("element").GetInt64(), () => true);
+            async Task<DirectTextCapture> Capture(JsonElement state)
+            {
+                var captured = await platform.CaptureDirectTextAsync((nint)state.GetProperty("window").GetInt64(),
+                    (nint)state.GetProperty("element").GetInt64(), () => true, entry =>
+                    { nativeTrace.Enqueue(entry); diagnostics.Enqueue(entry.Summary); });
+                diagnostics.Enqueue("capture-status=" + captured.Status);
+                return captured;
+            }
             async Task Check(string name, Func<Task> check)
             {
+                diagnostics.Enqueue("check=" + name);
                 try { await check(); report.Add("PASS " + name); }
                 catch (Exception e) { report.Add("FAIL " + name + ": " + e); }
             }
@@ -175,8 +256,16 @@ internal static class DirectEditCheck
             {
                 var state = await Command(new { op = "set", field = "plainrich", text = "ghb", start = 0, length = 3 });
                 var capture = await Capture(state);
-                Require(capture.Status == DirectCaptureStatus.Ready, "plain-text RichEdit mode");
+                Require(capture.Status == DirectCaptureStatus.Ready, "plain-text RichEdit capture status=" + capture.Status);
                 Require((await capture.Snapshot!.ReplaceAsync(0, 3, "при", () => true)).Status == DirectEditStatus.Applied, "plain RichEdit write");
+                state = await Command(new { op = "recreate", field = "plainrich" });
+                Require(state.GetProperty("plainRichHandleChanged").GetBoolean(), "RichEdit handle was recreated");
+                capture = await Capture(state);
+                Require(capture.Status == DirectCaptureStatus.Ready, "recreated plain-text RichEdit capture status=" + capture.Status);
+                Require(capture.Snapshot!.Text == "при" && capture.Snapshot.SelectionStart == 3 && capture.Snapshot.SelectionEnd == 3,
+                    "recreated RichEdit retains plain text and selection");
+                Require((await capture.Snapshot.ReplaceAsync(0, 3, "ghb", () => true)).Status == DirectEditStatus.Applied,
+                    "recreated plain RichEdit write");
                 state = await Command(new { op = "set", field = "plainrich", text = "a\r\nghb", start = 0, length = 0 });
                 Require((await Capture(state)).Status == DirectCaptureStatus.Unsupported, "unmapped RichEdit offsets");
             });
@@ -207,6 +296,22 @@ internal static class DirectEditCheck
                 Require(state.GetProperty("writes").GetInt32() == before + 1, "one write only");
                 Require(state.GetProperty("text").GetString() == "при", "late completion remains one replacement");
             });
+            await Check("timed-out read reports native failure without editing", async () =>
+            {
+                var state = await Command(new { op = "set", text = "ghb", start = 0, length = 3 });
+                var writes = state.GetProperty("writes").GetInt32();
+                await Command(new { op = "delay-read", milliseconds = 500 });
+                var before = nativeTrace.Count;
+                var timer = Stopwatch.StartNew();
+                var capture = await Capture(state);
+                Require(capture.Status == DirectCaptureStatus.Cancelled, "read timeout capture status=" + capture.Status);
+                Require(timer.Elapsed < TimeSpan.FromMilliseconds(400), "bounded unresponsive read wait");
+                Require(nativeTrace.Skip(before).Any(entry => entry.Operation == "send" && entry.Outcome == "failed" && entry.Message == 0x0d),
+                    "diagnostic identifies the failed WM_GETTEXT read");
+                state = await Command(new { op = "read" });
+                Require(state.GetProperty("text").GetString() == "ghb" && state.GetProperty("writes").GetInt32() == writes,
+                    "timed-out capture does not edit the document");
+            });
             await child.StandardInput.WriteLineAsync("{\"op\":\"exit\"}");
             await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
         }
@@ -216,9 +321,10 @@ internal static class DirectEditCheck
             if (!child.HasExited) child.Kill(entireProcessTree: true);
             if (previous != 0) platform.ActivateWindow(previous);
             await File.WriteAllLinesAsync(Path.Combine(work, "direct-edit.txt"), report);
+            await File.WriteAllLinesAsync(Path.Combine(work, "direct-edit-native.log"), diagnostics);
             foreach (var line in report) Console.WriteLine(line);
         }
-        return report.Count == 6 && report.All(line => line.StartsWith("PASS ", StringComparison.Ordinal)) ? 0 : 1;
+        return report.Count == 7 && report.All(line => line.StartsWith("PASS ", StringComparison.Ordinal)) ? 0 : 1;
     }
     private static void Require(bool ok, string message) { if (!ok) throw new InvalidOperationException(message); }
 }

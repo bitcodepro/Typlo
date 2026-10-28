@@ -59,6 +59,24 @@ Additional platform/editor adapters can implement the same explicit result contr
 Controller tests cover target binding, suffix-only conversion, repeat/Undo, focus loss, external
 clipboard changes, stale content/caret, real input, shutdown and uncertain completion. The separate
 Windows fixture process exercises real native controls, cross-process Unicode/multiline offsets,
-native undo, focus loss during conversion, capability declines and a deliberately delayed write.
+native undo, focus loss during conversion, capability declines and deliberately delayed reads/writes.
 `scripts/test-windows-webview.ps1` runs these checks alongside the existing WebView2 fallback,
 hook-lifecycle, Native AOT build/runtime and desktop checks. This is not a reproduction in real Teams.
+
+The plain-text RichEdit fixture sets and verifies `EM_SETTEXTMODE` on every new HWND, including
+recreation, while preserving native text and selection. WinForms recreates RichTextBox in rich
+mode; configuring it only once in `Shown` leaves later handles unsupported. A forced-recreation
+regression fails the old fixture (`EM_GETTEXTMODE=42`, `Unsupported`) and passes the corrected
+fixture (`EM_GETTEXTMODE=41`, `Ready`), including a subsequent replacement. This is a verified
+fixture failure path, not proof of the original post-merge CI failure's cause: that run omitted
+both actual capture status and mode/read timing.
+
+CI retains `direct-edit-native.log` alongside the assertion report. It records mode-set delivery,
+message result/readback, handle changes, actual capture status, and native message IDs, results,
+elapsed time and Win32 error codes. Read failures are distinguished from unsupported mode/identity
+and invalidated snapshots. A separate delayed `WM_GETTEXT` test requires `Cancelled`, the matching
+failed native read diagnostic and unchanged text/write count. The 40 ms message and 250 ms aggregate
+budgets, conservative capability assertions and no-retry behavior remain unchanged.
+
+Native diagnostics use an explicit internal test sink, buffered until completion; normal application
+capture does not enable it. No document contents, window titles or pointer parameters are logged.
