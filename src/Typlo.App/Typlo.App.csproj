@@ -18,6 +18,10 @@
   </ItemGroup>
   <ItemGroup><EmbeddedResource Include="Assets/Typlo.ico" LogicalName="Typlo.Assets.Typlo.ico" /></ItemGroup>
   <ItemGroup>
+    <Content Include="../../resources/language-detection/*" Link="language-data/%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Typlo.Core\Typlo.Core.csproj" />
     <InternalsVisibleTo Include="Typlo.Tests" />
     <InternalsVisibleTo Include="Typlo.WindowsIntegration" />

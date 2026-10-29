@@ -35,6 +35,32 @@ public abstract class HookPlatformBase : IPlatform
 
     public abstract string Name { get; }
     public abstract PlatformCapabilities Capabilities { get; }
+    public bool SupportsAutomaticWordCorrection => _hook is not null && Capabilities.SimulateInput;
+    public bool SupportsTextRangeBatch => Capabilities.SimulateInput;
+    public bool TrySendTextRangeBatch(nint window, int characters, bool paste, Func<bool> stillValid)
+    {
+        if (characters is < 1 or > 2000 || !SupportsTextRangeBatch || !stillValid() || ForegroundWindow != window) return false;
+        var now = Environment.TickCount64;
+        using var sequence = Simulator.Sequence();
+        sequence.AddKeyPress(KeyCode.VcLeftShift);
+        for (var i = 0; i < characters; i++)
+        {
+            if (!HookFlagsOwnInput) _ownInput.Press(KeyCode.VcLeft, now);
+            sequence.AddKeyPress(KeyCode.VcLeft).AddKeyRelease(KeyCode.VcLeft);
+        }
+        sequence.AddKeyRelease(KeyCode.VcLeftShift);
+        var modifier = ShortcutModifier == KeyModifiers.Win ? KeyCode.VcLeftMeta : KeyCode.VcLeftControl;
+        var action = paste ? KeyCode.VcV : KeyCode.VcC;
+        if (!HookFlagsOwnInput) _ownInput.Press(action, now);
+        sequence.AddKeyPress(modifier).AddKeyPress(action).AddKeyRelease(action).AddKeyRelease(modifier);
+        if (!paste)
+        {
+            if (!HookFlagsOwnInput) _ownInput.Press(KeyCode.VcRight, now);
+            sequence.AddKeyPress(KeyCode.VcRight).AddKeyRelease(KeyCode.VcRight);
+        }
+        if (!stillValid() || ForegroundWindow != window) return false;
+        return sequence.Simulate() == UioHookResult.Success;
+    }
 
     /// <summary>Modifier used by the OS for copy/paste (Ctrl, or Cmd on macOS).</summary>
     protected virtual KeyModifiers ShortcutModifier => KeyModifiers.Ctrl;

@@ -120,7 +120,9 @@ def safe_entry(name):
     if not name or "\\" in name or ":" in name or path.is_absolute() or ".." in path.parts:
         raise ValueError(f"Unsafe archive path: {name}")
     lower = tuple(part.lower() for part in path.parts)
-    if any(part in (".git", "data", ".env", "obj", "bin") or part.endswith(".dsym") for part in lower) or path.suffix.lower() in (".key", ".pem", ".pfx", ".p12", ".db", ".sqlite", ".sqlite3", ".log", ".pdb", ".dbg"):
+    vocabulary = name in ("language-data/words.sqlite3", "Typlo.app/Contents/MacOS/language-data/words.sqlite3")
+    forbidden_suffix = path.suffix.lower() in (".key", ".pem", ".pfx", ".p12", ".db", ".sqlite", ".sqlite3", ".log", ".pdb", ".dbg")
+    if any(part in (".git", "data", ".env", "obj", "bin") or part.endswith(".dsym") for part in lower) or (forbidden_suffix and not vocabulary):
         raise ValueError(f"Local data or build residue in package: {name}")
 
 
@@ -133,6 +135,9 @@ def verify_archive(archive, version, rid, commit):
     if line != f"{digest(archive)}  {expected}":
         raise ValueError(f"SHA-256 mismatch or invalid checksum filename: {expected}")
     required = {"README.md", "LICENSE", NOTICES, "build-info.json", executable_path(rid)}
+    data_prefix = "Typlo.app/Contents/MacOS/language-data/" if rid.startswith("osx-") else "language-data/"
+    vocabulary_files = ("words.sqlite3", "words.manifest.json", "NOTICE.txt", "LICENSE-CC-BY-SA-4.0.txt")
+    required.update(data_prefix + name for name in vocabulary_files)
     if rid.startswith("linux-"):
         required.update("gnome-extension/" + name for name in GNOME_FILES)
     if rid.startswith("osx-"):
@@ -182,6 +187,10 @@ def verify_archive(archive, version, rid, commit):
         notices = read(NOTICES, 16 * 1024 * 1024)
         if not all(component in notices for component in (b"Avalonia", b"SkiaSharp", b"License for:")):
             raise ValueError("Third-party notices are incomplete")
+        for name in vocabulary_files:
+            data = read(data_prefix + name, 16 * 1024 * 1024)
+            if hashlib.sha256(data).hexdigest() != digest(ROOT / "resources/language-detection" / name):
+                raise ValueError("Vocabulary data or attribution differs from the source: " + name)
         validate_executable(read(executable_path(rid), 8192), rid)
         executable = files[executable_path(rid)]
         mode = executable.external_attr >> 16 if isinstance(bundle, zipfile.ZipFile) else executable.mode
@@ -206,7 +215,7 @@ def verify_packages(directory, version, commit, rids=RIDS):
 
 NOTICES = "THIRD-PARTY-NOTICES.txt"
 # Everything an archive may contain at its top level: no extra folders.
-TOP_LEVEL = {"README.md", "LICENSE", NOTICES, "build-info.json", "Typlo.exe", "Typlo", "Typlo.app"}
+TOP_LEVEL = {"README.md", "LICENSE", NOTICES, "build-info.json", "Typlo.exe", "Typlo", "Typlo.app", "language-data"}
 WINDOWS_NATIVE_FILES = {"av_libglesv2.dll", "e_sqlite3.dll", "libHarfBuzzSharp.dll", "libSkiaSharp.dll", "uiohook.dll"}
 GNOME_FILES = ("extension.js", "bridge.js", "metadata.json", "install.sh")
 LICENSE_FILE = re.compile(r"(?i)^(license|licence|copying)([._-].*)?(\.txt|\.md)?$")

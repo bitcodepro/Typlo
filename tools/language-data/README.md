@@ -1,10 +1,12 @@
-# Language vocabulary preparation
+# Offline language vocabulary
 
-These resources and the standalone .NET reader prepare a future language detector.
-The vocabulary does not participate in Typlo's conversion, hotkeys, settings, packaging or startup.
-The data and probe are deliberately outside the application/solution build. Integration
-with automatic language detection remains a separate step. CI runs the Python data
-checks and independently verifies the pack with the .NET reader on all three OSes.
+The application ships this pack for automatic correction after Space. The production reader is
+`src/Typlo.Core/Languages/LanguageLexicon.cs`; the standalone probe uses the same implementation.
+It opens lazily on a background worker, never preloads the vocabulary, and retains a private
+128 KiB SQLite page-cache target with mmap and pooling disabled. Every release package includes
+the database, manifest, attribution and license in `language-data/`. Packaging checks their hashes.
+Manual conversion never requires a dictionary match. CI checks the data and shared .NET reader
+on all three OSes, plus classifier and application integration tests.
 
 ## Data
 
@@ -108,7 +110,7 @@ The benchmark preloads a small workload of evenly spaced keys plus unknown words
 warms SQLite/native code and the filesystem cache, then times 100,000 mixed lookups.
 It reports first reader open, median/p95/p99, retained managed allocation, first-open
 private commit delta and the stress-run private commit delta. These are measurements
-of an isolated prototype on the current machine, not total Typlo idle-memory figures
+of the isolated disk reader on the current machine, not total Typlo idle-memory figures
 or cold-disk/other-OS performance guarantees. Keep the workload arrays alive across
 both memory snapshots to avoid counting their collection as dictionary savings.
 
@@ -118,7 +120,7 @@ retained managed data. The 100k-query stress phase increased private commit by
 about 5.7 MiB; that includes allocator/GC capacity and native memory. The signed
 first-open process delta was noisy/negative and is not a memory-saving claim.
 
-## Limits and next integration step
+## Limits and classifier policy
 
 There are 52,747 words shared by multiple language lists. `chat`, `no` and `так`
 must remain ambiguous. Subtitle corpora contain names, loanwords, spelling mistakes
@@ -128,9 +130,11 @@ Russian contamination; even a shared-alphabet word such as `привет` can su
 This is not an authoritative spelling dictionary, and slang/inflections/compound words
 can be missing. Corpus vocabulary age and subtitle-domain bias also limit coverage.
 
-The future detector should score text/candidate layout conversions using these weights,
-the enabled OS layouts, script evidence and the current layout hint. It must abstain
-for short/shared words, weak margins, unknown input and mixed-language text. Do not
-automatically change a language merely because its dictionary has a match. Reliable
-accuracy still needs separate phrase/mixed-text/wrong-layout evaluation; the current
-verification cases test data/lookup correctness, not classifier accuracy.
+The detector scores physical-key candidates only in the enabled global/application cycle.
+It requires corpus weight 120 (or manual membership, scored at 160), a margin of 32 over
+the current spelling and 24 over competing different spellings. A reliable current word
+is never replaced with a different spelling. Single-letter tokens, unknown words, weak
+margins, addresses, numbers and identifiers are skipped. Shared output spellings use the
+configured cycle order to resolve equal evidence. Corpus weights remain evidence rather
+than calibrated probabilities. These conservative heuristics are not an authoritative
+spelling checker or language translation, and the subtitle corpus has the limits above.

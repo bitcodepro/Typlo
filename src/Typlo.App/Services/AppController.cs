@@ -354,6 +354,7 @@ public sealed partial class AppController : IDisposable
 
     private async Task SwitchInputSourceAsync(KeyboardLayout layout)
     {
+        await StopPendingAutomaticWords();
         var origin = _platform.ForegroundWindow;
         if (!await EnterManualTextOperationAsync(origin)) return;
         try
@@ -384,7 +385,7 @@ public sealed partial class AppController : IDisposable
         => await TransformSelectionCoreAsync((text, _) => transform(text), switchToIfNothingSelected);
 
     private async Task TransformSelectionCoreAsync(Func<string, KeyboardLayout?, (string Text, KeyboardLayout? SwitchTo)> transform,
-        KeyboardLayout? switchToIfNothingSelected = null, bool cycleForApplication = false)
+        KeyboardLayout? switchToIfNothingSelected = null, bool cycleForApplication = false, AutomaticWord? automaticWord = null)
     {
         if (!_platform.Capabilities.SimulateInput && !_platform.SupportsDirectTextEditing)
         {
@@ -393,11 +394,14 @@ public sealed partial class AppController : IDisposable
         }
         var origin = _platform.ForegroundWindow;
         var originInput = Interlocked.Read(ref _typingVersion);
+        if (automaticWord is null) await StopPendingAutomaticWords();
+        else if (!AutomaticWordIsCurrent(automaticWord)) return;
         if (!await EnterManualTextOperationAsync(origin)) return;
         var timing = new TransformTiming();
         try
         {
-            if (_platform.ForegroundWindow != origin || Interlocked.Read(ref _typingVersion) != originInput) return;
+            if (_platform.ForegroundWindow != origin || Interlocked.Read(ref _typingVersion) != originInput ||
+                (automaticWord is not null && !AutomaticWordIsCurrent(automaticWord))) return;
             var window = origin;
             var inputVersion = originInput;
             var element = PinDirectTarget(ref window);
@@ -419,6 +423,11 @@ public sealed partial class AppController : IDisposable
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
             timing.Mark("modifiers");
             if (!NoInputSince()) return;
+            if (automaticWord is not null)
+            {
+                await TransformAutomaticWordWithBatchesAsync(automaticWord, transform, NoInputSince);
+                return;
+            }
             var directHandled = await TryDirectTransformAsync(window, element, inputVersion, NoInputSince, transform, switchToIfNothingSelected);
             timing.Mark("direct adapter");
             if (directHandled) return;
@@ -506,7 +515,8 @@ public sealed partial class AppController : IDisposable
     private sealed class SelectionChangedException() : Exception("The copied selection can no longer be verified.");
     private (nint Window, string Text, long? FocusVersion)? _verifiedSelection;
 
-    private static bool SameSelection(string a, string b) => a.Replace("\r\n", "\n") == b.Replace("\r\n", "\n");
+    private static string ComparableSelection(string text) => text.Replace("\r\n", "\n").Replace('\u00a0', ' ').Replace('\u202f', ' ');
+    private static bool SameSelection(string a, string b) => ComparableSelection(a) == ComparableSelection(b);
     private bool ForegroundChanged(long? before) => before is { } version && _platform.ForegroundChangeVersion != version;
     private bool SelectionFocusChanged(nint window, string text) => _verifiedSelection is not { } copy ||
         copy.Window != window || !SameSelection(copy.Text, text) || ForegroundChanged(copy.FocusVersion);
@@ -647,6 +657,7 @@ public sealed partial class AppController : IDisposable
     /// </summary>
     public async Task UndoLastTransformAsync()
     {
+        await StopPendingAutomaticWords();
         if (_lastTransform is not { } last || DateTime.UtcNow - last.At > TimeSpan.FromMinutes(2)) return;
         if ((!_platform.Capabilities.SimulateInput && last.Direct is null) || !await _convertGate.WaitAsync(0)) return;
         ClipboardSnapshot? snapshot = null;
@@ -722,6 +733,7 @@ public sealed partial class AppController : IDisposable
             lock (_activeHotkeys) own = _activeHotkeys.Contains(shortcut);
             if (own) return; // e.g. the Undo hotkey must not invalidate the conversion it is about to undo
         }
+        Volatile.Read(ref _pendingCopyInput)?.Observe(key);
         var version = Interlocked.Increment(ref _typingVersion);
         // Any user input (a key, Backspace, arrows, a click) may move the caret: an older conversion can no longer
         // be located reliably, so it cannot be undone.
@@ -741,6 +753,7 @@ public sealed partial class AppController : IDisposable
             {
                 typedWindow = _platform.ForegroundWindow;
                 _recentTyping.Record(key.Char, typedWindow, now, version, CaptureDirectInputElement(typedWindow));
+                if (key.Char == ' ') QueueAutomaticWord(typedWindow, version);
             }
         }
         catch (Exception e) { _recentTyping.Reset(version); Log.Error("Cannot track input context", e); }
@@ -888,7 +901,9 @@ public sealed partial class AppController : IDisposable
     }
 
     /// <summary>Sends Copy and returns the selected text, or null when nothing is selected.</summary>
-    private async Task<string?> CopySelectionAsync(nint window, Func<bool> stillValid, bool allowRevalidation = true)
+    private async Task<string?> CopySelectionAsync(nint window, Func<bool> stillValid, bool allowRevalidation = true,
+        Func<bool>? sendCopy = null, TimeSpan? copyTimeout = null, Func<string, bool>? expectedCopy = null,
+        Func<bool>? canRestoreCancelledCopy = null)
     {
         _verifiedSelection = null;
         var focusVersion = _platform.ForegroundChangeVersion;
@@ -899,20 +914,40 @@ public sealed partial class AppController : IDisposable
         SetOwnText(placeholder);
         var before = _platform.ClipboardSequence;
         if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true)) throw new SelectionChangedException();
-        _platform.SendCopy();
-        if (await WaitForClipboardChange(before, TimeSpan.FromSeconds(2)) is not { } change)
+        using var copyInput = new CopyInputObservation(this);
+        if (sendCopy is not null) { if (!sendCopy()) throw new SelectionChangedException(); }
+        else _platform.SendCopy();
+        if (await WaitForClipboardChange(before, copyTimeout ?? TimeSpan.FromSeconds(2)) is not { } change)
         {
             if (resumed || ForegroundChanged(focusVersion) || !stillValid()) throw new SelectionChangedException();
             return null;
         }
         var observed = change.Sequence;
+        if (!stillValid())
+        {
+            // The editor may have completed our Copy just before the user resumed typing.
+            // Keep ownership for restoring the saved clipboard, even though text editing stops.
+            // An unowned/unknown clipboard write is never adopted on this cancellation path.
+            // A manual command can also cancel an automatic Copy without changing input/focus.
+            // Its caller may authorize restoration in that unchanged context, but only for the
+            // expected word, a confirmed target owner and a stable clipboard sequence.
+            if (expectedCopy is not null && (copyInput.CopyCompletedBeforeTyping(observed) || canRestoreCancelledCopy?.Invoke() == true) &&
+                _platform.IsClipboardOwnedBy(window) == true && _platform.ClipboardSequence == observed)
+            {
+                var copied = _platform.ReadText();
+                if (copied is not null && expectedCopy(copied) && _platform.ClipboardSequence == observed && _platform.IsClipboardOwnedBy(window) == true)
+                { _expectedSequence = observed; _adoptedCopy = (copied, window); }
+            }
+            throw new SelectionChangedException();
+        }
         if (!await _platform.WaitForTargetAsync(window, stillValid, () => resumed = true)) throw new SelectionChangedException();
         // Never replace a foreign clipboard write with another verification copy.
         var owned = _platform.IsClipboardOwnedBy(window);
         if (owned == false || (owned is null && change.ChangedAgain) || _platform.ClipboardSequence != observed)
             throw new ClipboardTakenException();
-        _expectedSequence = observed;
         var text = _platform.ReadText();
+        if (text is not null && expectedCopy is not null && !expectedCopy(text)) throw new ClipboardTakenException();
+        _expectedSequence = observed;
         if (text is not null && _platform.IsClipboardOwnedBy(window) == true) _adoptedCopy = (text, window);
         EnsureClipboardIsOurs();
         var lineCopy = _platform.IsEmptySelectionLineCopy();
@@ -929,7 +964,7 @@ public sealed partial class AppController : IDisposable
             // The clipboard still contains what was selected before blur. Only a new copy can
             // establish the current range. Another interruption during that copy aborts safely.
             if (!allowRevalidation) throw new SelectionChangedException();
-            var current = await CopySelectionAsync(window, stillValid, allowRevalidation: false);
+            var current = await CopySelectionAsync(window, stillValid, allowRevalidation: false, sendCopy, copyTimeout, expectedCopy, canRestoreCancelledCopy);
             if (current is null || !SameSelection(current, text)) throw new SelectionChangedException();
             return current;
         }
@@ -978,12 +1013,12 @@ public sealed partial class AppController : IDisposable
     private Task<string?> SelectTransformResultAsync(TransformRecord last, Func<bool> stillValid)
     {
         // Editors move over CRLF in one step, and over a whole grapheme (including surrogate pairs).
-        var expected = last.Result.Replace("\r\n", "\n");
+        var expected = ComparableSelection(last.Result);
         var steps = System.Globalization.StringInfo.ParseCombiningCharacters(expected).Length;
         return SelectAndVerifyAsync(last.Window, steps, stillValid,
-            text => text.Replace("\r\n", "\n") == expected, remainingSteps: text =>
+            text => ComparableSelection(text) == expected, remainingSteps: text =>
             {
-                var suffix = text.Replace("\r\n", "\n");
+                var suffix = ComparableSelection(text);
                 if (suffix.Length == 0 || suffix.Length >= expected.Length || !expected.EndsWith(suffix, StringComparison.Ordinal)) return null;
                 var remaining = steps - System.Globalization.StringInfo.ParseCombiningCharacters(suffix).Length;
                 return remaining > 0 ? remaining : null;
@@ -1190,6 +1225,8 @@ public sealed partial class AppController : IDisposable
         _recentTyping.Reset(Interlocked.Increment(ref _typingVersion));
         _lastTransform = null;
         StopApplicationLayouts();
+        _ = StopPendingAutomaticWords();
+        _lexicon.Dispose();
         _memory.Dispose();
         _images.Dispose();
         if (_remote is not null) { Store.Dispose(); return; }

@@ -205,6 +205,14 @@ public sealed partial class AppControllerTests
 public class ApplicationLayoutSettingsTests
 {
     [Fact]
+    public void EmptyLanguageListIsValidAndMeansGlobalCycle()
+    {
+        var settings = new AppSettings { ApplicationLayouts = [new() { ProcessName = "chrome", Layouts = [] }] };
+        settings.Normalize();
+        Assert.Empty(settings.Validate());
+        Assert.Empty(Assert.Single(settings.Clone().ApplicationLayouts).Layouts);
+    }
+    [Fact]
     public void RulesRoundTripCloneNormalizeAndValidateWithoutChangingGlobalOrder()
     {
         var settings = new AppSettings { Layouts = ["en", "ru"], ApplicationLayouts =
