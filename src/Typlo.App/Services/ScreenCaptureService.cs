@@ -74,8 +74,9 @@ internal sealed class ScreenCaptureService(AppController controller, bool diagno
             _cancel = null;
         }
         if (_disposed || image is null) return;
+        if (destination == CaptureDestination.Clipboard && !controller.Settings.ScreenshotEditorAfterCopy) return;
         _preview = new CapturePreviewWindow(image, mode => _ = StartAsync(mode, destination),
-            () => controller.CopyScreenshotAsync(image), destination == CaptureDestination.File);
+            controller.CopyScreenshotAsync, destination == CaptureDestination.File);
         _preview.Closed += (_, _) => _preview = null;
         _preview.Show(); _preview.Activate();
     }

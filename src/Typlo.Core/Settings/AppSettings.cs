@@ -76,6 +76,7 @@ public sealed class AppSettings
     public string ClipboardHotkey { get; set; } = "Ctrl+Shift+V";
 
     public CaptureShape ScreenshotShape { get; set; } = CaptureShape.Rectangle;
+    public bool ScreenshotEditorAfterCopy { get; set; } = true;
     public string ScreenshotCopyHotkey { get; set; } = "Ctrl+Alt+Shift+S";
     public string ScreenshotSaveHotkey { get; set; } = "Ctrl+Alt+Shift+F";
 
