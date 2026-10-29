@@ -109,6 +109,9 @@ public interface IPlatform : IDisposable
     void SendPaste();
     /// <summary>Opaque handle of the focused window/app (HWND, PID or X11 window id); 0 if unknown.</summary>
     nint ForegroundWindow { get; }
+    string? GetApplicationProcessName(nint window) => null;
+    bool SupportsForegroundNotifications => false;
+    event Action<nint>? ForegroundChanged { add { } remove { } }
     /// <summary>
     /// Monotonic foreground transition counter, including a departure and return between reads.
     /// Null when the platform cannot observe transitions independently of polling.

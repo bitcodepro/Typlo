@@ -206,6 +206,16 @@ public sealed class LinuxPlatform : HookPlatformBase
     // ---------------------------------------------------------------- windows
 
     public override nint ForegroundWindow => _wayland ? 0 : X11Clients.ActiveWindow();
+    public override string? GetApplicationProcessName(nint window)
+    {
+        if (_wayland || window == 0 || !Proc.Has("xdotool")) return null;
+        // Run only on application entry or a conversion with configured rules, not on polling ticks.
+        // The helper contains X11 BadWindow errors if a window exits during this lookup.
+        var result = Proc.Run("xdotool", ["getwindowpid", ((long)window).ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+        if (!result.Ok || !int.TryParse(result.Text.Trim(), out var pid) || pid == Environment.ProcessId) return null;
+        try { return File.ReadAllText($"/proc/{pid}/comm").Trim(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+    }
 
     public override void ActivateWindow(nint handle)
     {

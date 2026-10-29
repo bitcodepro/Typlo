@@ -1914,11 +1914,22 @@ public sealed partial class AppControllerTests : IDisposable
         private readonly object _focusGate = new();
         private nint _window = 1;
         private long _foregroundVersion;
+        public Func<nint, string?>? ApplicationProcess;
+        public int ApplicationLookups;
+        public string? GetApplicationProcessName(nint window) { Interlocked.Increment(ref ApplicationLookups); return ApplicationProcess?.Invoke(window); }
+        public bool SupportsForegroundNotifications => true;
+        public event Action<nint>? ForegroundChanged;
+        public readonly System.Collections.Concurrent.ConcurrentQueue<(nint Window, string Layout)> LayoutSwitches = new();
         public bool TrackFocusTransitions = true;
         public nint Window
         {
             get { lock (_focusGate) return _window; }
-            set { lock (_focusGate) { if (_window != value) _foregroundVersion++; _window = value; } }
+            set
+            {
+                bool changed;
+                lock (_focusGate) { changed = _window != value; if (changed) _foregroundVersion++; _window = value; }
+                if (changed) ForegroundChanged?.Invoke(value);
+            }
         }
         public long? ForegroundChangeVersion { get { lock (_focusGate) return TrackFocusTransitions ? _foregroundVersion : null; } }
         public Document Document => DocumentFor(Window);
@@ -1952,7 +1963,8 @@ public sealed partial class AppControllerTests : IDisposable
         public IReadOnlyList<KeyboardLayout> Installed = [KeyboardLayouts.English, KeyboardLayouts.Russian];
         public string? ActiveLayoutId;
         public IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => Installed;
-        public string? GetCurrentLayoutId(nint window) => ActiveLayoutId;
+        public Action<nint>? BeforeLayoutRead;
+        public string? GetCurrentLayoutId(nint window) { BeforeLayoutRead?.Invoke(window); return ActiveLayoutId; }
         public PlatformCapabilities Capabilities { get; } = new(true, true, true, true);
         public event Action<int>? HotkeyPressed;
         private readonly Dictionary<Hotkey, int> _hotkeys = [];
@@ -2086,7 +2098,7 @@ public sealed partial class AppControllerTests : IDisposable
             finally { InTypingEvent = false; }
         }
         public bool SwitchKeyboardLayout(nint window, int langId) => true;
-        public bool SwitchKeyboardLayout(nint window, KeyboardLayout layout) { ActiveLayoutId = layout.Id; return true; }
+        public bool SwitchKeyboardLayout(nint window, KeyboardLayout layout) { ActiveLayoutId = layout.Id; LayoutSwitches.Enqueue((window, layout.Id)); return true; }
         public bool SetKeepAwake(bool enabled) => true;
         public void SignalUserActivity() { }
         public bool AutostartEnabled { get; set; }

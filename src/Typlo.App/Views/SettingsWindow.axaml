@@ -80,6 +80,11 @@
         <TextBlock x:Name="CyclePreview" Classes="hint" Margin="0,8,0,0" />
         <TextBlock x:Name="CycleStatus" Classes="hint" Foreground="IndianRed" Margin="0,4,0,0" />
 
+        <TextBlock Classes="h" Text="{l:Tr appLayouts.title}" />
+        <TextBlock Classes="hint" Text="{l:Tr appLayouts.hint}" Margin="0,0,0,8" />
+        <StackPanel x:Name="ApplicationLayoutRows" Spacing="12" />
+        <Button x:Name="AddApplicationLayoutButton" Content="{l:Tr appLayouts.add}" Margin="0,8,0,0" />
+
         <TextBlock Classes="h" Text="{l:Tr capture.title}" />
         <TextBlock x:Name="CaptureHint" Classes="hint" Text="{l:Tr capture.settingsHint}" Margin="0,0,0,10" />
         <TextBlock Classes="label" Text="{l:Tr capture.shape}" Margin="0,0,0,4" />

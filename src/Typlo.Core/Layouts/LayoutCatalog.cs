@@ -15,6 +15,8 @@ public sealed class LayoutCatalog(IEnumerable<KeyboardLayout> installed)
         if (All.Count == 0) return; // a failed OS query must not erase the user's configuration
         var fresh = !settings.LayoutsInitialized && settings.Layouts.Count == 0 && settings.LayoutHotkeys.Count == 0;
         settings.Layouts = settings.Layouts.Select(id => Find(id)?.Id ?? id).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        foreach (var rule in settings.ApplicationLayouts)
+            rule.Layouts = rule.Layouts.Select(id => Find(id)?.Id ?? id).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         foreach (var row in settings.LayoutHotkeys) row.LayoutId = Find(row.LayoutId)?.Id ?? row.LayoutId;
         settings.LayoutHotkeys = settings.LayoutHotkeys.DistinctBy(h => h.LayoutId, StringComparer.OrdinalIgnoreCase).ToList();
         if (fresh || settings.Layouts.Count == 0)

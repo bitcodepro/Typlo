@@ -21,6 +21,8 @@ public enum SettingsProblemKind
     DuplicateTrigger,
     EmptyText,
     MultipleCursors,
+    DuplicateAppProcess,
+    EmptyAppLayouts,
 }
 
 /// <summary>An exported settings file that is not valid; <see cref="Problems"/> is empty for "not a Typlo file".</summary>
@@ -45,6 +47,7 @@ public sealed class AppSettings
     /// <summary>Native layout IDs in the user's cycle order; populated from the OS on first start.</summary>
     public List<string> Layouts { get; set; } = [];
     public bool LayoutsInitialized { get; set; }
+    public List<ApplicationLayoutRule> ApplicationLayouts { get; set; } = [];
 
     /// <summary>Converts the selection to the other layout of the pair.</summary>
     public string ToggleHotkey { get; set; } = "Ctrl+Alt+Shift+Space";
@@ -123,6 +126,13 @@ public sealed class AppSettings
             s.Text ??= "";
         }
         LayoutHotkeys = (LayoutHotkeys ?? []).Where(h => h is not null && h.LayoutId is not null).ToList();
+        ApplicationLayouts = (ApplicationLayouts ?? []).Where(r => r is not null).ToList();
+        foreach (var rule in ApplicationLayouts)
+        {
+            rule.ProcessName = ApplicationLayoutRule.ProcessKey(rule.ProcessName);
+            rule.Layouts = (rule.Layouts ?? []).Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
         foreach (var h in LayoutHotkeys) h.Hotkey ??= "";
         ExcludedApps = (ExcludedApps ?? []).Where(a => !string.IsNullOrWhiteSpace(a)).ToList();
         ToggleHotkey ??= "";
@@ -142,6 +152,14 @@ public sealed class AppSettings
     {
         var problems = new List<SettingsProblem>();
         var seen = new HashSet<string>();
+        var processes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rule in ApplicationLayouts ?? [])
+        {
+            if (!rule.Enabled) continue;
+            var process = ApplicationLayoutRule.ProcessKey(rule.ProcessName);
+            if (!processes.Add(process)) problems.Add(new(SettingsProblemKind.DuplicateAppProcess, process));
+            if (process.Length == 0 || rule.Layouts.Count == 0) problems.Add(new(SettingsProblemKind.EmptyAppLayouts, process));
+        }
         foreach (var s in Snippets ?? [])
         {
             var trigger = (s?.Trigger ?? "").Trim();

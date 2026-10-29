@@ -38,6 +38,13 @@ public sealed partial class WinPlatform : IPlatform
     public event Action<int>? HotkeyPressed;
     public event Action<RawClip>? ClipboardCaptured;
     public event Action<Shared.TypedKey>? KeyTyped;
+    public event Action<nint>? ForegroundChanged;
+    public bool SupportsForegroundNotifications => _foregroundHook != 0;
+    public string? GetApplicationProcessName(nint window)
+    {
+        GetWindowThreadProcessId(window, out var pid);
+        return pid == 0 || IsOwnProcess(pid) ? null : ProcessNameOf(window);
+    }
 
     private readonly bool _passive;
     private readonly bool _monitorClipboard;
@@ -224,6 +231,7 @@ public sealed partial class WinPlatform : IPlatform
         _lastForeground = window;
         _foregroundVersion++;
         TrackTrayTarget(window);
+        ForegroundChanged?.Invoke(window);
     }
 
     private bool IsOwnProcess(uint pid) => pid == Environment.ProcessId || pid == _uiProcessId;
@@ -515,9 +523,10 @@ public sealed partial class WinPlatform : IPlatform
     {
         if (hwnd == 0) return null;
         GetWindowThreadProcessId(hwnd, out var pid);
-        try { return pid == 0 ? null : Process.GetProcessById((int)pid).ProcessName; }
+        try { if (pid == 0) return null; using var process = Process.GetProcessById((int)pid); return process.ProcessName; }
         catch (ArgumentException) { return null; }
         catch (InvalidOperationException) { return null; }
+        catch (System.ComponentModel.Win32Exception) { return null; }
     }
 
     // ---------------------------------------------------------------- input

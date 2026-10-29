@@ -199,6 +199,8 @@ internal static class DirectEditCheck
             {
                 var state = await Command(new { op = "set", text = "ghb", start = 0, length = 3 });
                 var window = (nint)state.GetProperty("window").GetInt64();
+                Require(string.Equals(platform.GetApplicationProcessName(window), child.ProcessName, StringComparison.OrdinalIgnoreCase),
+                    "foreground app identity uses the external window owner process");
                 platform.ActivateWindow(window);
                 Require(platform.FocusedInputElement == (nint)state.GetProperty("element").GetInt64(), "focused native element");
                 var paths = new AppPaths(Path.Combine(work, "controller"));
@@ -312,6 +314,30 @@ internal static class DirectEditCheck
                 Require(state.GetProperty("text").GetString() == "ghb" && state.GetProperty("writes").GetInt32() == writes,
                     "timed-out capture does not edit the document");
             });
+            await Check("external process uses its application cycle instead of the global cycle", async () =>
+            {
+                var state = await Command(new { op = "set", text = "ss", start = 0, length = 2 });
+                var paths = new AppPaths(Path.Combine(work, "application-cycle"));
+                new SettingsStore(paths.SettingsFile).Save(new AppSettings
+                {
+                    LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "",
+                    ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "", HistoryEnabled = false,
+                    SwitchSystemLayout = false,
+                });
+                using var controller = new AppController(platform, paths, PlatformFactory.CreateKeyProtector(true), diagnostic: true);
+                controller.ConfigureDiagnosticLayouts([KeyboardLayouts.English, KeyboardLayouts.Russian, KeyboardLayouts.Ukrainian]);
+                var settings = controller.Settings.Clone(); settings.Layouts = ["en", "ru"];
+                settings.ApplicationLayouts = [new() { ProcessName = child.ProcessName, Layouts = ["en", "uk"] }];
+                controller.ApplySettings(settings);
+                var sequence = platform.ClipboardSequence;
+                await controller.ConvertSelectionAsync(null);
+                state = await Command(new { op = "read" });
+                Require(state.GetProperty("text").GetString() == "іі", "app cycle selects Ukrainian, not the global Russian target");
+                await controller.ConvertSelectionAsync(null);
+                state = await Command(new { op = "read" });
+                Require(state.GetProperty("text").GetString() == "ss", "app cycle returns to English");
+                Require(platform.ClipboardSequence == sequence, "native app cycle does not change clipboard");
+            });
             await child.StandardInput.WriteLineAsync("{\"op\":\"exit\"}");
             await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
         }
@@ -324,7 +350,7 @@ internal static class DirectEditCheck
             await File.WriteAllLinesAsync(Path.Combine(work, "direct-edit-native.log"), diagnostics);
             foreach (var line in report) Console.WriteLine(line);
         }
-        return report.Count == 7 && report.All(line => line.StartsWith("PASS ", StringComparison.Ordinal)) ? 0 : 1;
+        return report.Count == 8 && report.All(line => line.StartsWith("PASS ", StringComparison.Ordinal)) ? 0 : 1;
     }
     private static void Require(bool ok, string message) { if (!ok) throw new InvalidOperationException(message); }
 }

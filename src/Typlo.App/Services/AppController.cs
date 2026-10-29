@@ -83,6 +83,7 @@ public sealed partial class AppController : IDisposable
         ApplySnippets();
         _platform.ClipboardCaptured += OnClipboardCaptured;
         RegisterHotkeys();
+        ConfigureApplicationLayouts();
     }
 
     private static StoreLimits Limits(AppSettings s) =>
@@ -93,6 +94,7 @@ public sealed partial class AppController : IDisposable
         var cycle = LayoutCatalog.Cycle(Settings);
         var ordered = cycle.Concat(AvailableLayouts).Append(KeyboardLayouts.English).DistinctBy(l => l.Id).ToList();
         _converter = new LayoutConverter(ordered, cycle);
+        BuildApplicationCycles();
     }
 
     private void DiscoverLayouts()
@@ -121,6 +123,7 @@ public sealed partial class AppController : IDisposable
         _settingsStore.Save(Settings);
         BuildConverter();
         ApplySnippets();
+        ConfigureApplicationLayouts();
     }
 
     private IEnumerable<KeyboardLayout> SourceLayouts(KeyboardLayout? preferred) => preferred is { SupportsConversion: true }
@@ -148,6 +151,7 @@ public sealed partial class AppController : IDisposable
         ApplyKeepAwake();
         ApplySnippets();
         RegisterHotkeys();
+        ConfigureApplicationLayouts();
     }
 
     /// <summary>Raised when settings change (e.g. to refresh the tray menu); may be on any thread.</summary>
@@ -340,20 +344,21 @@ public sealed partial class AppController : IDisposable
     public Task ConvertSelectionAsync(KeyboardLayout? target)
     {
         if (target is { SupportsConversion: false }) return SwitchInputSourceAsync(target);
-        if (target is null && LayoutCatalog.Cycle(Settings).Count < 2) return Task.CompletedTask;
+        if (target is null && _applicationCycles.Count == 0 && LayoutCatalog.Cycle(Settings).Count < 2) return Task.CompletedTask;
         return TransformSelectionCoreAsync((text, source) =>
         {
             var result = target is null ? _converter.Toggle(text, source) : _converter.ConvertTo(text, target, source);
             return (result.Changed ? result.Text : text, result.Target);
-        }, switchToIfNothingSelected: target);
+        }, switchToIfNothingSelected: target, cycleForApplication: target is null);
     }
 
     private async Task SwitchInputSourceAsync(KeyboardLayout layout)
     {
-        if (!await _convertGate.WaitAsync(0)) return;
+        var origin = _platform.ForegroundWindow;
+        if (!await EnterManualTextOperationAsync(origin)) return;
         try
         {
-            var window = _platform.ForegroundWindow;
+            var window = origin;
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
             if (!IsTargetActive(window)) return;
             LastTransform = null;
@@ -361,7 +366,7 @@ public sealed partial class AppController : IDisposable
             _platform.SwitchKeyboardLayout(window, layout);
         }
         catch (Exception e) { Log.Error("Input source switch failed", e); }
-        finally { _convertGate.Release(); }
+        finally { ExitManualTextOperation(); }
     }
 
     /// <summary>Cycles the case of the selection (lower → Title → UPPER).</summary>
@@ -379,20 +384,37 @@ public sealed partial class AppController : IDisposable
         => await TransformSelectionCoreAsync((text, _) => transform(text), switchToIfNothingSelected);
 
     private async Task TransformSelectionCoreAsync(Func<string, KeyboardLayout?, (string Text, KeyboardLayout? SwitchTo)> transform,
-        KeyboardLayout? switchToIfNothingSelected = null)
+        KeyboardLayout? switchToIfNothingSelected = null, bool cycleForApplication = false)
     {
         if (!_platform.Capabilities.SimulateInput && !_platform.SupportsDirectTextEditing)
         {
             Log.Info("Text tools: synthetic input is not available on this platform/session");
             return;
         }
-        if (!await _convertGate.WaitAsync(0)) return;
+        var origin = _platform.ForegroundWindow;
+        var originInput = Interlocked.Read(ref _typingVersion);
+        if (!await EnterManualTextOperationAsync(origin)) return;
         var timing = new TransformTiming();
         try
         {
-            var window = _platform.ForegroundWindow;
-            var inputVersion = Interlocked.Read(ref _typingVersion);
+            if (_platform.ForegroundWindow != origin || Interlocked.Read(ref _typingVersion) != originInput) return;
+            var window = origin;
+            var inputVersion = originInput;
             var element = PinDirectTarget(ref window);
+            lock (_applicationFocusLock) _manualTextWindow = window;
+            var application = cycleForApplication ? ApplicationCycleFor(window) : null;
+            if (cycleForApplication && application is null && LayoutCatalog.Cycle(Settings).Count < 2) return;
+            if (application is not null)
+            {
+                transform = (text, source) =>
+                {
+                    var result = application.Layouts.Length == 1
+                        ? application.Converter.ConvertTo(text, application.Layouts[0], source)
+                        : application.Converter.Toggle(text, source);
+                    return (result.Changed ? result.Text : text, result.Target);
+                };
+                if (application.Layouts.Length == 1) switchToIfNothingSelected = application.Layouts[0];
+            }
             bool NoInputSince() => Volatile.Read(ref _disposed) == 0 && Interlocked.Read(ref _typingVersion) == inputVersion;
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
             timing.Mark("modifiers");
@@ -418,7 +440,7 @@ public sealed partial class AppController : IDisposable
         }
         finally
         {
-            _convertGate.Release();
+            ExitManualTextOperation();
             timing.Finish();
         }
     }
@@ -1164,6 +1186,7 @@ public sealed partial class AppController : IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _recentTyping.Reset(Interlocked.Increment(ref _typingVersion));
         _lastTransform = null;
+        StopApplicationLayouts();
         _memory.Dispose();
         _images.Dispose();
         if (_remote is not null) { Store.Dispose(); return; }

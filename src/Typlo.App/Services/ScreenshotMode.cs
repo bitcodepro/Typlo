@@ -77,6 +77,10 @@ internal static class ScreenshotMode
 
                 // Dark theme, with a snippet, scrolled to the new sections.
                 var dark = controller.Settings.Clone();
+                controller.ConfigureDiagnosticLayouts([Typlo.Core.Layouts.KeyboardLayouts.English, Typlo.Core.Layouts.KeyboardLayouts.Russian, Typlo.Core.Layouts.KeyboardLayouts.Ukrainian]);
+                dark.Layouts = ["en", "ru", "uk"];
+                dark.ApplicationLayouts = [new() { ProcessName = "sample-chat", Layouts = ["en", "ru", "uk"] },
+                    new() { ProcessName = "sample-editor", Layouts = ["en"] }];
                 dark.UiTheme = "dark";
                 dark.Snippets = [new Snippet { Trigger = ";hello", Text = "Здравствуйте, {cursor}!\n\n    Спасибо за сообщение.\n\nС уважением,\n" }];
                 controller.ApplySettings(dark);
@@ -96,6 +100,9 @@ internal static class ScreenshotMode
                 darkSettings.FindControl<StackPanel>("CycleRows")?.BringIntoView();
                 await Task.Delay(300);
                 Save(darkSettings, Path.Combine(outDir, "settings_layout_cycle.png"));
+                darkSettings.FindControl<StackPanel>("ApplicationLayoutRows")?.BringIntoView();
+                await Task.Delay(300);
+                Save(darkSettings, Path.Combine(outDir, "settings_application_layouts.png"));
                 if (darkSettings.FindControl<ScrollViewer>("Scroller") is { } scroller)
                 {
                     scroller.ScrollToEnd();

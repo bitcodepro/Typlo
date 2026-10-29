@@ -71,5 +71,6 @@ public static partial class Loc
             Strings[key] = (values[0], values[1], values[2]);
             for (var i = 3; i < Languages.Count; i++) Extra[Languages[i].Code][key] = values[i];
         }
+        AddApplicationLayoutStrings();
     }
 }
