@@ -5,6 +5,8 @@ namespace Typlo.App.Platform.Windows;
 
 public sealed partial class WinPlatform
 {
+    // Explicit test sink, including snapshots created through the controller. No text or HWND values.
+    internal Action<NativeEditDiagnostic>? DirectTextDiagnostic { get; set; }
     public bool SupportsDirectTextEditing => !_passive && !Volatile.Read(ref _disposed);
     public bool CanRetainDirectInputTarget(nint window, nint element) => SupportsDirectTextEditing &&
         NativeEditSnapshot.CanRetain(window, element, IsOwnProcess);
@@ -18,7 +20,7 @@ public sealed partial class WinPlatform
     }
 
     public Task<DirectTextCapture> CaptureDirectTextAsync(nint window, nint element, Func<bool> stillValid)
-        => CaptureDirectTextAsync(window, element, stillValid, diagnostic: null);
+        => CaptureDirectTextAsync(window, element, stillValid, DirectTextDiagnostic);
 
     internal Task<DirectTextCapture> CaptureDirectTextAsync(nint window, nint element, Func<bool> stillValid,
         Action<NativeEditDiagnostic>? diagnostic)

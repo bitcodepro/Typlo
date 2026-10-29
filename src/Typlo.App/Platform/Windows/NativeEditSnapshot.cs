@@ -71,6 +71,10 @@ internal sealed class NativeEditSnapshot : DirectTextSnapshot
             current.SelectionEnd != start + length || !valid()) return new(DirectEditStatus.Uncertain);
         fixed (char* chars = replacement)
             if (!deadline.Send(Element, ReplaceSel, 1, (nint)chars, out _)) return new(DirectEditStatus.Uncertain);
+        // The write completed. Finish its read-only verification within the original operation
+        // deadline instead of discarding a successful edit when one read exceeds the 40 ms probe cap.
+        // No message is retried, and mutating messages retain their short timeout.
+        deadline.BeginVerification();
         var after = Read(_identity, _excluded, valid, deadline);
         var expected = Text[..start] + replacement + Text[(start + length)..];
         return after is not null && after.Text == expected && after.SelectionStart == start + replacement.Length &&
@@ -130,22 +134,31 @@ internal sealed class NativeEditSnapshot : DirectTextSnapshot
 
     private sealed class Deadline(Action<NativeEditDiagnostic>? diagnostic)
     {
+        private const int BudgetMilliseconds = 250;
+        private bool _verifyingWrite;
         internal Action<NativeEditDiagnostic>? Diagnostic => diagnostic;
         private readonly long _start = Stopwatch.GetTimestamp();
         internal void Record(string operation, string outcome) =>
             diagnostic?.Invoke(new(operation, outcome, Stopwatch.GetElapsedTime(_start).TotalMilliseconds));
+        internal void BeginVerification()
+        {
+            _verifyingWrite = true;
+            Record("verify", "after-confirmed-write");
+        }
         internal bool Send(nint window, uint message, nuint wParam, nint lParam, out nuint result)
         {
             result = 0;
-            var remaining = 250 - (int)Stopwatch.GetElapsedTime(_start).TotalMilliseconds;
+            var remaining = BudgetMilliseconds - (int)Stopwatch.GetElapsedTime(_start).TotalMilliseconds;
             if (remaining <= 0)
             {
                 diagnostic?.Invoke(new("send", "budget-exhausted", Stopwatch.GetElapsedTime(_start).TotalMilliseconds, Message: message));
                 return false;
             }
             var start = diagnostic is null ? 0 : Stopwatch.GetTimestamp();
+            var read = message is GetLength or GetText or GetSel or GetTextMode;
+            var limit = _verifyingWrite && read ? remaining : Math.Min(40, remaining);
             var sent = SendMessageTimeoutW(window, message, wParam, lParam, 0x1 | 0x2 | 0x20,
-                (uint)Math.Min(40, remaining), out result) != 0;
+                (uint)limit, out result) != 0;
             var error = sent ? 0 : Marshal.GetLastPInvokeError();
             // Only documented scalar read results; write-message return values are unspecified.
             var diagnosticResult = message is GetLength or GetText or GetSel or GetTextMode ? result : 0;
