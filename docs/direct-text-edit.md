@@ -1,9 +1,12 @@
 # Direct text editing
 
-Layout conversion, case conversion and transliteration ask `IPlatform.CaptureDirectTextAsync` for a
-bound control before copying anything. A `DirectTextSnapshot` contains the root window, field,
-bounded document text and selection offsets. Recent physical input also carries field identity,
-so two fields in one window cannot share a typing run. A retained run or verified last replacement
+Layout conversion, case conversion and transliteration qualify a native field before asking
+`IPlatform.CaptureDirectTextAsync` for a bound control. A `DirectTextSnapshot` contains the root window,
+field, bounded document text and selection offsets. Recent physical input carries field identity
+only for eligible native controls, so two supported fields in one window cannot share a typing run.
+Opaque browser/WebView focus HWNDs are not field identities: changes to those proxies must not
+split or discard the window-scoped typing run used by the keyboard/clipboard strategy.
+A retained native run or verified last replacement
 can identify the editor when a notification has already become foreground, provided the platform
 still recognizes it as a live eligible target. Unsupported or closed prior fields cannot redirect
 a command away from the current window's explicit selection. Actual user input
@@ -12,7 +15,8 @@ invalidates it. There is no search for a caret in unrelated background windows.
 ## Capability and commit results
 
 - `Unsupported`: the provider has not changed selection or text; the controller may use the existing
-  guarded keyboard/clipboard path against the original window.
+  guarded keyboard/clipboard path against the original window and, for a pinned native target,
+  the original field. A programmatic focus change inside that window cancels fallback.
 - `Cancelled`: stale contents, changed selection, user input, shutdown or failed capture. Stop.
 - `Uncertain`: a mutating message was sent, but completion could not be confirmed. Stop, discard the
   retained range, do not paste again, do not switch the system layout and do not offer an unsafe Undo.
@@ -22,6 +26,11 @@ invalidates it. There is no search for a caret in unrelated background windows.
 Every write rechecks the bound control's identity, full document, selection and input generation.
 Repeat commands and Undo validate the retained post-edit document, not just a matching word.
 An unchanged result is revalidated without changing the control's selection.
+
+`AppController.Direct` owns native operations; `AppController.Selection` owns clipboard capture,
+selection verification, replacement and clipboard restoration. A command holds one shared operation
+gate and enters the selection strategy only after a pre-mutation capability decline. Cancellation
+or uncertain completion of a native operation cannot also send a clipboard paste.
 
 ## Windows adapter
 
@@ -55,6 +64,12 @@ ValuePattern replacement would risk formatting and editor undo semantics and is 
 Additional platform/editor adapters can implement the same explicit result contract.
 
 ## Verification
+
+Regression tests reproduce loss of an entire recent word, or conversion of only its final letter,
+when an unsupported editor's focus proxy changes. They also cover repeated RU/UK/EN conversions,
+no native capture attempts for opaque controls, and rejection of native fallback into another field.
+The WebView2 fixture exercises nine registered RU/UK/EN hotkey conversions of a newly typed suffix
+beside existing formatted text, clipboard restoration and Undo. It does not sign into real Teams.
 
 Controller tests cover target binding, suffix-only conversion, repeat/Undo, focus loss, external
 clipboard changes, stale content/caret, real input, shutdown and uncertain completion. The separate

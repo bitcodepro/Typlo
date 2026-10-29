@@ -387,7 +387,6 @@ public sealed partial class AppController : IDisposable
             return;
         }
         if (!await _convertGate.WaitAsync(0)) return;
-        ClipboardSnapshot? snapshot = null;
         var timing = new TransformTiming();
         try
         {
@@ -402,92 +401,8 @@ public sealed partial class AppController : IDisposable
             timing.Mark("direct adapter");
             if (directHandled) return;
             if (!_platform.Capabilities.SimulateInput || !NoInputSince()) return;
-            if (!await _platform.WaitForTargetAsync(window, NoInputSince)) return;
-            var run = _recentTyping.Capture(window);
-            var last = CaptureLastTransform(window);
-            using var _ = _platform.SuspendCapture();
-            snapshot = CaptureClipboard();
-            timing.Mark("clipboard snapshot");
-            string? text;
-            KeyboardLayout? activeLayout = FindLayout(_platform.GetCurrentLayoutId(window));
-            KeyboardLayout? source = activeLayout;
-            var automaticSelection = false;
-            var reusingLast = false;
-            if (Settings.ConvertLastWord && run is not null)
-            {
-                // A user-made selection resets the run through its click/navigation/shortcut event.
-                // With a live run, select its exact length before Copy: some editors copy an entire
-                // unselected line without setting any marker, which must never enlarge this range.
-                text = await SelectRecentInputAsync(run, NoInputSince, activeLayout);
-                if (text is null) return; // a failed range check must not become a layout-only switch
-                if (text is not null)
-                {
-                    source = run.MatchSource(text, SourceLayouts(activeLayout));
-                    automaticSelection = true;
-                }
-            }
-            else if (Settings.ConvertLastWord && last is not null)
-            {
-                // The previous replacement is separate from newly typed input. Keep its exact range
-                // available for another case/layout/transliteration command, but copy and verify it
-                // again before every use. User-made selections invalidate this record through the hook.
-                bool RangeStillValid() => NoInputSince() && ReferenceEquals(_lastTransform, last);
-                text = await SelectTransformResultAsync(last, RangeStillValid);
-                if (text is null)
-                {
-                    if (ReferenceEquals(_lastTransform, last)) LastTransform = null;
-                    return; // failed verification of a known range must not become a layout-only switch
-                }
-                source = last.ResultLayout;
-                automaticSelection = true;
-                reusingLast = true;
-            }
-            else text = await CopySelectionAsync(window, NoInputSince);
-            timing.Mark("selection/copy");
-            if (!NoInputSince()) return;
-            if (string.IsNullOrEmpty(text))
-            {
-                Log.Info("Text tools: nothing selected");
-                if (switchToIfNothingSelected is not null && Settings.SwitchSystemLayout)
-                    if (NoInputSince() && IsTargetActive(window)) _platform.SwitchKeyboardLayout(window, switchToIfNothingSelected);
-                return;
-            }
-
-            // From here on Typlo sends no keys of its own until Ctrl+V: any input means the user changed the selection
-            // or moved the caret, so the result must not be pasted (or recorded for Undo).
-            var (result, switchTo) = transform(text, source);
-            timing.Mark("conversion");
-            if (result == text && (_verifiedSelection?.FocusVersion is null || SelectionFocusChanged(window, text)))
-            {
-                var current = await CopySelectionAsync(window, NoInputSince, allowRevalidation: false);
-                if (current is null || !SameSelection(current, text)) return;
-            }
-            if (result == text && automaticSelection && NoInputSince() && IsTargetActive(window))
-            {
-                Collapse(window);
-                if (switchTo is not null)
-                {
-                    // Two cycle members can produce identical text (e.g. a common RU/UA word).
-                    // Advance the logical source even when no paste or system-layout switch is needed.
-                    LastTransform = reusingLast && last is not null ? last with { ResultLayout = switchTo } :
-                        new TransformRecord(window, text, text, DateTime.UtcNow, switchTo);
-                    _recentTyping.Consume(inputVersion);
-                }
-            }
-            if (result != text)
-            {
-                if (!await PasteTextAsync(result, window, NoInputSince, text, () =>
-                {
-                    _recentTyping.Consume(inputVersion);
-                    timing.Mark("replacement sent");
-                })) return;
-                // Input during the paste's settling wait may have moved the caret: then the result cannot be located.
-                LastTransform = NoInputSince() && IsTargetActive(window) ? new TransformRecord(window, text, result, DateTime.UtcNow,
-                    switchTo ?? _converter.DetectLayout(result, source) ?? source) : null;
-            }
-            if (switchTo is not null && Settings.SwitchSystemLayout && NoInputSince() && IsTargetActive(window) &&
-                (result != text || !SelectionFocusChanged(window, text)))
-                _platform.SwitchKeyboardLayout(window, switchTo);
+            await TransformWithSelectionAsync(window, element, inputVersion, NoInputSince, transform,
+                switchToIfNothingSelected, timing);
         }
         catch (SelectionChangedException)
         {
@@ -503,8 +418,6 @@ public sealed partial class AppController : IDisposable
         }
         finally
         {
-            // Always put the user's clipboard back, even after an error.
-            if (snapshot is not null) RestoreIfUnchanged(snapshot);
             _convertGate.Release();
             timing.Finish();
         }
@@ -797,12 +710,12 @@ public sealed partial class AppController : IDisposable
             else if (key.Backspace)
             {
                 var window = _platform.ForegroundWindow;
-                _recentTyping.Backspace(window, now, version, _platform.SupportsDirectTextEditing ? _platform.FocusedInputElement : 0);
+                _recentTyping.Backspace(window, now, version, CaptureDirectInputElement(window));
             }
             else
             {
                 typedWindow = _platform.ForegroundWindow;
-                _recentTyping.Record(key.Char, typedWindow, now, version, _platform.SupportsDirectTextEditing ? _platform.FocusedInputElement : 0);
+                _recentTyping.Record(key.Char, typedWindow, now, version, CaptureDirectInputElement(typedWindow));
             }
         }
         catch (Exception e) { _recentTyping.Reset(version); Log.Error("Cannot track input context", e); }
