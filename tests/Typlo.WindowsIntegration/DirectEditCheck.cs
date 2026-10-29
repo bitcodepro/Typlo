@@ -5,6 +5,7 @@ using Typlo.App.Platform;
 using Typlo.App.Platform.Windows;
 using Typlo.App.Services;
 using Typlo.Core;
+using Typlo.Core.Layouts;
 using Typlo.Core.Settings;
 using Native = Typlo.App.Platform.Windows.Native;
 
