@@ -61,6 +61,26 @@ public sealed partial class AppControllerTests
         _platform.Type("htdm.dftim "); await _controller.AutoCorrectionIdleAsync();
         Assert.Equal("ревьюваешь ", _platform.Document.Text);
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ProgrammaticNativeFieldChangeStopsAutomaticCorrectionWithoutTyping(bool duringWrite)
+    {
+        EnableAutomaticCorrection(true);
+        _platform.Type("ghb ");
+        if (duringWrite) _platform.AfterWrite = text =>
+        {
+            if (text == "при ") _platform.FocusedInputElement = 22;
+        };
+        else _platform.FocusedInputElement = 22;
+        await _controller.AutoCorrectionIdleAsync();
+        Assert.Equal("ghb ", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal("en", _platform.ActiveLayoutId);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        if (!duringWrite) Assert.False(_controller.DictionaryIsOpen);
+    }
     [Fact]
     public async Task ManualCommandCancelsPendingAutomaticWork()
     {

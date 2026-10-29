@@ -46,7 +46,7 @@ public sealed partial class AppController
         if (!_platform.SupportsTextRangeBatch) return;
         var window = word.Run.Window;
         var focus = _platform.ForegroundChangeVersion;
-        bool Current() => noInput() && IsTargetActive(window) && !ForegroundChanged(focus);
+        bool Current() => noInput() && AutomaticWordIsCurrent(word) && !ForegroundChanged(focus);
         if (!Current()) return;
         using var suspended = _platform.SuspendCapture();
         var snapshot = CaptureClipboard();

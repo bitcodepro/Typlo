@@ -44,7 +44,8 @@ public sealed partial class AppController
 
     private bool AutomaticWordIsCurrent(AutomaticWord word) => Volatile.Read(ref _disposed) == 0 &&
         Settings.AutoCorrectEnabled && !_editingSettings && !_capturingScreen &&
-        Interlocked.Read(ref _typingVersion) == word.Version && _platform.ForegroundWindow == word.Run.Window;
+        Interlocked.Read(ref _typingVersion) == word.Version && _platform.ForegroundWindow == word.Run.Window &&
+        (word.Run.Element == 0 || _platform.FocusedInputElement == word.Run.Element);
 
     private async Task DrainAutomaticWordsAsync()
     {
