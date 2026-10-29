@@ -235,12 +235,13 @@ internal static class DirectEditCheck
                 Require(state.GetProperty("text").GetString() == "при", "direct Undo while popup foreground");
                 Require(platform.ClipboardSequence == sequence, "clipboard never written");
             });
-            await Check("slow verification after a completed write retains repeat and Undo", async () =>
+            foreach (var phase in new[] { "write", "verification" })
+            await Check("slow " + phase + " retains repeat and Undo within the original edit budget", async () =>
             {
                 var state = await Command(new { op = "set", text = "ghb", start = 0, length = 3 });
                 var window = (nint)state.GetProperty("window").GetInt64();
                 platform.ActivateWindow(window);
-                var paths = new AppPaths(Path.Combine(work, "slow-verification-controller"));
+                var paths = new AppPaths(Path.Combine(work, "slow-" + phase + "-controller"));
                 new SettingsStore(paths.SettingsFile).Save(new AppSettings
                 {
                     LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "",
@@ -253,7 +254,7 @@ internal static class DirectEditCheck
                 var keys = state.GetProperty("keyboardMessages").GetInt32();
                 var sequence = platform.ClipboardSequence;
                 var traceStart = nativeTrace.Count;
-                await Command(new { op = "delay-after-write", milliseconds = 100 });
+                await Command(new { op = phase == "write" ? "delay" : "delay-after-write", milliseconds = 100 });
                 var popup = (nint)state.GetProperty("popup").GetInt64();
                 await controller.TransformSelectionAsync(text =>
                 {
@@ -273,8 +274,14 @@ internal static class DirectEditCheck
                 Require(state.GetProperty("keyboardMessages").GetInt32() == keys && platform.ClipboardSequence == sequence,
                     "slow verification never selects or pastes with keyboard/clipboard");
                 Require(platform.ForegroundWindow == popup, "slow verification never reactivates editor");
-                Require(nativeTrace.Skip(traceStart).Any(e => e.Operation == "send" && e.Message == 0x0d && e.CallElapsedMs >= 60),
-                    "the controller adapter exercised the delayed verification read");
+                var phaseTrace = nativeTrace.Skip(traceStart).ToArray();
+                var verification = Array.FindIndex(phaseTrace, e => e.Operation == "verify");
+                var delayed = phase == "write" ? phaseTrace : phaseTrace.Skip(verification + 1);
+                // WinForms can perform its own GETTEXT before the external verification begins;
+                // in that case the first external GETLENGTH waits for it on the same target thread.
+                Require(delayed.Any(e => e.Operation == "send" && e.Outcome == "ok" && e.CallElapsedMs >= 60 &&
+                    (phase == "write" ? e.Message == 0xc2 : e.Message is 0x0e or 0x0d or 0xb0)),
+                    "the controller adapter exercised the delayed " + phase);
             });
             await Check("multiline Edit UTF-16 offsets and native undo", async () =>
             {
@@ -357,7 +364,9 @@ internal static class DirectEditCheck
                 var trace = nativeTrace.Skip(before).ToArray();
                 Require(trace.Any(e => e.Operation == "verify" && e.Outcome == "after-confirmed-write"), "confirmed write entered verification phase");
                 Require(trace.Count(e => e.Operation == "send" && e.Message == 0xc2) == 1, "replacement was sent only once");
-                Require(trace.Any(e => e.Operation == "send" && e.Message == 0x0d && e.Outcome == "failed"), "verification timeout is diagnosed");
+                var verification = Array.FindIndex(trace, e => e.Operation == "verify");
+                Require(trace.Skip(verification + 1).Any(e => e.Operation == "send" && e.Message is 0x0e or 0x0d or 0xb0 &&
+                    e.Outcome is "failed" or "budget-exhausted"), "verification timeout is diagnosed");
                 state = await Command(new { op = "read" });
                 Require(state.GetProperty("writes").GetInt32() == writes + 1 && state.GetProperty("text").GetString() == "при",
                     "late verification does not duplicate or undo the completed replacement");
@@ -414,7 +423,7 @@ internal static class DirectEditCheck
             await File.WriteAllLinesAsync(Path.Combine(work, "direct-edit-native.log"), diagnostics);
             foreach (var line in report) Console.WriteLine(line);
         }
-        return report.Count == 10 && report.All(line => line.StartsWith("PASS ", StringComparison.Ordinal)) ? 0 : 1;
+        return report.Count == 11 && report.All(line => line.StartsWith("PASS ", StringComparison.Ordinal)) ? 0 : 1;
     }
     private static void Require(bool ok, string message) { if (!ok) throw new InvalidOperationException(message); }
 }

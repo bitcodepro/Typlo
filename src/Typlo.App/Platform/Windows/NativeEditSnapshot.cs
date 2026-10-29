@@ -64,6 +64,9 @@ internal sealed class NativeEditSnapshot : DirectTextSnapshot
         var deadline = new Deadline(_diagnostic);
         var current = Read(_identity, _excluded, valid, deadline);
         if (current is null || !SameContext(current) || !valid()) return new(DirectEditStatus.Cancelled);
+        // A verified edit shares one operation deadline. A cold framework callback can take
+        // longer than a capability probe even though the control completes the write normally.
+        deadline.BeginEdit();
         // After the first mutating message, all failures are indeterminate; never keyboard-fallback.
         if (!deadline.Send(Element, SetSel, (nuint)start, start + length, out _)) return new(DirectEditStatus.Uncertain);
         current = Read(_identity, _excluded, valid, deadline);
@@ -73,7 +76,7 @@ internal sealed class NativeEditSnapshot : DirectTextSnapshot
             if (!deadline.Send(Element, ReplaceSel, 1, (nint)chars, out _)) return new(DirectEditStatus.Uncertain);
         // The write completed. Finish its read-only verification within the original operation
         // deadline instead of discarding a successful edit when one read exceeds the 40 ms probe cap.
-        // No message is retried, and mutating messages retain their short timeout.
+        // No message is retried and the operation deadline is never reset.
         deadline.BeginVerification();
         var after = Read(_identity, _excluded, valid, deadline);
         var expected = Text[..start] + replacement + Text[(start + length)..];
@@ -135,16 +138,13 @@ internal sealed class NativeEditSnapshot : DirectTextSnapshot
     private sealed class Deadline(Action<NativeEditDiagnostic>? diagnostic)
     {
         private const int BudgetMilliseconds = 250;
-        private bool _verifyingWrite;
+        private bool _editing;
         internal Action<NativeEditDiagnostic>? Diagnostic => diagnostic;
         private readonly long _start = Stopwatch.GetTimestamp();
         internal void Record(string operation, string outcome) =>
             diagnostic?.Invoke(new(operation, outcome, Stopwatch.GetElapsedTime(_start).TotalMilliseconds));
-        internal void BeginVerification()
-        {
-            _verifyingWrite = true;
-            Record("verify", "after-confirmed-write");
-        }
+        internal void BeginEdit() { _editing = true; Record("edit", "verified-input"); }
+        internal void BeginVerification() => Record("verify", "after-confirmed-write");
         internal bool Send(nint window, uint message, nuint wParam, nint lParam, out nuint result)
         {
             result = 0;
@@ -155,8 +155,7 @@ internal sealed class NativeEditSnapshot : DirectTextSnapshot
                 return false;
             }
             var start = diagnostic is null ? 0 : Stopwatch.GetTimestamp();
-            var read = message is GetLength or GetText or GetSel or GetTextMode;
-            var limit = _verifyingWrite && read ? remaining : Math.Min(40, remaining);
+            var limit = _editing ? remaining : Math.Min(40, remaining);
             var sent = SendMessageTimeoutW(window, message, wParam, lParam, 0x1 | 0x2 | 0x20,
                 (uint)limit, out result) != 0;
             var error = sent ? 0 : Marshal.GetLastPInvokeError();
