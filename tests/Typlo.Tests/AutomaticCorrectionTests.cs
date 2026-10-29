@@ -91,6 +91,68 @@ public sealed partial class AppControllerTests
         Assert.Equal("при ", _platform.Document.Text); Assert.Equal("uk", _platform.ActiveLayoutId);
         Assert.False(_controller.DictionaryIsOpen);
     }
+
+    [Theory]
+    [InlineData(true, 0)]
+    [InlineData(false, 0)]
+    [InlineData(true, 1)]
+    [InlineData(true, 99)]
+    public async Task ManualToggleCancelsActiveAutomaticCorrectionBeforePaste(bool duringCopy, int externalOwner)
+    {
+        EnableAutomaticCorrection();
+        var settings = _controller.Settings.Clone(); settings.Layouts = ["en", "ru"]; _controller.ApplySettings(settings);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Pause() { entered.TrySetResult(); release.Task.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult(); }
+        if (duringCopy) _platform.AfterCopy = () => { _platform.AfterCopy = null; Pause(); };
+        else _platform.AfterWrite = text =>
+        {
+            if (text != "при ") return;
+            _platform.AfterWrite = null; Pause();
+        };
+        _platform.Document.Type("готовое "); _platform.Type("ghb ");
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var manual = _controller.ConvertSelectionAsync(null);
+            Assert.False(manual.IsCompleted); // waits for automatic cleanup, without changing the input version
+            if (externalOwner != 0) _platform.ExternalCopy("fresh external copy", externalOwner);
+            release.TrySetResult();
+            await manual.WaitAsync(TimeSpan.FromSeconds(10));
+            await _controller.AutoCorrectionIdleAsync();
+            Assert.Equal("готовое при ", _platform.Document.Text);
+            Assert.Equal(1, _platform.PasteCount); // only the explicit command may replace the text
+            Assert.Equal(["ru"], _platform.LayoutSwitches.Select(x => x.Layout));
+            Assert.Empty(_platform.Document.Selection);
+            Assert.Equal(externalOwner == 0 ? "original clipboard" : "fresh external copy", _platform.ClipboardText);
+            await _controller.UndoLastTransformAsync();
+            Assert.Equal("готовое ghb ", _platform.Document.Text);
+        }
+        finally { release.TrySetResult(); }
+    }
+
+    [Fact]
+    public async Task ManualToggleAfterAutomaticPasteWaitsForItsVerifiedResult()
+    {
+        EnableAutomaticCorrection();
+        var settings = _controller.Settings.Clone(); settings.Layouts = ["en", "ru"]; _controller.ApplySettings(settings);
+        Task? manual = null;
+        _platform.AfterPaste = () =>
+        {
+            _platform.AfterPaste = null;
+            manual = _controller.ConvertSelectionAsync(null);
+        };
+        _platform.Type("ghb ");
+        await _controller.AutoCorrectionIdleAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.NotNull(manual);
+        await manual.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("ghb ", _platform.Document.Text);
+        Assert.Equal(2, _platform.PasteCount);
+        Assert.Equal(["ru", "en"], _platform.LayoutSwitches.Select(x => x.Layout));
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal("при ", _platform.Document.Text);
+    }
     [Fact]
     public async Task InterruptedPasteMustNotLeaveAnOwnedSelectionThatBreaksTheNextCommand()
     {

@@ -395,14 +395,13 @@ public sealed partial class AppController : IDisposable
         var origin = _platform.ForegroundWindow;
         var originInput = Interlocked.Read(ref _typingVersion);
         if (automaticWord is null) await StopPendingAutomaticWords();
-        else if (!AutomaticWordIsCurrent(automaticWord) || automaticWord.Generation != Interlocked.Read(ref _automaticWordGeneration)) return;
+        else if (!AutomaticWordIsCurrent(automaticWord)) return;
         if (!await EnterManualTextOperationAsync(origin)) return;
         var timing = new TransformTiming();
         try
         {
             if (_platform.ForegroundWindow != origin || Interlocked.Read(ref _typingVersion) != originInput ||
-                (automaticWord is not null && (!AutomaticWordIsCurrent(automaticWord) ||
-                    automaticWord.Generation != Interlocked.Read(ref _automaticWordGeneration)))) return;
+                (automaticWord is not null && !AutomaticWordIsCurrent(automaticWord))) return;
             var window = origin;
             var inputVersion = originInput;
             var element = PinDirectTarget(ref window);
@@ -903,7 +902,8 @@ public sealed partial class AppController : IDisposable
 
     /// <summary>Sends Copy and returns the selected text, or null when nothing is selected.</summary>
     private async Task<string?> CopySelectionAsync(nint window, Func<bool> stillValid, bool allowRevalidation = true,
-        Func<bool>? sendCopy = null, TimeSpan? copyTimeout = null, Func<string, bool>? expectedCopy = null)
+        Func<bool>? sendCopy = null, TimeSpan? copyTimeout = null, Func<string, bool>? expectedCopy = null,
+        Func<bool>? canRestoreCancelledCopy = null)
     {
         _verifiedSelection = null;
         var focusVersion = _platform.ForegroundChangeVersion;
@@ -928,7 +928,10 @@ public sealed partial class AppController : IDisposable
             // The editor may have completed our Copy just before the user resumed typing.
             // Keep ownership for restoring the saved clipboard, even though text editing stops.
             // An unowned/unknown clipboard write is never adopted on this cancellation path.
-            if (expectedCopy is not null && copyInput.CopyCompletedBeforeTyping(observed) &&
+            // A manual command can also cancel an automatic Copy without changing input/focus.
+            // Its caller may authorize restoration in that unchanged context, but only for the
+            // expected word, a confirmed target owner and a stable clipboard sequence.
+            if (expectedCopy is not null && (copyInput.CopyCompletedBeforeTyping(observed) || canRestoreCancelledCopy?.Invoke() == true) &&
                 _platform.IsClipboardOwnedBy(window) == true && _platform.ClipboardSequence == observed)
             {
                 var copied = _platform.ReadText();
@@ -961,7 +964,7 @@ public sealed partial class AppController : IDisposable
             // The clipboard still contains what was selected before blur. Only a new copy can
             // establish the current range. Another interruption during that copy aborts safely.
             if (!allowRevalidation) throw new SelectionChangedException();
-            var current = await CopySelectionAsync(window, stillValid, allowRevalidation: false, sendCopy, copyTimeout, expectedCopy);
+            var current = await CopySelectionAsync(window, stillValid, allowRevalidation: false, sendCopy, copyTimeout, expectedCopy, canRestoreCancelledCopy);
             if (current is null || !SameSelection(current, text)) throw new SelectionChangedException();
             return current;
         }

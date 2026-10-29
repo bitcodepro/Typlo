@@ -11,9 +11,11 @@ public sealed partial class AppController
         ApplicationLayoutRule.ProcessKey(_platform.GetApplicationProcessName(window)).ToLowerInvariant() is "ms-teams" or "teams";
     private static int RangeSteps(string text) => StringInfo.ParseCombiningCharacters(text.Replace("\r\n", "\n")).Length;
 
-    private Task<string?> CopyCollapsedRangeAsync(nint window, int count, Func<bool> valid, Func<string, bool>? expected = null) =>
+    private Task<string?> CopyCollapsedRangeAsync(nint window, int count, Func<bool> valid, Func<string, bool>? expected = null,
+        Func<bool>? canRestoreCancelledCopy = null) =>
         CopySelectionAsync(window, valid, allowRevalidation: false,
-            sendCopy: () => _platform.TrySendTextRangeBatch(window, count, paste: false, valid), expectedCopy: expected);
+            sendCopy: () => _platform.TrySendTextRangeBatch(window, count, paste: false, valid), expectedCopy: expected,
+            canRestoreCancelledCopy: canRestoreCancelledCopy);
 
     private async Task<ClipboardPasteState> VerifyPastedRangeAsync(nint window, string original, string result, Func<bool> valid)
     {
@@ -46,11 +48,15 @@ public sealed partial class AppController
         if (!_platform.SupportsTextRangeBatch) return;
         var window = word.Run.Window;
         var focus = _platform.ForegroundChangeVersion;
-        bool Current() => noInput() && AutomaticWordIsCurrent(word) && !ForegroundChanged(focus);
+        var sent = false;
+        // Cancellation wins until Paste is sent. After that, only finish verification/cleanup:
+        // the waiting manual command must receive a verified result, not lose its range record.
+        bool ContextCurrent() => noInput() && AutomaticWordContextIsCurrent(word) && !ForegroundChanged(focus);
+        bool Current() => ContextCurrent() && (sent || word.Generation == Interlocked.Read(ref _automaticWordGeneration));
+        bool CanRestoreCancelledCopy() => ContextCurrent() && word.Generation != Interlocked.Read(ref _automaticWordGeneration);
         if (!Current()) return;
         using var suspended = _platform.SuspendCapture();
         var snapshot = CaptureClipboard();
-        var sent = false;
         var unchanged = false;
         try
         {
@@ -58,7 +64,7 @@ public sealed partial class AppController
             // clipboard/OLE: continuing typing must append to the word, never overwrite it.
             var active = FindLayout(_platform.GetCurrentLayoutId(window));
             bool Expected(string copied) => word.Run.MatchSource(copied, SourceLayouts(active)) is not null;
-            var text = await CopyCollapsedRangeAsync(window, word.Run.Keys.Length, Current, Expected);
+            var text = await CopyCollapsedRangeAsync(window, word.Run.Keys.Length, Current, Expected, CanRestoreCancelledCopy);
             var source = text is null ? null : word.Run.MatchSource(text, SourceLayouts(active));
             if (text is null || source is null || !Current()) return;
             var (result, target) = transform(text, source);
@@ -67,7 +73,7 @@ public sealed partial class AppController
             {
                 if (focus is null)
                 {
-                    var fresh = await CopyCollapsedRangeAsync(window, word.Run.Keys.Length, Current, Expected);
+                    var fresh = await CopyCollapsedRangeAsync(window, word.Run.Keys.Length, Current, Expected, CanRestoreCancelledCopy);
                     if (fresh is null || !SameSelection(fresh, text)) return;
                 }
                 SetOwnText(result);

@@ -42,7 +42,10 @@ public sealed partial class AppController
         }
     }
 
-    private bool AutomaticWordIsCurrent(AutomaticWord word) => Volatile.Read(ref _disposed) == 0 &&
+    private bool AutomaticWordIsCurrent(AutomaticWord word) =>
+        word.Generation == Interlocked.Read(ref _automaticWordGeneration) && AutomaticWordContextIsCurrent(word);
+
+    private bool AutomaticWordContextIsCurrent(AutomaticWord word) => Volatile.Read(ref _disposed) == 0 &&
         Settings.AutoCorrectEnabled && !_editingSettings && !_capturingScreen &&
         Interlocked.Read(ref _typingVersion) == word.Version && _platform.ForegroundWindow == word.Run.Window &&
         (word.Run.Element == 0 || _platform.FocusedInputElement == word.Run.Element);
@@ -61,7 +64,7 @@ public sealed partial class AppController
             {
                 // Let the target receive Space and skip words when the user continues typing.
                 await Task.Delay(150);
-                if (!AutomaticWordIsCurrent(word) || word.Generation != Interlocked.Read(ref _automaticWordGeneration)) continue;
+                if (!AutomaticWordIsCurrent(word)) continue;
                 // Own settings/history/search fields and unidentified targets are excluded.
                 var process = _platform.GetApplicationProcessName(word.Run.Window);
                 if (string.IsNullOrEmpty(process) || Settings.ExcludedApps.Any(p =>
