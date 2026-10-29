@@ -40,6 +40,9 @@ def make_archive(directory, rid, change=None, link=False):
     if rid.startswith("linux-"):
         files.update({"gnome-extension/" + name: (release.ROOT / "integrations/gnome" / name).read_bytes()
                       for name in release.GNOME_FILES})
+    data_prefix = "Typlo.app/Contents/MacOS/language-data/" if rid.startswith("osx-") else "language-data/"
+    files.update({data_prefix + name: (release.ROOT / "resources/language-detection" / name).read_bytes()
+                  for name in ("words.sqlite3", "words.manifest.json", "NOTICE.txt", "LICENSE-CC-BY-SA-4.0.txt")})
     if change:
         change(files)
     archive = directory / release.archive_name(VERSION, rid)
@@ -151,6 +154,19 @@ class PackageTests(unittest.TestCase):
         archive = make_archive(self.directory, "win-x64")
         with self.assertRaisesRegex(ValueError, "source/version"):
             release.verify_archive(archive, VERSION, "win-x64", "b" * 40)
+
+    def test_vocabulary_and_its_attribution_must_ship_unchanged(self):
+        for index, name in enumerate(("words.sqlite3", "words.manifest.json", "NOTICE.txt", "LICENSE-CC-BY-SA-4.0.txt")):
+            folder = self.directory / str(index)
+            folder.mkdir()
+            archive = make_archive(folder, "win-x64", lambda files: files.pop("language-data/" + name))
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "Missing package entries"):
+                release.verify_archive(archive, VERSION, "win-x64", COMMIT)
+        folder = self.directory / "changed"
+        folder.mkdir()
+        archive = make_archive(folder, "win-x64", lambda files: files.update({"language-data/words.sqlite3": b"wrong data"}))
+        with self.assertRaisesRegex(ValueError, "Vocabulary data or attribution"):
+            release.verify_archive(archive, VERSION, "win-x64", COMMIT)
 
     def test_rejects_missing_executable_and_data_leaks(self):
         changes = [lambda files: files.pop("Typlo.exe"), lambda files: files.update({"data/history.db": b"private"}), lambda files: files.update({"../escape.txt": b"bad"}), lambda files: files.update({".env": b"bad"}), lambda files: files.update({"libHarfBuzzSharp.pdb": b"symbols"})]

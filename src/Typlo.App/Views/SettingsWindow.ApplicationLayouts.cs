@@ -11,6 +11,10 @@ public partial class SettingsWindow
 {
     private sealed record ApplicationRow(TextBox Process, CheckBox Enabled, List<string> Order,
         HashSet<string> Selected, TextBlock Status);
+    private sealed record RunningApplication(string Process, string Title)
+    {
+        public override string ToString() => Title.Length == 0 ? Process : $"{Title} · {Process}";
+    }
     private readonly List<ApplicationRow> _applicationRows = [];
     private bool _hotkeysValid = true;
 
@@ -72,13 +76,13 @@ public partial class SettingsWindow
         {
             var process = ApplicationLayoutRule.ProcessKey(row.Process.Text);
             var layouts = row.Order.Where(row.Selected.Contains).ToArray();
-            var error = row.Enabled.IsChecked == true && (process.Length == 0 || layouts.Length == 0);
+            var error = row.Enabled.IsChecked == true && process.Length == 0;
             var duplicate = row.Enabled.IsChecked == true && process.Length > 0 && !seen.Add(process);
             error |= duplicate;
             valid &= !error;
             row.Status.Foreground = error ? Brushes.IndianRed : Brushes.Gray;
             row.Status.Text = row.Enabled.IsChecked != true ? Loc.T("hotkey.off") : duplicate ? Loc.T("appLayouts.duplicate", process) :
-                error ? Loc.T("appLayouts.invalid") : layouts.Any(id => _controller.FindLayout(id)?.SupportsConversion != true) ?
+                error ? Loc.T("appLayouts.invalid") : layouts.Length == 0 ? Loc.T("appLayouts.global") : layouts.Any(id => _controller.FindLayout(id)?.SupportsConversion != true) ?
                 Loc.T("appLayouts.missing") : layouts.Length == 1 ? Loc.T("appLayouts.single", _controller.FindLayout(layouts[0])!.Name) :
                 string.Join(" → ", layouts.Select(id => _controller.FindLayout(id)?.LanguageCode.ToUpperInvariant() ?? id));
         }
@@ -100,35 +104,49 @@ public partial class SettingsWindow
         var use = new Button { Content = Loc.T("appLayouts.choose"), IsEnabled = false };
         var cancel = new Button { Content = Loc.T("settings.cancel") };
         var refresh = new Button { Content = "↻" }; ToolTip.SetTip(refresh, Loc.T("appLayouts.refresh"));
-        string[] names = [];
-        void Filter() => list.ItemsSource = names.Where(n => n.Contains(search.Text ?? "", StringComparison.OrdinalIgnoreCase)).ToArray();
+        RunningApplication[] names = [];
+        void Filter() => list.ItemsSource = names.Where(n => n.ToString().Contains(search.Text ?? "", StringComparison.OrdinalIgnoreCase)).ToArray();
         async Task Refresh()
         {
             refresh.IsEnabled = false;
             names = await Task.Run(() =>
             {
-                var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var result = new Dictionary<string, RunningApplication>(StringComparer.OrdinalIgnoreCase);
                 foreach (var item in Process.GetProcesses())
                 {
                     using (item)
                     {
-                        try { if (item.Id != Environment.ProcessId) result.Add(item.ProcessName); }
+                        try
+                        {
+                            if (item.Id == Environment.ProcessId) continue;
+                            var name = item.ProcessName;
+                            var title = OperatingSystem.IsWindows() ? item.MainWindowTitle : "";
+                            if (!result.TryGetValue(name, out var old) || old.Title.Length == 0)
+                                result[name] = new(name, title);
+                        }
                         catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
                     }
                 }
-                return result.Order(StringComparer.OrdinalIgnoreCase).ToArray();
+                return result.Values.OrderBy(n => n.Title.Length == 0).ThenBy(n => n.Process, StringComparer.OrdinalIgnoreCase).ToArray();
             });
             refresh.IsEnabled = true; Filter();
         }
         search.TextChanged += (_, _) => Filter(); refresh.Click += async (_, _) => await Refresh();
-        list.SelectionChanged += (_, _) => use.IsEnabled = list.SelectedItem is string;
-        use.Click += (_, _) => dialog.Close(list.SelectedItem as string); cancel.Click += (_, _) => dialog.Close(null);
+        list.SelectionChanged += (_, _) => use.IsEnabled = list.SelectedItem is RunningApplication;
+        use.Click += (_, _) => dialog.Close((list.SelectedItem as RunningApplication)?.Process); cancel.Click += (_, _) => dialog.Close(null);
         var dock = new DockPanel { Margin = new(14) };
         var top = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 6, Margin = new(0, 0, 0, 10) };
         top.Children.Add(search); Grid.SetColumn(refresh, 1); top.Children.Add(refresh); DockPanel.SetDock(top, Dock.Top); dock.Children.Add(top);
         var bottom = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,
             Spacing = 8, Margin = new(0, 10, 0, 0), Children = { cancel, use } };
-        DockPanel.SetDock(bottom, Dock.Bottom); dock.Children.Add(bottom); dock.Children.Add(list); dialog.Content = dock;
+        DockPanel.SetDock(bottom, Dock.Bottom); dock.Children.Add(bottom);
+        if (OperatingSystem.IsWindows())
+        {
+            var hostHint = new TextBlock { Text = Loc.T("appLayouts.host"), TextWrapping = TextWrapping.Wrap,
+                FontSize = 12, Opacity = .75, Margin = new(0,0,0,10) };
+            DockPanel.SetDock(hostHint, Dock.Top); dock.Children.Add(hostHint);
+        }
+        dock.Children.Add(list); dialog.Content = dock;
         dialog.Opened += async (_, _) => await Refresh();
         return await dialog.ShowDialog<string?>(this);
     }

@@ -100,6 +100,8 @@ internal sealed class RecentTyping
                 {
                     var code = KeyboardLayouts.English.CodeOf(Keys[i]);
                     var expected = Keys[i] == ' ' ? ' ' : code < 0 ? '\0' : layout.CharAt(code);
+                    // Contenteditable editors use NBSP to retain a typed trailing space.
+                    if (expected == ' ' && text[i] is '\u00a0' or '\u202f') continue;
                     if (char.ToLowerInvariant(text[i]) == char.ToLowerInvariant(expected)) continue;
                     matches = false;
                     break;

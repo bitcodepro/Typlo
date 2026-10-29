@@ -83,11 +83,17 @@ public partial class SettingsWindow : Window
         CaptureSaveButton.Click += (_, _) => CaptureScreenshot?.Invoke((CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex), CaptureDestination.File);
         InitializeCycle();
         RebuildApplicationLayoutRows();
-        AddApplicationLayoutButton.Click += (_, _) => AddApplicationLayoutRow(new ApplicationLayoutRule { Layouts = _draft.Layouts.ToList() });
+        AddApplicationLayoutButton.Click += (_, _) => AddApplicationLayoutRow(new ApplicationLayoutRule());
         RefreshLayoutsButton.Click += (_, _) => RefreshLayouts();
 
         SwitchLayoutBox.IsChecked = _draft.SwitchSystemLayout;
         LastWordBox.IsChecked = _draft.ConvertLastWord;
+        AutoCorrectBox.IsChecked = _draft.AutoCorrectEnabled;
+        // The passive Windows UI delegates input to the resident process. Other platforms report
+        // session capabilities directly (e.g. no global typing watch under Wayland).
+        AutoCorrectBox.IsEnabled = OperatingSystem.IsWindows() || controller.Platform.SupportsAutomaticWordCorrection;
+        DictionaryStatus.Text = Loc.T(!AutoCorrectBox.IsEnabled ? "auto.unavailable" :
+            controller.DictionaryAvailable ? "auto.ready" : "auto.missing");
         HistoryEnabledBox.IsChecked = _draft.HistoryEnabled;
         MaxItemsBox.Value = _draft.MaxItems;
         MaxTotalBox.Value = _draft.MaxTotalMegabytes;
@@ -453,6 +459,7 @@ public partial class SettingsWindow : Window
             .Concat(_draft.Layouts.Where(id => _controller.FindLayout(id) is null)).ToList();
         _draft.SwitchSystemLayout = SwitchLayoutBox.IsChecked == true;
         _draft.ConvertLastWord = LastWordBox.IsChecked == true;
+        _draft.AutoCorrectEnabled = AutoCorrectBox.IsChecked == true;
         _draft.HistoryEnabled = HistoryEnabledBox.IsChecked == true;
         _draft.MaxItems = (int)(MaxItemsBox.Value ?? 500);
         _draft.MaxTotalMegabytes = (int)(MaxTotalBox.Value ?? 200);

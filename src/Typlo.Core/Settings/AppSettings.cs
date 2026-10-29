@@ -69,6 +69,7 @@ public sealed class AppSettings
 
     /// <summary>With nothing selected, convert only the recently typed input run; never include older adjacent text.</summary>
     public bool ConvertLastWord { get; set; } = true;
+    public bool AutoCorrectEnabled { get; set; } = true;
 
     /// <summary>Also switch the system keyboard layout to the target after converting.</summary>
     public bool SwitchSystemLayout { get; set; } = true;
@@ -159,7 +160,7 @@ public sealed class AppSettings
             if (!rule.Enabled) continue;
             var process = ApplicationLayoutRule.ProcessKey(rule.ProcessName);
             if (!processes.Add(process)) problems.Add(new(SettingsProblemKind.DuplicateAppProcess, process));
-            if (process.Length == 0 || rule.Layouts.Count == 0) problems.Add(new(SettingsProblemKind.EmptyAppLayouts, process));
+            if (process.Length == 0) problems.Add(new(SettingsProblemKind.EmptyAppLayouts, process));
         }
         foreach (var s in Snippets ?? [])
         {

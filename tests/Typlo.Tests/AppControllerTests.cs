@@ -1960,6 +1960,28 @@ public sealed partial class AppControllerTests : IDisposable
         public TaskCompletionSource ModifiersEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string Name => "Fake platform (no OS access)";
         public bool SupportsScreenCapture { get; set; }
+        public bool SupportsAutomaticWordCorrection { get; set; }
+        public bool SupportsTextRangeBatch { get; set; }
+        private bool _inTextRangeBatch;
+        private readonly Queue<Action> _deferredTyping = new();
+        public bool DropNextPaste;
+        public bool TrySendTextRangeBatch(nint window, int characters, bool paste, Func<bool> stillValid)
+        {
+            if (!SupportsTextRangeBatch || !stillValid() || Window != window) return false;
+            _inTextRangeBatch = true;
+            try
+            {
+                for (var i = 0; i < characters; i++) SendChord(KeyModifiers.Shift, "Left");
+                if (paste) SendPaste();
+                else { SendCopy(); SendChord(KeyModifiers.None, "Right"); }
+                return true;
+            }
+            finally
+            {
+                _inTextRangeBatch = false;
+                while (_deferredTyping.TryDequeue(out var typed)) typed();
+            }
+        }
         public IReadOnlyList<KeyboardLayout> Installed = [KeyboardLayouts.English, KeyboardLayouts.Russian];
         public string? ActiveLayoutId;
         public IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => Installed;
@@ -1996,6 +2018,7 @@ public sealed partial class AppControllerTests : IDisposable
             return new Scope(() => SuspendDepth--);
         }
         private ulong _sequence = 1;
+        public ulong? ImmediateClipboardSequence => _sequence;
         public Action? OnSequenceRead;
         public ulong ClipboardSequence
         {
@@ -2073,7 +2096,12 @@ public sealed partial class AppControllerTests : IDisposable
             if (!keepAnchor) Document.Anchor = null;
             KeyTyped?.Invoke(TypedKey.ResetKey);
         }
-        public void SendPaste() { PasteCount++; Document.Type(ClipboardText); AfterPaste?.Invoke(); }
+        public void SendPaste()
+        {
+            PasteCount++;
+            if (DropNextPaste) { DropNextPaste = false; return; }
+            Document.Type(ClipboardText); AfterPaste?.Invoke();
+        }
         public nint ForegroundWindow
         {
             get { OnForegroundRead?.Invoke(); var window = Window; ObservedForegroundWindows.Enqueue(window); AfterForegroundRead?.Invoke(); return window; }
@@ -2086,6 +2114,7 @@ public sealed partial class AppControllerTests : IDisposable
 
         public void TypeAs(string physicalKeys, string text)
         {
+            if (_inTextRangeBatch) { _deferredTyping.Enqueue(() => TypeAs(physicalKeys, text)); return; }
             InTypingEvent = true;
             try
             {

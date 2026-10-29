@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using LanguageDataProbe;
+using DiskLexicon = Typlo.Core.Languages.LanguageLexicon;
 using Microsoft.Data.Sqlite;
 
 if (args.Length < 2) { Console.Error.WriteLine("Usage: LanguageDataProbe <lookup|verify|bench> words.sqlite3 [words...]"); return 2; }

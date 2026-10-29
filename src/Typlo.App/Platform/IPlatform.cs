@@ -30,6 +30,12 @@ public enum SelectionStatus { Completed, Interrupted, Cancelled }
 /// </summary>
 public interface IPlatform : IDisposable
 {
+    bool SupportsAutomaticWordCorrection => false;
+    bool SupportsTextRangeBatch => false;
+    /// <summary>Nonblocking sequence read for a keyboard callback; null on polling clipboards.</summary>
+    ulong? ImmediateClipboardSequence => null;
+    /// <summary>One bounded input sequence: select preceding characters, copy and collapse, or paste.</summary>
+    bool TrySendTextRangeBatch(nint window, int characters, bool paste, Func<bool> stillValid) => false;
     string Name { get; }
     bool SupportsDirectTextEditing => false;
     nint FocusedInputElement => 0;

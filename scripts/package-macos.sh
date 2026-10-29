@@ -9,6 +9,7 @@ app="dist/$rid/Typlo.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 find "$src" -maxdepth 1 -type f -exec cp {} "$app/Contents/MacOS/" \;
+if [ -d "$src/language-data" ]; then cp -R "$src/language-data" "$app/Contents/MacOS/"; fi
 chmod +x "$app/Contents/MacOS/Typlo" 2>/dev/null || true
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

@@ -62,7 +62,27 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
    "Copy text from image" (offline OCR: Windows built-in, `tesseract` on Linux). "Pause history" in the tray stops recording for
    10 minutes, 1 hour or until restart.
    Encrypted (AES-256-GCM). Limits on count, total size, image size; excluded apps.
-3. **Screenshots (Windows)** – tray → Screenshots or Settings → Screenshots:
+3. **Automatic layout correction and application rules** – enabled in Settings:
+   - After Space and a short pause, Typlo checks the just-typed word against offline English,
+     Russian, Ukrainian, French, Spanish, Italian, German and Portuguese dictionaries, including
+     Russian/Ukrainian IT forms such as `ревьюваешь`, `коммитить`, `пушить` and `комітити`.
+     Only confident corrections are applied; unknown/ambiguous words, numbers, identifiers and
+     addresses are left alone. Disable “Correct keyboard layout after Space” to turn it off.
+   - The dictionary is shipped in `language-data/` beside the executable (inside the macOS bundle).
+     Extract the **whole update**, not just the EXE. It opens lazily, uses a 128 KiB SQLite page-cache
+     target with no mmap or word-list preload, and never sends text over the network.
+     The vocabulary is CC BY-SA 4.0; its attribution and license ship beside the data.
+   - Application rules also restrict automatic correction candidates. Teams with EN/UK cycles only
+     EN/UK; PowerShell with EN activates EN on entry and its Typlo cycle stays on EN. An empty list
+     (e.g. for a browser) uses the global cycle. These rules govern **Typlo's cycle**, not Win+Space
+     or Alt+Shift. Explicit per-language shortcuts retain their assigned targets.
+   - Rules match the process owning the window. For PowerShell hosted inside Windows Terminal,
+     choose **WindowsTerminal**, whose window title is shown in the process picker.
+   - If you keep typing, automatic correction cancels. Its copy/read stage collapses the selection
+     before waiting for clipboard data, so further typing appends instead of replacing the word.
+     Manual conversion remains available for every convertible layout and does not require a
+     dictionary match. Session/input/clipboard checks still apply; unresponsive editors can be skipped.
+4. **Screenshots (Windows)** – tray → Screenshots or Settings → Screenshots:
    - `Ctrl+Alt+Shift+S`: capture to the clipboard; `Ctrl+Alt+Shift+F`: capture for saving.
      Both shortcuts are configurable and can be disabled. Choose the default rectangle/freehand shape in Settings;
      `R` / `F` changes shape in the overlay before drawing.
@@ -84,7 +104,7 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
      the full desktop frame stays in memory for the selection. Only the selected image is copied/saved.
    - Command-line launch: `Typlo --capture rectangle` / `Typlo --capture freehand`; add `--save` to open the editor for JPEG saving.
      Capture is currently Windows-only; the controls explain this on macOS/Linux.
-4. **System** – interface language (English, Русский, Українська, Deutsch, Español, Português, Français, Italiano, 中文, 日本語) and theme (system/light/dark), export/import of settings, add to autostart; keep the screen from locking (like video playback). After 3 idle minutes
+5. **System** – interface language (English, Русский, Українська, Deutsch, Español, Português, Français, Italiano, 中文, 日本語) and theme (system/light/dark), export/import of settings, add to autostart; keep the screen from locking (like video playback). After 3 idle minutes
    it also presses F15 (a key standard keyboards do not have) so Teams does not switch to "Away";
    it never touches the mouse and sends nothing while you work.
 

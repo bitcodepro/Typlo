@@ -2,23 +2,23 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
-namespace LanguageDataProbe;
+namespace Typlo.Core.Languages;
 
-internal readonly record struct WordEvidence(byte[] CorpusWeights, byte SupplementMask)
+public readonly record struct WordEvidence(byte[] CorpusWeights, byte SupplementMask)
 {
-    internal bool Includes(int language) => CorpusWeights[language] > 0 || (SupplementMask & (1 << language)) != 0;
+    public bool Includes(int language) => CorpusWeights[language] > 0 || (SupplementMask & (1 << language)) != 0;
 }
 
-/// <summary>Preparation prototype only; no changes to Typlo's conversion/hotkey path.</summary>
-internal sealed class DiskLexicon(string path) : IDisposable
+/// <summary>Lazy read-only vocabulary with a bounded SQLite page cache; no vocabulary preload.</summary>
+public sealed class LanguageLexicon(string path) : IDisposable
 {
     private SqliteConnection? _connection;
     private SqliteCommand? _lookup;
     private string[] _languages = [];
     private readonly Lock _gate = new();
     private bool _disposed;
-    internal bool IsOpen => _connection is not null;
-    internal IReadOnlyList<string> Languages { get { lock (_gate) { Open(); return _languages; } } }
+    public bool IsOpen => _connection is not null;
+    public IReadOnlyList<string> Languages { get { lock (_gate) { Open(); return _languages; } } }
 
     private void Open()
     {
@@ -44,7 +44,7 @@ internal sealed class DiskLexicon(string path) : IDisposable
             command.CommandText = "SELECT value FROM metadata WHERE key='languages'";
             using var languages = JsonDocument.Parse((string?)command.ExecuteScalar() ?? throw new InvalidDataException("Missing languages"));
             _languages = languages.RootElement.EnumerateArray().Select(x => x.GetString()!).ToArray();
-            if (_languages.Length != 8 || _languages.Any(string.IsNullOrEmpty) || _languages.Distinct().Count() != 8)
+            if (!_languages.SequenceEqual(new[] { "en", "ru", "uk", "fr", "es", "it", "de", "pt" }))
                 throw new InvalidDataException("Invalid languages");
             _lookup = connection.CreateCommand();
             _lookup.CommandText = "SELECT weights,supplement_mask FROM words WHERE word=$word";
@@ -55,10 +55,12 @@ internal sealed class DiskLexicon(string path) : IDisposable
         catch { _lookup?.Dispose(); _lookup = null; connection.Dispose(); throw; }
     }
 
-    internal WordEvidence? Lookup(string token)
+    public WordEvidence? Lookup(string token)
     {
         if (token.Length is 0 or > 128) return null;
-        var word = Normalize(token);
+        string word;
+        try { word = Normalize(token); }
+        catch (ArgumentException) { return null; }
         lock (_gate)
         {
             Open();
@@ -73,7 +75,7 @@ internal sealed class DiskLexicon(string path) : IDisposable
         }
     }
 
-    internal static string Normalize(string token) => token.Replace('’', '\'').Replace('ʼ', '\'').Replace('‘', '\'')
+    public static string Normalize(string token) => token.Replace('’', '\'').Replace('ʼ', '\'').Replace('‘', '\'')
         .Replace('‐', '-').Replace('‑', '-').ToLowerInvariant().Normalize(NormalizationForm.FormC);
 
     public void Dispose()
@@ -81,3 +83,4 @@ internal sealed class DiskLexicon(string path) : IDisposable
         lock (_gate) { if (_disposed) return; _disposed = true; _lookup?.Dispose(); _connection?.Dispose(); _connection = null; }
     }
 }
+

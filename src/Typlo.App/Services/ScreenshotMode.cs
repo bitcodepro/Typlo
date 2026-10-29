@@ -26,6 +26,7 @@ internal static class ScreenshotMode
         try
         {
             var s = controller.Settings.Clone();
+            s.AutoCorrectEnabled = false;
             s.ToggleHotkey = ""; s.ClipboardHotkey = ""; s.CaseHotkey = ""; s.TranslitHotkey = ""; s.UndoHotkey = ""; s.ScreenshotCopyHotkey = ""; s.ScreenshotSaveHotkey = ""; s.StartWithSystem = false;
             controller.ApplySettings(s);
 
@@ -80,7 +81,7 @@ internal static class ScreenshotMode
                 controller.ConfigureDiagnosticLayouts([Typlo.Core.Layouts.KeyboardLayouts.English, Typlo.Core.Layouts.KeyboardLayouts.Russian, Typlo.Core.Layouts.KeyboardLayouts.Ukrainian]);
                 dark.Layouts = ["en", "ru", "uk"];
                 dark.ApplicationLayouts = [new() { ProcessName = "sample-chat", Layouts = ["en", "ru", "uk"] },
-                    new() { ProcessName = "sample-editor", Layouts = ["en"] }];
+                    new() { ProcessName = "sample-editor", Layouts = ["en"] }, new() { ProcessName = "sample-browser", Layouts = [] }];
                 dark.UiTheme = "dark";
                 dark.Snippets = [new Snippet { Trigger = ";hello", Text = "Здравствуйте, {cursor}!\n\n    Спасибо за сообщение.\n\nС уважением,\n" }];
                 controller.ApplySettings(dark);
@@ -94,6 +95,9 @@ internal static class ScreenshotMode
                 darkSettings.Show();
                 await Task.Delay(600);
                 Save(darkSettings, Path.Combine(outDir, "settings_dark.png"));
+                darkSettings.FindControl<TextBlock>("DictionaryStatus")?.BringIntoView();
+                await Task.Delay(300);
+                Save(darkSettings, Path.Combine(outDir, "settings_auto_correction.png"));
                 darkSettings.FindControl<TextBlock>("CaptureSaveStatus")?.BringIntoView();
                 await Task.Delay(300);
                 Save(darkSettings, Path.Combine(outDir, "settings_screenshots.png"));

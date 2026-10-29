@@ -482,6 +482,7 @@ internal static class SelfTest
     {
         // Self-test must not grab the user's real shortcuts or touch autostart.
         s.ToggleHotkey = "";
+        s.AutoCorrectEnabled = false;
         s.ClipboardHotkey = "";
         s.ScreenshotCopyHotkey = "";
         s.ScreenshotSaveHotkey = "";

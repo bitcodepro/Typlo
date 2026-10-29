@@ -216,6 +216,20 @@ internal sealed class EditorCheck : Form
                 await ExpectText("готовое при");
             });
 
+            await Check("batched copy collapses the WebView2 selection before continued typing", async () =>
+            {
+                using var controller = Controller(platform, "collapsed-copy", recent: true);
+                TypingEvents.AcceptSimulated = true;
+                await Prepare("готовое ", select: false, formatted: true);
+                await TypeFixture(platform);
+                platform.SetText("copy-batch-fixture");
+                if (!platform.TrySendTextRangeBatch(Handle, 3, paste: false, () => true)) throw new InvalidOperationException("Range batch declined");
+                await Until(() => platform.ReadText() == "ghb", "Collapsed copy did not publish the exact source word");
+                if (await _browser.ExecuteScriptAsync("document.getSelection().isCollapsed") != "true")
+                    throw new InvalidOperationException("Copy left a selection that would swallow further typing");
+                await TypeFixture(platform, "X");
+                await ExpectText("готовое ghbx");
+            });
             await Check("RU UK EN hotkeys repeatedly convert a WebView2 suffix without a native edit target", async () =>
             {
                 using var controller = Controller(platform, "layout-hotkeys", recent: true);
@@ -245,6 +259,33 @@ internal sealed class EditorCheck : Form
                 }
                 await controller.UndoLastTransformAsync();
                 await ExpectText("готовое іі");
+            });
+
+            await Check("repeated contenteditable conversion and Undo accept a serialized nonbreaking space", async () =>
+            {
+                using var controller = Controller(platform, "serialized-space", recent: true);
+                await Prepare("готовое ghb ", select: false);
+                await _browser.ExecuteScriptAsync("""
+                    (() => {const e=document.getElementById('editor');
+                    window.serializeSpace=() => {e.textContent=e.textContent.replace(/ $/, '\u00a0');
+                      const r=document.createRange();r.selectNodeContents(e);r.collapse(false);
+                      const s=getSelection();s.removeAllRanges();s.addRange(r);};
+                    e.addEventListener('input',window.serializeSpace);
+                    const r=document.createRange();r.setStart(e.firstChild,8);r.setEnd(e.firstChild,12);
+                    const s=getSelection();s.removeAllRanges();s.addRange(r);})()
+                    """);
+                try
+                {
+                    await controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+                    await ExpectText("готовое при\u00a0");
+                    if (await _browser.ExecuteScriptAsync("document.getElementById('editor').textContent.endsWith('\\u00a0')") != "true")
+                        throw new InvalidOperationException("Fixture did not serialize the trailing space");
+                    await controller.ConvertSelectionAsync(KeyboardLayouts.English);
+                    await ExpectText("готовое ghb\u00a0");
+                    await controller.UndoLastTransformAsync();
+                    await ExpectText("готовое при\u00a0");
+                }
+                finally { await _browser.ExecuteScriptAsync("document.getElementById('editor').removeEventListener('input',window.serializeSpace)"); }
             });
 
             foreach (var takesFocus in new[] { false, true })
@@ -425,7 +466,7 @@ internal sealed class EditorCheck : Form
         new SettingsStore(paths.SettingsFile).Save(new AppSettings
         {
             LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "", ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "",
-            SwitchSystemLayout = false, ConvertLastWord = recent, HistoryEnabled = false,
+            SwitchSystemLayout = false, ConvertLastWord = recent, HistoryEnabled = false, AutoCorrectEnabled = false,
         });
         return new AppController(platform, paths, PlatformFactory.CreateKeyProtector(diagnostic: true), diagnostic: true);
     }

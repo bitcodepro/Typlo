@@ -381,8 +381,8 @@ internal static class DirectEditCheck
                 var capture = await Capture(state);
                 Require(capture.Status == DirectCaptureStatus.Cancelled, "read timeout capture status=" + capture.Status);
                 Require(timer.Elapsed < TimeSpan.FromMilliseconds(400), "bounded unresponsive read wait");
-                Require(nativeTrace.Skip(before).Any(entry => entry.Operation == "send" && entry.Outcome == "failed" && entry.Message == 0x0d),
-                    "diagnostic identifies the failed WM_GETTEXT read");
+                Require(nativeTrace.Skip(before).Any(entry => entry.Operation == "send" && entry.Outcome == "failed" && entry.Message is 0x0e or 0x0d),
+                    "diagnostic identifies the failed text read (GETLENGTH can wait behind WinForms' own GETTEXT)");
                 state = await Command(new { op = "read" });
                 Require(state.GetProperty("text").GetString() == "ghb" && state.GetProperty("writes").GetInt32() == writes,
                     "timed-out capture does not edit the document");
@@ -411,6 +411,52 @@ internal static class DirectEditCheck
                 Require(state.GetProperty("text").GetString() == "ss", "app cycle returns to English");
                 Require(platform.ClipboardSequence == sequence, "native app cycle does not change clipboard");
             });
+            await Check("offline dictionary corrects a real typed word after Space and preserves clipboard and Undo", async () =>
+            {
+                var state = await Command(new { op = "set", text = "", start = 0, length = 0 });
+                var window = (nint)state.GetProperty("window").GetInt64();
+                platform.ActivateWindow(window);
+                var english = platform.GetKeyboardLayouts().First(l => l.LanguageCode == "en" && l.SupportsConversion);
+                platform.SwitchKeyboardLayout(window, english);
+                var deadline = Stopwatch.StartNew();
+                while (platform.GetCurrentLayoutId(window) != english.Id && deadline.Elapsed < TimeSpan.FromSeconds(2)) await Task.Delay(10);
+                Require(platform.GetCurrentLayoutId(window) == english.Id, "fixture input layout is English");
+                var paths = new AppPaths(Path.Combine(work, "automatic-dictionary-controller"));
+                new SettingsStore(paths.SettingsFile).Save(new AppSettings
+                {
+                    LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "",
+                    ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "", HistoryEnabled = false,
+                    SwitchSystemLayout = false, AutoCorrectEnabled = true,
+                });
+                using var controller = new AppController(platform, paths, PlatformFactory.CreateKeyProtector(true), diagnostic: true);
+                controller.ConfigureDiagnosticLayouts([english, KeyboardLayouts.Russian, KeyboardLayouts.Ukrainian]);
+                var settings = controller.Settings.Clone(); settings.Layouts = [english.Id, "ru", "uk"]; controller.ApplySettings(settings);
+                await platform.WaitForTypingWatchAsync();
+                Require(!controller.DictionaryIsOpen, "vocabulary is not loaded at controller startup");
+                const string marker = "automatic-dictionary-clipboard-fixture";
+                platform.SetText(marker);
+                var previousSimulation = Typlo.App.Platform.Shared.TypingEvents.AcceptSimulated;
+                try
+                {
+                    Typlo.App.Platform.Shared.TypingEvents.AcceptSimulated = true;
+                    foreach (var key in new[] { "G", "H", "B", "Space" }) platform.SendChord(Typlo.Core.Hotkeys.KeyModifiers.None, key);
+                    deadline.Restart();
+                    do
+                    {
+                        state = await Command(new { op = "read" });
+                        if (state.GetProperty("text").GetString() == "при ") break;
+                        await Task.Delay(30);
+                    } while (deadline.Elapsed < TimeSpan.FromSeconds(5));
+                    await controller.AutoCorrectionIdleAsync();
+                    state = await Command(new { op = "read" });
+                    Require(state.GetProperty("text").GetString() == "при ", "Space converted ghb to при with its trailing space");
+                    Require(controller.DictionaryIsOpen && platform.ReadText() == marker, "lazy vocabulary open and clipboard restoration");
+                    await controller.UndoLastTransformAsync();
+                    state = await Command(new { op = "read" });
+                    Require(state.GetProperty("text").GetString() == "ghb " && platform.ReadText() == marker, "automatic replacement can be undone");
+                }
+                finally { Typlo.App.Platform.Shared.TypingEvents.AcceptSimulated = previousSimulation; }
+            });
             await child.StandardInput.WriteLineAsync("{\"op\":\"exit\"}");
             await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
         }
@@ -423,7 +469,7 @@ internal static class DirectEditCheck
             await File.WriteAllLinesAsync(Path.Combine(work, "direct-edit-native.log"), diagnostics);
             foreach (var line in report) Console.WriteLine(line);
         }
-        return report.Count == 11 && report.All(line => line.StartsWith("PASS ", StringComparison.Ordinal)) ? 0 : 1;
+        return report.Count == 12 && report.All(line => line.StartsWith("PASS ", StringComparison.Ordinal)) ? 0 : 1;
     }
     private static void Require(bool ok, string message) { if (!ok) throw new InvalidOperationException(message); }
 }

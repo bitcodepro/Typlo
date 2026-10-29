@@ -19,6 +19,9 @@ public sealed partial class AppController
         var last = CaptureLastTransform(window);
         using var _ = _platform.SuspendCapture();
         var snapshot = CaptureClipboard();
+        string? ownedSelection = null;
+        var pasteSent = false;
+        var preserveRecentInput = false;
         try
         {
             timing.Mark("clipboard snapshot");
@@ -38,6 +41,7 @@ public sealed partial class AppController
                 {
                     source = run.MatchSource(text, SourceLayouts(activeLayout));
                     automaticSelection = true;
+                    ownedSelection = text;
                 }
             }
             else if (Settings.ConvertLastWord && last is not null)
@@ -54,6 +58,7 @@ public sealed partial class AppController
                 }
                 source = last.ResultLayout;
                 automaticSelection = true;
+                ownedSelection = text;
                 reusingLast = true;
             }
             else text = await CopySelectionAsync(window, StillValid);
@@ -79,6 +84,7 @@ public sealed partial class AppController
             if (result == text && automaticSelection && StillValid() && IsTargetActive(window))
             {
                 Collapse(window);
+                ownedSelection = null;
                 if (switchTo is not null)
                 {
                     // Two cycle members can produce identical text (e.g. a common RU/UA word).
@@ -92,9 +98,22 @@ public sealed partial class AppController
             {
                 if (!await PasteTextAsync(result, window, StillValid, text, () =>
                 {
-                    _recentTyping.Consume(inputVersion);
+                    pasteSent = true; ownedSelection = null;
+                    if (!NeedsPasteVerification(window)) _recentTyping.Consume(inputVersion);
                     timing.Mark("replacement sent");
                 })) return;
+                if (NeedsPasteVerification(window))
+                {
+                    var state = await VerifyPastedRangeAsync(window, text, result, StillValid);
+                    if (state != ClipboardPasteState.Confirmed)
+                    {
+                        preserveRecentInput = state == ClipboardPasteState.Unchanged;
+                        LastTransform = preserveRecentInput && reusingLast ? last : null;
+                        Log.Info("Text replacement: paste=" + state);
+                        return;
+                    }
+                    _recentTyping.Consume(inputVersion);
+                }
                 // Input during the paste's settling wait may have moved the caret: then the result cannot be located.
                 LastTransform = StillValid() && IsTargetActive(window) ? new TransformRecord(window, text, result, DateTime.UtcNow,
                     switchTo ?? _converter.DetectLayout(result, source) ?? source) : null;
@@ -103,6 +122,18 @@ public sealed partial class AppController
                 (result != text || !SelectionFocusChanged(window, text)))
                 _platform.SwitchKeyboardLayout(window, switchTo);
         }
-        finally { RestoreIfUnchanged(snapshot); }
+        finally
+        {
+            try
+            {
+                // An aborted paste used to leave our verified selection highlighted. The next
+                // command extended it into older text and failed again. Collapse only our still-
+                // verified range, never a selection changed by input or a foreground transition.
+                if (ownedSelection is not null && StillValid() && IsTargetActive(window) &&
+                    !SelectionFocusChanged(window, ownedSelection)) Collapse(window);
+                if (pasteSent && !preserveRecentInput) _recentTyping.Consume(inputVersion);
+            }
+            finally { RestoreIfUnchanged(snapshot); }
+        }
     }
 }
