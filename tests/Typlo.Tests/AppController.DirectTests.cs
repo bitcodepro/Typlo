@@ -86,11 +86,11 @@ public sealed partial class AppControllerTests
         Assert.Equal(9, _platform.PasteCount);
     }
 
-    private void EnableDirect(Action? beforeWrite = null, DirectEditStatus outcome = DirectEditStatus.Applied)
+    private void EnableDirect(Action? beforeWrite = null, DirectEditStatus outcome = DirectEditStatus.Applied, Action? afterWrite = null)
     {
         _platform.SupportsDirectTextEditing = true;
         _platform.DirectCapture = (window, element, valid) => Task.FromResult(valid()
-            ? new DirectTextCapture(DirectCaptureStatus.Ready, new FakeDirect(_platform, window, element, beforeWrite, outcome))
+            ? new DirectTextCapture(DirectCaptureStatus.Ready, new FakeDirect(_platform, window, element, beforeWrite, outcome, afterWrite))
             : DirectTextCapture.Cancelled);
     }
 
@@ -113,14 +113,15 @@ public sealed partial class AppControllerTests
         private readonly FakePlatform _platform;
         private readonly Action? _beforeWrite;
         private readonly DirectEditStatus _outcome;
+        private readonly Action? _afterWrite;
         public FakeDirect(FakePlatform platform, nint window, nint element, Action? beforeWrite = null,
-            DirectEditStatus outcome = DirectEditStatus.Applied)
+            DirectEditStatus outcome = DirectEditStatus.Applied, Action? afterWrite = null)
             : base(window, element, platform.DocumentFor(window).Text,
                 Math.Min(platform.DocumentFor(window).Caret, platform.DocumentFor(window).Anchor ?? platform.DocumentFor(window).Caret),
                 Math.Max(platform.DocumentFor(window).Caret, platform.DocumentFor(window).Anchor ?? platform.DocumentFor(window).Caret))
-            => (_platform, _beforeWrite, _outcome) = (platform, beforeWrite, outcome);
+            => (_platform, _beforeWrite, _outcome, _afterWrite) = (platform, beforeWrite, outcome, afterWrite);
         public override Task<DirectTextSnapshot?> RefreshAsync(Func<bool> valid) => Task.FromResult<DirectTextSnapshot?>(
-            valid() ? new FakeDirect(_platform, Window, Element, _beforeWrite, _outcome) : null);
+            valid() ? new FakeDirect(_platform, Window, Element, _beforeWrite, _outcome, _afterWrite) : null);
         public override async Task<DirectTextEditResult> ReplaceAsync(int start, int length, string replacement, Func<bool> valid)
         {
             _beforeWrite?.Invoke();
@@ -130,6 +131,7 @@ public sealed partial class AppControllerTests
             var doc = _platform.DocumentFor(Window);
             doc.Anchor = start; doc.Caret = start + length;
             doc.Type(replacement);
+            _afterWrite?.Invoke();
             return new(DirectEditStatus.Applied, new FakeDirect(_platform, Window, Element));
         }
     }
@@ -289,6 +291,23 @@ public sealed partial class AppControllerTests
         EnableDirect(() => _controller.Dispose());
         await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
         Assert.Equal("ghbx", _platform.Document.Text);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InputOrDisposeAfterCompletedWriteCannotPublishRepeatOrUndoRange(bool dispose)
+    {
+        EnableDirect(afterWrite: () => { if (dispose) _controller.Dispose(); else _platform.Type("x"); });
+        _platform.ActiveLayoutId = KeyboardLayouts.English.Id;
+        _platform.Type("ghb");
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        var expected = dispose ? "при" : "приx";
+        Assert.Equal(expected, _platform.Document.Text);
+        Assert.Equal(KeyboardLayouts.English.Id, _platform.ActiveLayoutId);
+        Assert.Equal(0, _platform.PasteCount);
+        await _controller.UndoLastTransformAsync();
+        Assert.Equal(expected, _platform.Document.Text);
     }
 
     [Fact]

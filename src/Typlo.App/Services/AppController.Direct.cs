@@ -32,10 +32,13 @@ public sealed partial class AppController
         }
         if (_lastTransform is { Direct: { } direct } last)
         {
-            if (last.DirectVersion != Interlocked.Read(ref _typingVersion)) { LastTransform = null; return element; }
-            if (!_platform.CanRetainDirectInputTarget(last.Window, direct.Element)) { LastTransform = null; return element; }
+            if (last.DirectVersion != Interlocked.Read(ref _typingVersion))
+            { Log.Info("Direct text: range discarded (input version changed)"); LastTransform = null; return element; }
+            if (!_platform.CanRetainDirectInputTarget(last.Window, direct.Element))
+            { Log.Info("Direct text: range discarded (target no longer eligible)"); LastTransform = null; return element; }
             if (window != last.Window) { window = last.Window; return direct.Element; }
-            if (element != direct.Element) LastTransform = null;
+            if (element != direct.Element)
+            { Log.Info("Direct text: range discarded (focused field changed)"); LastTransform = null; }
         }
         return element;
     }
@@ -45,10 +48,13 @@ public sealed partial class AppController
     private async Task<bool> TryDirectTransformAsync(nint window, nint element, long version, Func<bool> valid,
         Func<string, KeyboardLayout?, (string Text, KeyboardLayout? SwitchTo)> transform, KeyboardLayout? emptyLayout)
     {
-        if (!_platform.SupportsDirectTextEditing || element == 0) return false;
+        if (!_platform.SupportsDirectTextEditing || element == 0)
+        { Log.Info("Direct text: selection strategy (no eligible native target)"); return false; }
         var last = CaptureLastTransform(window);
-        if (Settings.ConvertLastWord && last is { Direct: null }) return false; // retained legacy range
+        if (Settings.ConvertLastWord && last is { Direct: null })
+        { Log.Info("Direct text: selection strategy (retained selection range)"); return false; }
         var capture = await _platform.CaptureDirectTextAsync(window, element, valid);
+        if (capture.Status != DirectCaptureStatus.Ready) Log.Info("Direct text: capture=" + capture.Status);
         if (capture.Status == DirectCaptureStatus.Unsupported) return false;
         if (!valid() || capture.Status != DirectCaptureStatus.Ready || capture.Snapshot is not { } snapshot) return true;
         if (snapshot.Window != window || snapshot.Element != element) return true;
@@ -109,15 +115,19 @@ public sealed partial class AppController
             Log.Error("Direct text write could not be verified", e);
             edited = new(DirectEditStatus.Uncertain);
         }
-        if (edited.Status == DirectEditStatus.Unsupported) return false;
+        if (edited.Status == DirectEditStatus.Unsupported)
+        { Log.Info("Direct text: selection strategy (write unsupported before mutation)"); return false; }
         _recentTyping.Consume(version);
         LastTransform = null;
-        if (edited.Status != DirectEditStatus.Applied || edited.After is not { } after || !valid()) return true;
+        if (edited.Status != DirectEditStatus.Applied || edited.After is not { } after || !valid())
+        { Log.Info($"Direct text: write={edited.Status} range not retained (unconfirmed write or changed input)"); return true; }
         var expected = snapshot.Text[..start] + result + snapshot.Text[(start + length)..];
         if (after.Window != window || after.Element != element || after.Text != expected ||
-            after.SelectionStart != start + result.Length || after.SelectionEnd != after.SelectionStart) return true;
+            after.SelectionStart != start + result.Length || after.SelectionEnd != after.SelectionStart)
+        { Log.Info("Direct text: write=Applied range not retained (unexpected post-write state)"); return true; }
         LastTransform = new(window, text, result, DateTime.UtcNow,
             switchTo ?? _converter.DetectLayout(result, source) ?? source, after, start, version);
+        Log.Info("Direct text: write=Applied range retained=" + (_lastTransform?.Direct is not null));
         if (switchTo is not null && Settings.SwitchSystemLayout && valid())
             _platform.SwitchKeyboardLayout(window, switchTo);
         return true;

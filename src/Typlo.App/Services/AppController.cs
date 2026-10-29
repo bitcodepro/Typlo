@@ -622,7 +622,10 @@ public sealed partial class AppController : IDisposable
             _lastTransform = value;
             // Input can arrive between a successful write's final check and publishing its record.
             if (value?.Direct is not null && (value.DirectVersion != Interlocked.Read(ref _typingVersion) || Volatile.Read(ref _disposed) != 0))
+            {
+                Log.Info("Direct text: range discarded during publication (input changed or controller disposed)");
                 Interlocked.CompareExchange(ref _lastTransform, null, value);
+            }
             UpdateTypingWatch();
         }
     }
