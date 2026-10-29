@@ -78,6 +78,7 @@ public partial class SettingsWindow : Window
         CaptureShapeBox.IsEnabled = controller.Platform.SupportsScreenCapture;
         CaptureShapeBox.ItemsSource = new[] { Loc.T("capture.rectangle"), Loc.T("capture.freehand") };
         CaptureShapeBox.SelectedIndex = (int)_draft.ScreenshotShape;
+        CaptureEditorBox.IsChecked = _draft.ScreenshotEditorAfterCopy;
         CaptureCopyButton.Click += (_, _) => CaptureScreenshot?.Invoke((CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex), CaptureDestination.Clipboard);
         CaptureSaveButton.Click += (_, _) => CaptureScreenshot?.Invoke((CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex), CaptureDestination.File);
         InitializeCycle();
@@ -437,6 +438,7 @@ public partial class SettingsWindow : Window
         _draft.TranslitHotkey = _translitBox.HotkeyText;
         _draft.UndoHotkey = _undoBox.HotkeyText;
         _draft.ScreenshotShape = (CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex);
+        _draft.ScreenshotEditorAfterCopy = CaptureEditorBox.IsChecked == true;
         _draft.ScreenshotCopyHotkey = CaptureCopyHotkeyBox.HotkeyText;
         _draft.ScreenshotSaveHotkey = CaptureSaveHotkeyBox.HotkeyText;
         _draft.UiTheme = Themes[Math.Max(0, ThemeBox.SelectedIndex)];

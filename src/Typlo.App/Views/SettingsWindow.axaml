@@ -89,6 +89,7 @@
         <TextBlock x:Name="CaptureHint" Classes="hint" Text="{l:Tr capture.settingsHint}" Margin="0,0,0,10" />
         <TextBlock Classes="label" Text="{l:Tr capture.shape}" Margin="0,0,0,4" />
         <ComboBox x:Name="CaptureShapeBox" HorizontalAlignment="Stretch" Margin="0,0,0,10" />
+        <CheckBox x:Name="CaptureEditorBox" Content="{l:Tr paint.openAfterCopy}" Margin="0,0,0,10" />
         <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,0,10">
           <Button x:Name="CaptureCopyButton" Content="{l:Tr capture.copy}" />
           <Button x:Name="CaptureSaveButton" Content="{l:Tr capture.save}" />

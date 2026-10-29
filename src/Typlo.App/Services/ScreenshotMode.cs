@@ -131,6 +131,39 @@ internal static class ScreenshotMode
                 Save(shortcuts, Path.Combine(outDir, "shortcuts_dark.png"));
                 shortcuts.Close();
 
+                var sample = new Border { Width = 960, Height = 520, Padding = new Thickness(40),
+                    Background = Avalonia.Media.Brushes.White, Child = new StackPanel { Spacing = 24, Children =
+                    {
+                        new TextBlock { Text = "Project overview", FontSize = 30, Foreground = Avalonia.Media.Brushes.Black },
+                        new TextBlock { Text = "Release checklist", FontSize = 22, Foreground = Avalonia.Media.Brushes.SlateGray },
+                        new Border { Padding = new Thickness(24), Background = Avalonia.Media.Brushes.AliceBlue, CornerRadius = new CornerRadius(12),
+                            Child = new TextBlock { Text = "Design review       Ready\n\nWindows build     Passed\n\nDocumentation    In progress", FontSize = 21,
+                                Foreground = Avalonia.Media.Brushes.DarkSlateGray } },
+                        new TextBlock { Text = "Next milestone: publish the release", FontSize = 18, Foreground = Avalonia.Media.Brushes.SlateGray },
+                    } } };
+                sample.Measure(new Size(960,520)); sample.Arrange(new Rect(new Size(960,520)));
+                using var sampleBitmap = new RenderTargetBitmap(new PixelSize(960,520));
+                sampleBitmap.Render(sample);
+                using var samplePng = new MemoryStream(); sampleBitmap.Save(samplePng, PngBitmapEncoderOptions.Default);
+                var editor = new CapturePreviewWindow(ImageCodec.Encode(samplePng.ToArray(), true), _ => { }, _ => Task.FromResult(true), forSave: true);
+                editor.Annotations.Add(Typlo.Core.Imaging.AnnotationTool.Marker, 0xfffacc15, 24, [new(65,194),new(370,194)]);
+                editor.Annotations.Add(Typlo.Core.Imaging.AnnotationTool.Rectangle, 0xffef4444, 4, [new(52,159),new(430,280)]);
+                editor.Annotations.Add(Typlo.Core.Imaging.AnnotationTool.Arrow, 0xff38bdf8, 5, [new(725,332),new(450,261)]);
+                editor.Show();
+                // Optional pause for manual pointer/keyboard QA; isolated --screenshots mode only.
+                var editorPause = int.TryParse(Environment.GetEnvironmentVariable("TYPLO_SCREENSHOT_EDITOR_PAUSE_MS"), out var pause)
+                    ? Math.Clamp(pause, 400, 300_000) : 400;
+                var editorClosed = new TaskCompletionSource();
+                editor.Closed += (_, _) => editorClosed.TrySetResult();
+                await Task.WhenAny(Task.Delay(editorPause), editorClosed.Task);
+                if (editor.IsVisible)
+                {
+                    Save(editor, Path.Combine(outDir, "screenshot_editor.png"));
+                    editor.Width = 760; editor.Height = 520; await Task.Delay(250);
+                    Save(editor, Path.Combine(outDir, "screenshot_editor_compact.png"));
+                    editor.Close();
+                }
+
                 // The update dialog checks the feed when it opens (TYPLO_UPDATE_FEED points it at a test server).
                 using var updates = new UpdateService(dataDir);
                 var dialog = new UpdateDialog(updates, () => Task.CompletedTask);

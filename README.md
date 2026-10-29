@@ -63,20 +63,26 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
    10 minutes, 1 hour or until restart.
    Encrypted (AES-256-GCM). Limits on count, total size, image size; excluded apps.
 3. **Screenshots (Windows)** – tray → Screenshots or Settings → Screenshots:
-   - `Ctrl+Alt+Shift+S`: capture to the clipboard; `Ctrl+Alt+Shift+F`: capture and open Save As.
+   - `Ctrl+Alt+Shift+S`: capture to the clipboard; `Ctrl+Alt+Shift+F`: capture for saving.
      Both shortcuts are configurable and can be disabled. Choose the default rectangle/freehand shape in Settings;
      `R` / `F` changes shape in the overlay before drawing.
    - The desktop freezes before the selection overlay opens. Drag with the crosshair, then release to capture.
      `Esc` or right click cancels without changing the clipboard. A tiny or empty area lets you try again.
    - Freehand contours close automatically; pixels outside the contour are transparent in the PNG.
-     The preview confirms the copy, shows pixel dimensions and offers Copy, Save JPEG or another capture.
+     The editor shows pixel dimensions and offers a pen, translucent marker, arrow and frame,
+     eight colors and adjustable line width. Undo/redo (`Ctrl+Z` / `Ctrl+Y`) and Clear drawings
+     preserve the original screenshot; clearing can also be undone. `Esc` cancels the current stroke or closes the editor.
+     Copy (`Ctrl+C`) exports the current drawing as PNG; Save JPEG (`Ctrl+S`) opens Save As.
+     The clipboard shortcut copies the original immediately; after editing, Copy updates the clipboard.
+     Disable “Open editor after copying a screenshot” for a quick capture without opening a window.
+     The save shortcut opens the editor before Save As, so annotations can be added before saving.
      Save As produces an actual JPEG at quality 95 and the original pixel dimensions, without resizing.
      JPEG has no transparency, so the area outside a freehand contour is white in saved files.
      The Save shortcut does not modify the clipboard or add the image to history, even if the file dialog is cancelled.
      Paste the image into another app with `Ctrl+V`. Screenshots join history only when recording is enabled and unpaused.
    - Monitors use their own DPI scale, including monitors left/above the primary display. No image is uploaded;
      the full desktop frame stays in memory for the selection. Only the selected image is copied/saved.
-   - Command-line launch: `Typlo --capture rectangle` / `Typlo --capture freehand`; add `--save` for the JPEG dialog.
+   - Command-line launch: `Typlo --capture rectangle` / `Typlo --capture freehand`; add `--save` to open the editor for JPEG saving.
      Capture is currently Windows-only; the controls explain this on macOS/Linux.
 4. **System** – interface language (English, Русский, Українська, Deutsch, Español, Português, Français, Italiano, 中文, 日本語) and theme (system/light/dark), export/import of settings, add to autostart; keep the screen from locking (like video playback). After 3 idle minutes
    it also presses F15 (a key standard keyboards do not have) so Teams does not switch to "Away";
