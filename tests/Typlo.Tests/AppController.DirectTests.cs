@@ -5,6 +5,87 @@ namespace Typlo.Tests;
 
 public sealed partial class AppControllerTests
 {
+    [Fact]
+    public async Task UnsupportedEditorFocusProxyChangeDoesNotDiscardRecentWord()
+    {
+        _platform.SupportsDirectTextEditing = true;
+        _platform.RetainDirectTarget = (_, _) => false;
+        _platform.DirectCapture = (_, _, _) => Task.FromResult(DirectTextCapture.Unsupported);
+        _platform.Document.Type("готовое ");
+        _platform.Type("ghb");
+        _platform.FocusedInputElement = 12; // Same web editor, a different opaque focus HWND.
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("готовое при", _platform.Document.Text);
+        Assert.Equal(1, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task UnsupportedEditorFocusProxyChangesDuringTypingKeepTheWholeRun()
+    {
+        _platform.SupportsDirectTextEditing = true;
+        _platform.RetainDirectTarget = (_, _) => false;
+        _platform.DirectCapture = (_, _, _) => Task.FromResult(DirectTextCapture.Unsupported);
+        _platform.Document.Type("готовое ");
+        _platform.Type("g");
+        _platform.FocusedInputElement = 12;
+        _platform.Type("h");
+        _platform.FocusedInputElement = 11;
+        _platform.Type("b");
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("готовое при", _platform.Document.Text);
+        Assert.Equal(1, _platform.PasteCount);
+    }
+
+    [Fact]
+    public async Task NativeDeclineCannotPasteIntoAnotherFieldInTheSameWindow()
+    {
+        EnableDirect(() => _platform.FocusedInputElement = 12, DirectEditStatus.Unsupported);
+        _platform.ActiveLayoutId = KeyboardLayouts.English.Id;
+        _platform.Type("ghb");
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("ghb", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal(KeyboardLayouts.English.Id, _platform.ActiveLayoutId);
+    }
+
+    [Fact]
+    public async Task NativeFallbackRechecksTheBoundFieldImmediatelyBeforePaste()
+    {
+        EnableDirect(outcome: DirectEditStatus.Unsupported);
+        _platform.Type("ghb");
+        _platform.AfterWrite = text => { if (text == "при") _platform.FocusedInputElement = 12; };
+        await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+        Assert.Equal("ghb", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Fact]
+    public async Task UnsupportedEditorKeepsRepeatedRussianUkrainianEnglishConversionsOnOneStrategy()
+    {
+        _platform.SupportsDirectTextEditing = true;
+        _platform.RetainDirectTarget = (_, _) => false;
+        var probes = 0;
+        _platform.DirectCapture = (_, _, _) => { probes++; return Task.FromResult(DirectTextCapture.Unsupported); };
+        _controller.ConfigureDiagnosticLayouts([KeyboardLayouts.English, KeyboardLayouts.Russian, KeyboardLayouts.Ukrainian]);
+        _platform.Document.Type("готовое ");
+        _platform.Type("ss");
+        for (var i = 0; i < 3; i++)
+        {
+            _platform.FocusedInputElement++;
+            await _controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+            Assert.Equal("готовое ыы", _platform.Document.Text);
+            _platform.FocusedInputElement++;
+            await _controller.ConvertSelectionAsync(KeyboardLayouts.Ukrainian);
+            Assert.Equal("готовое іі", _platform.Document.Text);
+            _platform.FocusedInputElement++;
+            await _controller.ConvertSelectionAsync(KeyboardLayouts.English);
+            Assert.Equal("готовое ss", _platform.Document.Text);
+        }
+        Assert.Equal(0, probes);
+        Assert.Equal(9, _platform.PasteCount);
+    }
+
     private void EnableDirect(Action? beforeWrite = null, DirectEditStatus outcome = DirectEditStatus.Applied)
     {
         _platform.SupportsDirectTextEditing = true;

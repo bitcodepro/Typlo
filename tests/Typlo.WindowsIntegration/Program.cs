@@ -216,6 +216,37 @@ internal sealed class EditorCheck : Form
                 await ExpectText("готовое при");
             });
 
+            await Check("RU UK EN hotkeys repeatedly convert a WebView2 suffix without a native edit target", async () =>
+            {
+                using var controller = Controller(platform, "layout-hotkeys", recent: true);
+                controller.ConfigureDiagnosticLayouts([KeyboardLayouts.English, KeyboardLayouts.Russian, KeyboardLayouts.Ukrainian]);
+                var settings = controller.Settings.Clone();
+                settings.Layouts = ["en", "ru", "uk"];
+                settings.LayoutHotkeys = [new() { LayoutId = "ru", Hotkey = "F13" },
+                    new() { LayoutId = "uk", Hotkey = "F14" }, new() { LayoutId = "en", Hotkey = "F15" }];
+                controller.ApplySettings(settings);
+                if (controller.FailedHotkeys.Count != 0) throw new InvalidOperationException("Could not register layout fixture hotkeys");
+                TypingEvents.AcceptSimulated = true;
+                await platform.WaitForTypingWatchAsync();
+                await Prepare("готовое ", select: false, formatted: true);
+                await TypeFixture(platform, "SS");
+                var input = platform.FocusedInputElement;
+                if (platform.CanRetainDirectInputTarget(Handle, input)) throw new InvalidOperationException("WebView2 unexpectedly became a native edit control");
+                const string marker = "layout-cycle-clipboard-fixture";
+                platform.SetText(marker);
+                for (var cycle = 0; cycle < 3; cycle++)
+                {
+                    foreach (var (hotkey, expected) in new[] { ("F13", "готовое ыы"), ("F14", "готовое іі"), ("F15", "готовое ss") })
+                    {
+                        platform.SendChord(KeyModifiers.None, hotkey);
+                        await ExpectTextEventually(expected);
+                        await Until(() => platform.ReadText() == marker, "Layout conversion did not restore the clipboard");
+                    }
+                }
+                await controller.UndoLastTransformAsync();
+                await ExpectText("готовое іі");
+            });
+
             foreach (var takesFocus in new[] { false, true })
                 await Check(takesFocus ? "transient notification activation during long selection" : "non-activating notification during long selection", async () =>
                 {
@@ -452,7 +483,7 @@ internal sealed class EditorCheck : Form
         await ExternalCopyAsync();
     }
 
-    private async Task TypeFixture(WinPlatform platform)
+    private async Task TypeFixture(WinPlatform platform, string physicalKeys = "GHB")
     {
         await platform.WaitForTypingWatchAsync();
         var before = JsonSerializer.Deserialize<string>(await _browser.ExecuteScriptAsync("document.getElementById('editor').innerText")) ?? "";
@@ -462,15 +493,16 @@ internal sealed class EditorCheck : Form
         try
         {
             var count = 0;
-            foreach (var key in new[] { "G", "H", "B" })
+            foreach (var key in physicalKeys.Select(c => c.ToString()))
             {
                 if (platform.ForegroundWindow != Handle) throw new InvalidOperationException("The fixture window lost focus before typing");
                 platform.SendChord(KeyModifiers.None, key);
                 var expectedCount = ++count;
                 await Until(() => observed.Count >= expectedCount, "Native hook did not deliver fixture key " + key);
             }
-            if (new string(observed.ToArray()) != "ghb") throw new InvalidOperationException("Native hook delivered unexpected/duplicate fixture keys");
-            await ExpectTextEventually(before + "ghb"); // Browser input delivery is asynchronous too.
+            var expected = physicalKeys.ToLowerInvariant();
+            if (new string(observed.ToArray()) != expected) throw new InvalidOperationException("Native hook delivered unexpected/duplicate fixture keys");
+            await ExpectTextEventually(before + expected); // Browser input delivery is asynchronous too.
         }
         finally { platform.KeyTyped -= Observe; }
     }

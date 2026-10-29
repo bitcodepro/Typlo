@@ -218,6 +218,7 @@ public abstract class HookPlatformBase : IPlatform
     public virtual (int X, int Y) CursorPosition => (_cursorX, _cursorY);
 
     public abstract nint ForegroundWindow { get; }
+    public virtual string? GetApplicationProcessName(nint window) => null;
     public abstract void ActivateWindow(nint handle);
     public abstract bool SwitchKeyboardLayout(nint window, int langId);
     public virtual IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => [];

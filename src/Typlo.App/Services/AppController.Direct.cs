@@ -7,12 +7,21 @@ public sealed partial class AppController
 {
     private int _disposed;
 
+    // Opaque browser/WebView focus proxies are not native edit targets. Their HWND changes must
+    // not split or discard the window-scoped typing run used by the selection strategy.
+    private nint CaptureDirectInputElement(nint window)
+    {
+        if (!_platform.SupportsDirectTextEditing) return 0;
+        var element = _platform.FocusedInputElement;
+        return element != 0 && _platform.CanRetainDirectInputTarget(window, element) ? element : 0;
+    }
+
     // A notification can already be foreground when the hotkey arrives. Only retained input or a
     // verified previous replacement may bind us to a background editor; never search other windows.
     private nint PinDirectTarget(ref nint window)
     {
         if (!_platform.SupportsDirectTextEditing) return 0;
-        var element = _platform.FocusedInputElement;
+        var element = CaptureDirectInputElement(window);
         if (!Settings.ConvertLastWord) return element;
         var run = _recentTyping.Capture(_recentTyping.Window);
         if (run is { Element: not 0 })
@@ -36,7 +45,7 @@ public sealed partial class AppController
     private async Task<bool> TryDirectTransformAsync(nint window, nint element, long version, Func<bool> valid,
         Func<string, KeyboardLayout?, (string Text, KeyboardLayout? SwitchTo)> transform, KeyboardLayout? emptyLayout)
     {
-        if (!_platform.SupportsDirectTextEditing) return false;
+        if (!_platform.SupportsDirectTextEditing || element == 0) return false;
         var last = CaptureLastTransform(window);
         if (Settings.ConvertLastWord && last is { Direct: null }) return false; // retained legacy range
         var capture = await _platform.CaptureDirectTextAsync(window, element, valid);

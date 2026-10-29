@@ -207,6 +207,13 @@ public sealed class MacPlatform : HookPlatformBase
         });
     }
 
+    public override string? GetApplicationProcessName(nint window)
+    {
+        if (window <= 0 || window == Environment.ProcessId) return null;
+        try { using var process = System.Diagnostics.Process.GetProcessById((int)window); return process.ProcessName; }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return null; }
+    }
+
     private static T InputSourceOnUi<T>(Func<T> action) => Avalonia.Threading.Dispatcher.UIThread.CheckAccess()
         ? action() : Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(action).GetAwaiter().GetResult();
     public override IReadOnlyList<KeyboardLayout> GetKeyboardLayouts() => InputSourceOnUi(MacKeyboardLayouts.Read);

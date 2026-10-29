@@ -81,6 +81,8 @@ public partial class SettingsWindow : Window
         CaptureCopyButton.Click += (_, _) => CaptureScreenshot?.Invoke((CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex), CaptureDestination.Clipboard);
         CaptureSaveButton.Click += (_, _) => CaptureScreenshot?.Invoke((CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex), CaptureDestination.File);
         InitializeCycle();
+        RebuildApplicationLayoutRows();
+        AddApplicationLayoutButton.Click += (_, _) => AddApplicationLayoutRow(new ApplicationLayoutRule { Layouts = _draft.Layouts.ToList() });
         RefreshLayoutsButton.Click += (_, _) => RefreshLayouts();
 
         SwitchLayoutBox.IsChecked = _draft.SwitchSystemLayout;
@@ -271,6 +273,7 @@ public partial class SettingsWindow : Window
         BuildHotkeyRows();
         _hotkeyRows.Add((ClipboardHotkeyBox, ClipboardHotkeyStatus));
         InitializeCycle();
+        RebuildApplicationLayoutRows();
         Validate();
     }
 
@@ -348,7 +351,8 @@ public partial class SettingsWindow : Window
             }
             else { Show(status, Loc.T("hotkey.taken"), true); ok = false; }
         }
-        SaveButton.IsEnabled = ok;
+        _hotkeysValid = ok;
+        SaveButton.IsEnabled = ok && ValidateApplicationLayouts();
         return ok;
     }
 
@@ -419,6 +423,8 @@ public partial class SettingsWindow : Window
         SettingsProblemKind.TriggerTooLong => Loc.T("snippet.tooLong", p.Trigger[..Math.Min(20, p.Trigger.Length)] + "…", AppSettings.MaxTriggerLength),
         SettingsProblemKind.DuplicateTrigger => Loc.T("snippet.duplicate", p.Trigger),
         SettingsProblemKind.MultipleCursors => Loc.T("snippet.multipleCursors", p.Trigger),
+        SettingsProblemKind.DuplicateAppProcess => Loc.T("appLayouts.duplicate", p.Trigger),
+        SettingsProblemKind.EmptyAppLayouts => Loc.T("appLayouts.invalid"),
         _ => Loc.T("snippet.emptyText", p.Trigger),
     }));
 
@@ -426,6 +432,7 @@ public partial class SettingsWindow : Window
     private void Collect()
     {
         _draft.ToggleHotkey = _toggleBox.HotkeyText;
+        _draft.ApplicationLayouts = CollectApplicationLayouts();
         _draft.CaseHotkey = _caseBox.HotkeyText;
         _draft.TranslitHotkey = _translitBox.HotkeyText;
         _draft.UndoHotkey = _undoBox.HotkeyText;
