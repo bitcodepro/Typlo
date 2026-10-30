@@ -17,7 +17,7 @@ namespace Typlo.App.Services;
 /// End-to-end checks against the real clipboard, hotkeys and keyboard input of the current OS:
 /// <c>Typlo --selftest report.txt</c>. Uses a temporary data folder and restores the clipboard afterwards.
 /// </summary>
-internal static class SelfTest
+internal static partial class SelfTest
 {
     public static async Task<int> RunAsync(string reportPath)
     {
@@ -88,6 +88,9 @@ internal static class SelfTest
                 var back = platform.ReadText();
                 return Task.FromResult(back == "Привет, clipboard ✓" ? null : $"got '{back}'");
             });
+
+            await Check("dictionary collection switches reject stale selection during delayed and failed queries",
+                () => CheckDictionaryCollectionSwitchesAsync(controller));
 
             await Check("own writes are not captured", async () =>
             {

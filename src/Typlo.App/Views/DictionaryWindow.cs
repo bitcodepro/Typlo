@@ -13,15 +13,16 @@ namespace Typlo.App.Views;
 internal sealed class DictionaryWindow : Window
 {
     private readonly AppController _controller;
+    private readonly Func<PersonalWordQuery, Task<PersonalWordPage>> _queryWords;
     private readonly TextBox _search = new() { PlaceholderText = Loc.T("manage.search"), MinWidth = 180 };
-    private readonly ComboBox _collection = new() { MinWidth = 170 };
+    private readonly ComboBox _collection = new() { Name = "DictionaryCollection", MinWidth = 170 };
     private bool Exclusions => _collection.SelectedIndex == 1;
     private readonly TextBlock _formsHint = new() { TextWrapping = TextWrapping.Wrap };
     private readonly ComboBox _filter = new() { MinWidth = 170 };
-    private readonly ListBox _words = new();
-    private readonly TextBox _forms = new() { AcceptsReturn = true, MinHeight = 120, MaxLength = 64_000, TextWrapping = TextWrapping.Wrap, PlaceholderText = Loc.T("manage.forms") };
+    private readonly ListBox _words = new() { Name = "DictionaryWords" };
+    private readonly TextBox _forms = new() { Name = "DictionaryForms", AcceptsReturn = true, MinHeight = 120, MaxLength = 64_000, TextWrapping = TextWrapping.Wrap, PlaceholderText = Loc.T("manage.forms") };
     private readonly ComboBox _language = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly TextBlock _message = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock _message = new() { Name = "DictionaryMessage", TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _pageLabel = new() { VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _health = new() { TextWrapping = TextWrapping.Wrap };
     private readonly ListBox _diagnostics = new();
@@ -33,14 +34,17 @@ internal sealed class DictionaryWindow : Window
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly (string Code, string Name)[] _languages = Loc.Languages.Where(l => PersonalLexicon.LanguageCodes.Contains(l.Code)).ToArray();
     private PersonalWord? _selected;
+    private bool? _loadedCollection;
     private int _page, _queryVersion;
     private bool _closed, _refreshingStatus, _mutating;
     internal PersonalWordPage? DisplayedPage { get; private set; }
     internal AutoCorrectionStatus? DisplayedStatus { get; private set; }
+    internal Task WordLoadTask { get; private set; } = Task.CompletedTask;
 
-    internal DictionaryWindow(AppController controller, bool diagnostics = false)
+    internal DictionaryWindow(AppController controller, bool diagnostics = false, Func<PersonalWordQuery, Task<PersonalWordPage>>? queryWords = null)
     {
         _controller = controller;
+        _queryWords = queryWords ?? controller.QueryPersonalWordsAsync;
         Title = Loc.T("manage.title"); Icon = AppIcon.Create(); Width = 900; Height = 670; MinWidth = 760; MinHeight = 560;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         _collection.ItemsSource = new[] { Loc.T("dictionary.title"), Loc.T("exclude.title") }; _collection.SelectedIndex = 0;
@@ -51,7 +55,8 @@ internal sealed class DictionaryWindow : Window
         { Text = entry is null ? "" : entry.Language.Length == 0 ? entry.Word : $"{entry.Word}  ·  {LanguageName(entry.Language)}", Margin = new Thickness(8, 6) });
         _words.SelectionChanged += (_, _) =>
         {
-            _selected = _words.SelectedItem as PersonalWord;
+            var entry = _words.SelectedItem as PersonalWord;
+            _selected = _loadedCollection == Exclusions && entry is not null && DisplayedPage?.Items.Contains(entry) == true ? entry : null;
             if (_selected is not { } selected) return;
             _forms.Text = selected.Word; _language.SelectedIndex = Array.FindIndex(_languages, l => l.Code == selected.Language);
         };
@@ -109,7 +114,7 @@ internal sealed class DictionaryWindow : Window
         _tabs.ItemsSource = new[] { new TabItem { Header = Loc.T("dictionary.title"), Content = personal }, new TabItem { Header = Loc.T("manage.diagnostics"), Content = diagnosticPanel } };
         _tabs.SelectedIndex = diagnostics ? 1 : 0;
         var root = new DockPanel { Margin = new Thickness(22) }; DockPanel.SetDock(_message, Dock.Bottom); root.Children.Add(_message); root.Children.Add(_tabs); Content = root;
-        _search.TextChanged += async (_, _) => { var version = ++_queryVersion; await Task.Delay(200); if (!_closed && version == _queryVersion) { _page = 0; await LoadWordsAsync(); } };
+        _search.TextChanged += async (_, _) => { var version = InvalidateWords(); await Task.Delay(200); if (!_closed && version == _queryVersion) { _page = 0; await LoadWordsAsync(); } };
         _collection.SelectionChanged += async (_, _) =>
         {
             _filter.IsVisible = _language.IsVisible = !Exclusions;
@@ -123,6 +128,7 @@ internal sealed class DictionaryWindow : Window
         _timer.Tick += async (_, _) => { if (_tabs.SelectedIndex == 1) await RefreshStatusAsync(); };
         Opened += async (_, _) => { await LoadWordsAsync(); await RefreshStatusAsync(); if (!_closed) _timer.Start(); };
         Closed += (_, _) => { _closed = true; _queryVersion++; _timer.Stop(); };
+        UpdateWordControls();
     }
 
     internal void ShowExclusions() => _collection.SelectedIndex = 1;
@@ -131,32 +137,53 @@ internal sealed class DictionaryWindow : Window
     private string SelectedLanguage() => _language.SelectedIndex >= 0 ? _languages[_language.SelectedIndex].Code : throw new ArgumentException(Loc.T("dictionary.invalid"));
     private Button ActionButton(string key, Func<Task> action)
     {
-        var button = new Button { Content = Loc.T(key) };
+        var button = new Button { Name = key.Replace('.', '_'), Content = Loc.T(key) };
         button.Click += async (_, _) => { try { await action(); } catch (Exception e) { if (!_closed) _message.Text = e.Message; } };
         return button;
     }
-    private async Task LoadWordsAsync()
+    private Task LoadWordsAsync() => WordLoadTask = LoadWordPageAsync();
+    private async Task LoadWordPageAsync()
     {
         if (_closed) return;
-        var version = ++_queryVersion;
-        var language = !Exclusions && _filter.SelectedIndex > 0 ? _languages[_filter.SelectedIndex - 1].Code : null;
+        var version = InvalidateWords();
+        var exclusions = Exclusions;
+        var language = !exclusions && _filter.SelectedIndex > 0 ? _languages[_filter.SelectedIndex - 1].Code : null;
         try
         {
-            var page = await _controller.QueryPersonalWordsAsync(new(_search.Text ?? "", language, Math.Max(0, _page), Exclusions: Exclusions));
+            var page = await _queryWords(new(_search.Text ?? "", language, Math.Max(0, _page), Exclusions: exclusions));
             if (_closed || version != _queryVersion) return;
             DisplayedPage = page;
-            _selected = null; _words.ItemsSource = page.Items; _page = page.Page;
-            _previous.IsEnabled = page.Page > 0; _next.IsEnabled = (page.Page + 1) * page.PageSize < page.Total;
+            _loadedCollection = exclusions;
+            _words.ItemsSource = page.Items; _page = page.Page;
+            UpdateWordControls();
             _pageLabel.Text = Loc.T("manage.page", page.Page + 1, Math.Max(1, (page.Total + page.PageSize - 1) / page.PageSize), page.Total);
         }
         catch (Exception e) { if (!_closed && version == _queryVersion) _message.Text = e.Message; }
     }
+    private int InvalidateWords()
+    {
+        var version = ++_queryVersion;
+        // Clear ownership before yielding: even a failed query must not leave old rows actionable.
+        _loadedCollection = null; _selected = null; DisplayedPage = null;
+        _words.SelectedItem = null; _words.ItemsSource = null;
+        UpdateWordControls();
+        return version;
+    }
+    private void UpdateWordControls()
+    {
+        var ready = !_closed && !_mutating && _loadedCollection == Exclusions;
+        _words.IsEnabled = _actions.IsEnabled = ready;
+        _collection.IsEnabled = !_closed && !_mutating;
+        _previous.IsEnabled = ready && DisplayedPage is { Page: > 0 };
+        _next.IsEnabled = ready && DisplayedPage is { } page && (page.Page + 1) * page.PageSize < page.Total;
+    }
     private async Task Mutate(Func<Task> action)
     {
-        if (_mutating) return; _mutating = true; _actions.IsEnabled = _collection.IsEnabled = false;
+        if (_closed || _mutating || _loadedCollection != Exclusions) return;
+        _mutating = true; UpdateWordControls();
         try { await action(); if (!_closed) await LoadWordsAsync(); }
         catch (Exception e) { if (!_closed) _message.Text = e.Message; }
-        finally { _mutating = false; if (!_closed) _actions.IsEnabled = _collection.IsEnabled = true; }
+        finally { _mutating = false; if (!_closed) UpdateWordControls(); }
     }
     private void ShowImportResult(PersonalImportResult result) => _message.Text = Loc.T("manage.imported", result.Added, result.Skipped);
     private async Task ImportAsync()
