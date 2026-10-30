@@ -142,7 +142,7 @@ internal sealed class EditorCheck : Form
             _report.Add($"Host PID={hostPid}; clipboard PID={ownerPid}; native child PIDs={string.Join(',', childPids)}; accepted={platform.IsClipboardOwnedBy(Handle)}");
             if (ownerPid == 0 || ownerPid == hostPid) throw new InvalidOperationException("Fixture did not produce a cross-process clipboard owner");
 
-            await Check("input layout follows the focused WebView2 thread rather than the host", async () =>
+            await Check("application entry reads and switches the focused WebView2 layout rather than the host", async () =>
             {
                 await Prepare("", select: false);
                 var input = WindowsKeyboardLayouts.InputWindow(Handle);
@@ -160,13 +160,24 @@ internal sealed class EditorCheck : Form
                         throw new InvalidOperationException("Fixture did not establish different host/input layouts");
                     SystemShortcutCheck.Keys((0x53, false), (0x53, true));
                     await ExpectTextEventually("і");
-                    if (!platform.SwitchKeyboardLayout(Handle, english)) throw new InvalidOperationException("Input layout switch was rejected");
+                    platform.ApplicationProcessProbe = target => target == Handle ? "editor" : null;
+                    using var controller = Controller(platform, "focused-input-entry", recent: false);
+                    var ukrainianLayout = platform.GetKeyboardLayouts().Single(layout => layout.Id == WindowsKeyboardLayouts.Id(ukrainian));
+                    controller.ConfigureDiagnosticLayouts([english, KeyboardLayouts.Russian, ukrainianLayout]);
+                    var settings = controller.Settings.Clone();
+                    settings.Layouts = [english.Id, "ru", ukrainianLayout.Id];
+                    settings.ApplicationLayouts = [new() { ProcessName = "editor", Layouts = ["ru", english.Id] }];
+                    // Applying the rule queues the same entry worker while the host is English
+                    // and its focused renderer is Ukrainian. A host-only check would skip it.
+                    controller.ApplySettings(settings);
+                    await controller.ApplicationLayoutsIdleAsync();
                     await Until(() => platform.GetCurrentLayoutId(Handle) == english.Id, "Layout request was sent to the host instead of its input field");
                     SystemShortcutCheck.Keys((0x53, false), (0x53, true));
                     await ExpectTextEventually("іs");
                 }
                 finally
                 {
+                    platform.ApplicationProcessProbe = null;
                     platform.SwitchKeyboardLayout(Handle, english);
                     await Until(() => platform.GetCurrentLayoutId(Handle) == english.Id, "Fixture did not restore the input layout");
                     if (!prior.Contains(ukrainian)) UnloadKeyboardLayout(ukrainian);
