@@ -17,6 +17,18 @@ internal static class Program
     public static int Main(string[] args)
     {
         Args = args;
+        if (OperatingSystem.IsWindows() && args is ["--selftest-text-copy", var textFile])
+        {
+            try
+            {
+                using var clipboard = new Platform.Windows.WinPlatform(monitorClipboard: false);
+                if (Console.ReadLine() != "copy") return 1;
+                clipboard.SetText(File.ReadAllText(textFile));
+                Console.WriteLine("COPIED"); Console.Out.Flush();
+                return Console.ReadLine() == "exit" ? 0 : 1;
+            }
+            catch (Exception e) { Console.Error.WriteLine(e.GetType().Name + ": " + e.Message); return 1; }
+        }
         if (OperatingSystem.IsWindows() && args is ["--selftest-html-copy", var htmlFile, var plain])
         {
             // Isolated self-test producer: publish materialized formats in one native clipboard
