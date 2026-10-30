@@ -66,6 +66,7 @@ public sealed partial class AppController : IDisposable
     private AppController(IPlatform platform, AppPaths paths, IKeyProtector keyProtector, bool diagnostic, RuntimeClient? remote)
     {
         _remote = remote;
+        _dictionaryDataDir = paths.DataDir;
         _personal = new(Path.Combine(paths.DataDir, "personal-words.sqlite3"));
         _images = new LatestImageWorker(StoreCapturedImage);
         _memory = new IdleMemoryReclaimer(() => _convertGate.CurrentCount > 0 && !_capturingScreen && !_editingSettings && !_images.IsBusy && Environment.TickCount64 - Interlocked.Read(ref _lastInputAt) > 1500);
@@ -399,6 +400,7 @@ public sealed partial class AppController : IDisposable
     {
         if (!_platform.Capabilities.SimulateInput && !_platform.SupportsDirectTextEditing)
         {
+            if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Unsupported;
             Log.Info("Text tools: synthetic input is not available on this platform/session");
             return;
         }
@@ -406,7 +408,7 @@ public sealed partial class AppController : IDisposable
         var originInput = Interlocked.Read(ref _typingVersion);
         if (automaticWord is null) await StopPendingAutomaticWords();
         else if (!AutomaticWordIsCurrent(automaticWord)) return;
-        if (!await EnterManualTextOperationAsync(origin)) return;
+        if (!await EnterManualTextOperationAsync(origin)) { if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Busy; return; }
         var timing = new TransformTiming();
         try
         {
@@ -447,14 +449,17 @@ public sealed partial class AppController : IDisposable
         }
         catch (SelectionChangedException)
         {
+            if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Canceled;
             Log.Info("Text tool stopped: the copied selection is no longer verified");
         }
         catch (ClipboardTakenException)
         {
+            if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.ClipboardChanged;
             Log.Info("Text tool stopped: another app changed the clipboard meanwhile");
         }
         catch (Exception e)
         {
+            if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Failed;
             Log.Error("Text tool failed", e);
         }
         finally
@@ -639,7 +644,7 @@ public sealed partial class AppController : IDisposable
     // ---------------------------------------------------------------- undo
 
     private sealed record TransformRecord(nint Window, string Original, string Result, DateTime At, KeyboardLayout? ResultLayout,
-        DirectTextSnapshot? Direct = null, int DirectStart = 0, long DirectVersion = -1);
+        DirectTextSnapshot? Direct = null, int DirectStart = 0, long DirectVersion = -1, RecentTyping.Run? AutomaticRun = null);
 
     private TransformRecord? _lastTransform;
 
@@ -687,6 +692,9 @@ public sealed partial class AppController : IDisposable
         {
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
             var window = last.Window;
+            var undoVersion = Interlocked.Read(ref _typingVersion);
+            var undoFocus = _platform.ForegroundChangeVersion;
+            var undoElement = _platform.FocusedInputElement;
             // The record is cleared by any user input; re-check it after every wait and before every keystroke.
             bool StillValid() => Volatile.Read(ref _disposed) == 0 && ReferenceEquals(_lastTransform, last) &&
                 (last.Direct is null || last.DirectVersion == Interlocked.Read(ref _typingVersion));
@@ -712,7 +720,17 @@ public sealed partial class AppController : IDisposable
                 Log.Info("Undo skipped: the text before the caret is no longer the converted text");
                 return;
             }
-            if (await PasteTextAsync(last.Original, window, StillValid, last.Result)) LastTransform = null;
+            if (await PasteTextAsync(last.Original, window, StillValid, last.Result))
+            {
+                // Only a verified automatic replacement can seed this temporary, caret-local exemption.
+                // Failed/canceled Undo must not protect an unrelated word or overwrite newer input.
+                if (last.AutomaticRun is { } run && StillValid() &&
+                    await VerifyPastedRangeAsync(window, last.Result, last.Original, StillValid,
+                        probeRemainingSelection: !PreferUnicodeReplacement(window, last.Original)) == ClipboardPasteState.Confirmed &&
+                    StillValid() && !ForegroundChanged(undoFocus) && _platform.FocusedInputElement == undoElement)
+                    _recentTyping.RestoreAfterUndo(run, undoVersion, Environment.TickCount64, undoElement, undoFocus);
+                LastTransform = null;
+            }
         }
         catch (SelectionChangedException) { Log.Info("Undo stopped: the copied selection is no longer verified"); }
         catch (ClipboardTakenException) { Log.Info("Undo stopped: another app changed the clipboard meanwhile"); }
@@ -769,7 +787,12 @@ public sealed partial class AppController : IDisposable
         try
         {
             var now = Environment.TickCount64;
-            if (key.Reset) _recentTyping.Reset(version);
+            if (_recentTyping.HasUndoSuppression)
+                _recentTyping.ValidateUndoContext(_platform.ForegroundWindow, _platform.FocusedInputElement, _platform.ForegroundChangeVersion);
+            if (key.Reset)
+            {
+                if (!key.LayoutGesture || !_recentTyping.HasUndoSuppression) _recentTyping.Reset(version);
+            }
             else if (key.Backspace)
             {
                 var window = _platform.ForegroundWindow;

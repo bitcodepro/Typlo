@@ -2,6 +2,9 @@ using Typlo.Core.Layouts;
 
 namespace Typlo.Core.Languages;
 
+public enum LanguageDetectionReason { Suggested, InvalidInput, UnsupportedLanguage, ProtectedToken, UnknownWord, AlreadyCorrect, LanguageRestricted, Ambiguous, LowConfidence, ExcludedWord }
+public sealed record LanguageDetection(KeyboardLayout? Layout, LanguageDetectionReason Reason);
+
 /// <summary>Conservative keyboard correction from exact disk vocabulary evidence, not translation.</summary>
 public sealed class LayoutLanguageDetector(LanguageLexicon lexicon, PersonalLexicon? personal = null)
 {
@@ -9,14 +12,19 @@ public sealed class LayoutLanguageDetector(LanguageLexicon lexicon, PersonalLexi
     private sealed record Candidate(KeyboardLayout Layout, string Text, int Score);
 
     public KeyboardLayout? Suggest(string physicalKeys, KeyboardLayout source, IReadOnlyList<KeyboardLayout> allowed)
+        => Analyze(physicalKeys, source, allowed).Layout;
+
+    public LanguageDetection Analyze(string physicalKeys, KeyboardLayout source, IReadOnlyList<KeyboardLayout> allowed, IReadOnlyList<KeyboardLayout>? installed = null)
     {
-        if (physicalKeys.Length is < 2 or > 128 || physicalKeys.Any(char.IsWhiteSpace) || !source.SupportsConversion) return null;
-        if (!lexicon.Languages.Contains(source.LanguageCode.Split('-', '_')[0].ToLowerInvariant())) return null;
+        if (physicalKeys.Length is < 2 or > 128 || physicalKeys.Any(char.IsWhiteSpace) || !source.SupportsConversion) return new(null, LanguageDetectionReason.InvalidInput);
+        var typed = LayoutConverter.Convert(physicalKeys, KeyboardLayouts.English, source, forceSource: true);
+        if (personal?.IsExcluded(typed) == true) return new(null, LanguageDetectionReason.ExcludedWord);
+        if (!lexicon.Languages.Contains(source.LanguageCode.Split('-', '_')[0].ToLowerInvariant())) return new(null, LanguageDetectionReason.UnsupportedLanguage);
         var cache = new Dictionary<string, (WordEvidence? Corpus, byte Personal)>();
         var current = Read(source, physicalKeys, cache);
         // Avoid identifiers, addresses, paths and numbers. A punctuation key can still be a letter
         // in the intended layout (e.g. htdm.dftim), so punctuation alone is not a rejection.
-        if (current.Text.Any(c => char.IsDigit(c) || c is '@' or '_' or '\\' or ':' or '=')) return null;
+        if (current.Text.Any(c => char.IsDigit(c) || c is '@' or '_' or '\\' or ':' or '=')) return new(null, LanguageDetectionReason.ProtectedToken);
         bool ReliableCandidate(Candidate candidate) => candidate.Score >= Reliable ||
             // Exact Cyrillic words such as «напиши» fall just below the subtitle-frequency
             // cutoff. Accept that weaker evidence only for an unknown all-Latin source word.
@@ -25,13 +33,19 @@ public sealed class LayoutLanguageDetector(LanguageLexicon lexicon, PersonalLexi
         var candidates = allowed.Where(l => l.SupportsConversion).DistinctBy(l => l.Id)
             .Select(l => Read(l, physicalKeys, cache)).Where(ReliableCandidate).ToArray();
         var best = candidates.OrderByDescending(c => c.Score).FirstOrDefault();
-        if (best is null || best.Layout.Id == source.Id) return null;
-        if (current.Score >= Reliable && best.Text != current.Text) return null;
-        if (best.Score - current.Score < Margin) return null;
+        if (best is null)
+        {
+            if (current.Score >= Reliable) return new(null, LanguageDetectionReason.AlreadyCorrect);
+            if (installed is not null && installed.Where(l => l.SupportsConversion && !allowed.Any(a => a.Id == l.Id))
+                .Select(l => Read(l, physicalKeys, cache)).Any(ReliableCandidate)) return new(null, LanguageDetectionReason.LanguageRestricted);
+            return new(null, cache.Values.Any(v => v.Corpus is not null || v.Personal != 0) ? LanguageDetectionReason.LowConfidence : LanguageDetectionReason.UnknownWord);
+        }
+        if (best.Layout.Id == source.Id || (current.Score >= Reliable && best.Text != current.Text)) return new(null, LanguageDetectionReason.AlreadyCorrect);
+        if (best.Score - current.Score < Margin) return new(null, LanguageDetectionReason.LowConfidence);
         // Shared spellings can use the cycle's preferred member; competing different spellings
         // need a clear winner. Corpus weights are evidence, not calibrated probabilities.
-        if (candidates.Any(c => c.Text != best.Text && best.Score - c.Score < AmbiguityMargin)) return null;
-        return best.Layout;
+        if (candidates.Any(c => c.Text != best.Text && best.Score - c.Score < AmbiguityMargin)) return new(null, LanguageDetectionReason.Ambiguous);
+        return new(best.Layout, LanguageDetectionReason.Suggested);
     }
 
     private Candidate Read(KeyboardLayout layout, string keys, Dictionary<string, (WordEvidence? Corpus, byte Personal)> cache)

@@ -3,7 +3,7 @@ using Microsoft.Data.Sqlite;
 namespace Typlo.Core.Languages;
 
 /// <summary>User-owned exact forms, indexed on disk; never load the full vocabulary into RAM.</summary>
-public sealed class PersonalLexicon(string path) : IDisposable
+public sealed partial class PersonalLexicon(string path) : IDisposable
 {
     public static IReadOnlyList<string> LanguageCodes { get; } = Array.AsReadOnly(new[] { "en", "ru", "uk", "fr", "es", "it", "de", "pt" });
     private readonly Lock _gate = new();
@@ -23,7 +23,7 @@ public sealed class PersonalLexicon(string path) : IDisposable
         {
             connection.Open();
             using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA cache_size=-32; PRAGMA mmap_size=0; CREATE TABLE IF NOT EXISTS words (word TEXT NOT NULL, language TEXT NOT NULL, PRIMARY KEY(word,language)) WITHOUT ROWID;";
+            command.CommandText = "PRAGMA cache_size=-32; PRAGMA mmap_size=0; CREATE TABLE IF NOT EXISTS words (word TEXT NOT NULL, language TEXT NOT NULL, PRIMARY KEY(word,language)) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS words_language ON words(language,word); CREATE TABLE IF NOT EXISTS excluded_words (word TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID;";
             command.ExecuteNonQuery();
             return _connection = connection;
         }
@@ -66,5 +66,6 @@ public sealed class PersonalLexicon(string path) : IDisposable
         }
     }
 
-    public void Dispose() { lock (_gate) { _disposed = true; _connection?.Dispose(); _connection = null; } }
+    public void Close() { lock (_gate) { _connection?.Dispose(); _connection = null; } }
+    public void Dispose() { lock (_gate) { _disposed = true; Close(); } }
 }

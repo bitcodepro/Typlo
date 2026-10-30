@@ -5,6 +5,7 @@ using System.Text;
 using Typlo.App.Platform;
 using Typlo.App.Platform.Windows;
 using Typlo.App.Services;
+using Typlo.Core.Languages;
 using Typlo.Core;
 using Typlo.Core.Hotkeys;
 using Typlo.Core.Settings;
@@ -75,6 +76,7 @@ internal static class BackgroundRuntimeCheck
         {
             ToggleHotkey = "", ClipboardHotkey = "", UndoHotkey = "", CaseHotkey = "", TranslitHotkey = "",
             ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", LayoutsInitialized = true, StartWithSystem = false, UiLanguage = "en",
+            AddWordHotkey = "", LayoutSwitchHotkey = "", AutoCorrectEnabled = false,
         });
         var report = Path.Combine(output, "host-" + Guid.NewGuid().ToString("N") + ".txt");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(executable))!, WindowStyle = ProcessWindowStyle.Hidden };
@@ -205,6 +207,38 @@ internal static class BackgroundRuntimeCheck
             state = await runtime.CallAsync(new("state"));
             Check(state.AvailableVersion == "9.9.9" && state.UiProcessId == 0, "Automatic update helper exits and publishes the available version without UI");
             Sample("after-update-check");
+
+            var addedWords = await runtime.CallAsync(new("personal-add", Words: [new("словарик", "ru"), new("словарик", "uk"), new("проверка", "ru")]));
+            Check(addedWords.ImportResult?.Added == 3, "Resident adds a batch of personal forms over IPC");
+            var wordPage = await runtime.CallAsync(new("personal-query", WordQuery: new("сло", "ru")));
+            Check(wordPage.WordPage is { Total: 1 } && wordPage.WordPage.Items[0].Word == "словарик", "Native AOT serializes a filtered dictionary page");
+            await runtime.CallAsync(new("personal-edit", OriginalWord: new("словарик", "ru"), ReplacementWord: new("словарики", "ru")));
+            await runtime.CallAsync(new("personal-word", Text: "проверка", Args: ["ru"], Flag: true));
+            var wordExport = Path.Combine(output, "personal-export.json");
+            await runtime.CallAsync(new("personal-export", Text: wordExport));
+            var imported = await runtime.CallAsync(new("personal-import", Text: wordExport));
+            Check(imported.ImportResult is { Added: 0, Skipped: 2 }, "Native AOT exports, validates and imports a personal dictionary without duplicates");
+            await runtime.CallAsync(new("excluded-word", Text: "GhB"));
+            var excludedPage = await runtime.CallAsync(new("personal-query", WordQuery: new("GH", Exclusions: true)));
+            Check(excludedPage.WordPage is { Total: 1 } && excludedPage.WordPage.Items[0].Word == "ghb", "Native AOT adds and queries a normalized global exclusion");
+            await runtime.CallAsync(new("personal-edit", OriginalWord: new("ghb", ""), ReplacementWord: new("sql", ""), Flag: true));
+            var excludedExport = Path.Combine(output, "excluded-export.json");
+            await runtime.CallAsync(new("personal-export", Text: excludedExport, Flag: true));
+            await runtime.CallAsync(new("excluded-word", Text: "sql", Flag: true));
+            var importedExcluded = await runtime.CallAsync(new("personal-import", Text: excludedExport, Flag: true));
+            Check(importedExcluded.ImportResult is { Added: 1 }, "Native AOT edits, deletes, exports and imports exclusions independently of personal forms");
+            var checkedDictionary = await runtime.CallAsync(new("dictionary-check"));
+            Check(checkedDictionary.AutoCorrection?.Health == DictionaryHealth.Ready, "Resident verifies dictionary readers without restarting");
+            Check(IpcServer.Send(["--dictionary"], info["commands"]), "Dictionary manager UI command accepted");
+            await BindUiAsync("dictionary manager launched");
+            await UntilAsync(async () =>
+            {
+                var manager = await ui.CallAsync(new("dictionary-manager-fixture"), allowRejected: true);
+                return manager.Ok && manager.WordPage is { Total: 2 } && manager.AutoCorrection?.Health == DictionaryHealth.Ready;
+            }, "manager displays resident words and dictionary health");
+            Check(true, "On-demand manager displays resident pages and verified diagnostic health through real IPC");
+            await ui.CallAsync(new("ui", Args: ["--dismiss"]));
+            await Until(() => child!.HasExited, "dictionary manager exits after closing"); child!.Dispose(); child = null;
 
             await OpenSettings();
             Check(child!.Id != firstPid, "UI is recreated on demand");

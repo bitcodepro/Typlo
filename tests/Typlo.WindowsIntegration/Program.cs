@@ -346,6 +346,7 @@ internal sealed class EditorCheck : Form
                     "manual repeat and Undo in a Teams-like editor with delayed paragraph copy and blocked paste", async () =>
                 {
                     var active = true;
+                    var copySession = Guid.NewGuid().ToString("N");
                     var continuedKeys = 0;
                     var modifierResets = 0;
                     var gestureSent = false;
@@ -367,12 +368,14 @@ internal sealed class EditorCheck : Form
                         platform.SwitchKeyboardLayout(Handle, english);
                         await Until(() => platform.GetCurrentLayoutId(Handle) == english.Id, "Fixture did not restore English after native layout gesture");
                         SystemShortcutCheck.Keys((0x58, false), (0x58, true));
+                        await _browser.ExecuteScriptAsync("window.fixtureReleaseCopy?.()");
                     }
                     platform.KeyTyped += ObserveContinuation;
                     void OnCopy(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
                     {
                         if (!active) return;
                         using var message = JsonDocument.Parse(e.WebMessageAsJson);
+                        if (!message.RootElement.TryGetProperty("fixtureSession", out var session) || session.GetString() != copySession) return;
                         if (message.RootElement.TryGetProperty("fixtureCopy", out var value)) platform.SetText(value.GetString()!);
                         if (interruptCopy && !gestureSent && message.RootElement.TryGetProperty("fixtureCopyStarted", out _))
                         {
@@ -397,11 +400,14 @@ internal sealed class EditorCheck : Form
                         await platform.WaitForTypingWatchAsync();
                         if (english is not null) platform.SwitchKeyboardLayout(Handle, english);
                         await Prepare("готовое ", select: false, formatted: true);
+                        await _browser.ExecuteScriptAsync($"window.fixtureCopySession='{copySession}';window.fixtureGateCopy={(interruption > 1 ? "true" : "false")}");
                         await _browser.ExecuteScriptAsync("""
                             (() => {const e=document.getElementById('editor');window.blockedPastes=0;
-                            window.fixtureCopy=e => {e.preventDefault();chrome.webview.postMessage({fixtureCopyStarted:true});
-                              setTimeout(()=>{const text=getSelection().toString();
-                              chrome.webview.postMessage({fixtureCopy:text ? text+'\r\n' : ''});},window.fixtureCopyDelay);};
+                            window.fixtureCopy=e => {e.preventDefault();const session=window.fixtureCopySession;
+                              const ready=window.fixtureGateCopy ? new Promise(resolve=>window.fixtureReleaseCopy=resolve) : Promise.resolve();
+                              chrome.webview.postMessage({fixtureCopyStarted:true,fixtureSession:session});
+                              setTimeout(()=>ready.then(()=>{const text=getSelection().toString();
+                              chrome.webview.postMessage({fixtureCopy:text ? text+'\r\n' : '',fixtureSession:session});}),window.fixtureCopyDelay);};
                             window.fixturePaste=e => {window.blockedPastes++;e.preventDefault();};
                             e.addEventListener('copy',window.fixtureCopy);e.addEventListener('paste',window.fixturePaste);})()
                             """);
@@ -422,6 +428,11 @@ internal sealed class EditorCheck : Form
                         var suffix = automatic ? " " : "";
                         if (interruptCopy)
                         {
+                            if (interruption > 1)
+                            {
+                                await Until(() => gestureSent, "The delayed copy did not start");
+                                await gesture; // Surface gesture failure before a generic text timeout.
+                            }
                             var typed = interruption > 1 ? "x" : "xyZ";
                             var tail = interruption > 1 ? "TAIL" : "";
                             await ExpectNormalizedText("готовое ghb" + suffix + typed + tail);
@@ -457,7 +468,7 @@ internal sealed class EditorCheck : Form
                         _browser.CoreWebView2.WebMessageReceived -= OnCopy;
                         await _browser.ExecuteScriptAsync("""
                             (()=>{const e=document.getElementById('editor');e.removeEventListener('copy',window.fixtureCopy);
-                            e.removeEventListener('paste',window.fixturePaste);})()
+                            e.removeEventListener('paste',window.fixturePaste);window.fixtureReleaseCopy?.();})()
                             """);
                     }
                 });

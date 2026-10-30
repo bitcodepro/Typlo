@@ -96,7 +96,7 @@ public sealed partial class AppController
     private async Task TransformAutomaticWordWithBatchesAsync(AutomaticWord word,
         Func<string, KeyboardLayout?, (string Text, KeyboardLayout? SwitchTo)> transform, Func<bool> noInput)
     {
-        if (!_platform.SupportsTextRangeBatch) return;
+        if (!_platform.SupportsTextRangeBatch) { word.Outcome = AutoCorrectionReason.Unsupported; return; }
         var window = word.Run.Window;
         var focus = _platform.ForegroundChangeVersion;
         var sent = false;
@@ -117,7 +117,8 @@ public sealed partial class AppController
             bool Expected(string copied) => word.Run.MatchSource(copied, SourceLayouts(active)) is not null;
             var text = await CopyCollapsedRangeAsync(window, word.Run.Keys.Length, Current, Expected, CanRestoreCancelledCopy);
             var source = text is null ? null : word.Run.MatchSource(text, SourceLayouts(active));
-            if (text is null || source is null || !Current()) return;
+            if (!Current()) return;
+            if (text is null || source is null) { word.Outcome = AutoCorrectionReason.CopyUnavailable; return; }
             var (result, target) = transform(text, source);
             if (target is null) return;
             if (result != text)
@@ -133,7 +134,7 @@ public sealed partial class AppController
                 if (!Current()) return;
                 var accepted = unicode ? _platform.TryReplacePreviousText(window, word.Run.Keys.Length, result, Current) :
                     _platform.TrySendTextRangeBatch(window, word.Run.Keys.Length, paste: true, Current);
-                if (!accepted) return;
+                if (!accepted) { word.Outcome = Current() ? AutoCorrectionReason.Unconfirmed : AutoCorrectionReason.Canceled; return; }
                 sent = true;
                 Log.Info($"Automatic correction: replacement={(unicode ? "unicode" : "clipboard")}; since-space={System.Diagnostics.Stopwatch.GetElapsedTime(word.Started).TotalMilliseconds:F0}ms");
                 await Task.Delay(unicode ? 40 : 300);
@@ -141,14 +142,16 @@ public sealed partial class AppController
                 unchanged = state == ClipboardPasteState.Unchanged;
                 if (state != ClipboardPasteState.Confirmed)
                 {
+                    word.Outcome = Current() ? AutoCorrectionReason.Unconfirmed : AutoCorrectionReason.Canceled;
                     LastTransform = null;
                     Log.Info("Automatic correction: paste=" + state);
                     return;
                 }
             }
             if (!Current()) return;
+            word.Outcome = AutoCorrectionReason.Corrected;
             _recentTyping.Consume(word.Version);
-            LastTransform = new(window, text, result, DateTime.UtcNow, target);
+            LastTransform = new(window, text, result, DateTime.UtcNow, target, AutomaticRun: word.Run);
             if (Settings.SwitchSystemLayout && Current()) _platform.SwitchKeyboardLayout(window, target);
         }
         finally

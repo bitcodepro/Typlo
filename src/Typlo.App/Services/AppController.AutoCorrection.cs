@@ -7,7 +7,11 @@ public sealed partial class AppController
 {
     private readonly LanguageLexicon _lexicon = new(Path.Combine(AppContext.BaseDirectory, "language-data", "words.sqlite3"));
     private readonly Lock _automaticWordLock = new();
-    private sealed record AutomaticWord(RecentTyping.Run Run, long Version, long Generation, long Started);
+    private sealed record AutomaticWord(RecentTyping.Run Run, long Version, long Generation, long Started)
+    {
+        internal AutoCorrectionReason Outcome = AutoCorrectionReason.Canceled;
+        internal string? SourceLanguage, TargetLanguage;
+    }
     private AutomaticWord? _pendingAutomaticWord;
     private bool _automaticWordWorker;
     private Task _automaticWordTask = Task.CompletedTask;
@@ -41,12 +45,20 @@ public sealed partial class AppController
 
     private void QueueAutomaticWord(nint window, long version)
     {
-        if (!Settings.AutoCorrectEnabled || !_platform.SupportsAutomaticWordCorrection || _editingSettings || Volatile.Read(ref _updating) != 0 || _capturingScreen ||
-            _remote is not null || Volatile.Read(ref _disposed) != 0 || _dictionaryFailed) return;
+        if (_remote is not null || Volatile.Read(ref _disposed) != 0) return;
         var run = _recentTyping.Capture(window);
         if (run is null || run.Keys.Length < 3 || run.Keys[^1] != ' ' || char.IsWhiteSpace(run.Keys[^2])) return;
+        AutoCorrectionReason? skip = run.SuppressAutomatic ? AutoCorrectionReason.UndoSuppressed : !Settings.AutoCorrectEnabled ? AutoCorrectionReason.Disabled :
+            !_platform.SupportsAutomaticWordCorrection ? AutoCorrectionReason.Unsupported :
+            _dictionaryFailed ? AutoCorrectionReason.DictionaryUnavailable :
+            AutomaticPauseReason();
+        if (skip is { } reason)
+        {
+            RecordAutomaticResult(new(run, version, 0, System.Diagnostics.Stopwatch.GetTimestamp()) { Outcome = reason }); return;
+        }
         lock (_automaticWordLock)
         {
+            if (_pendingAutomaticWord is { } previous) RecordAutomaticResult(previous);
             _pendingAutomaticWord = new(run, version, _automaticWordGeneration, System.Diagnostics.Stopwatch.GetTimestamp());
             if (_automaticWordWorker) return;
             _automaticWordWorker = true;
@@ -58,7 +70,9 @@ public sealed partial class AppController
     {
         lock (_automaticWordLock)
         {
-            _automaticWordGeneration++; _pendingAutomaticWord = null;
+            _automaticWordGeneration++;
+            if (_pendingAutomaticWord is { } canceled) RecordAutomaticResult(canceled);
+            _pendingAutomaticWord = null;
             return _automaticWordTask;
         }
     }
@@ -67,7 +81,7 @@ public sealed partial class AppController
         word.Generation == Interlocked.Read(ref _automaticWordGeneration) && AutomaticWordContextIsCurrent(word);
 
     private bool AutomaticWordContextIsCurrent(AutomaticWord word) => Volatile.Read(ref _disposed) == 0 &&
-        Settings.AutoCorrectEnabled && !_editingSettings && Volatile.Read(ref _updating) == 0 && !_capturingScreen &&
+        Settings.AutoCorrectEnabled && !_editingSettings && Volatile.Read(ref _updating) == 0 && Volatile.Read(ref _checkingDictionary) == 0 && !_capturingScreen &&
         Interlocked.Read(ref _typingVersion) == word.Version && _platform.ForegroundWindow == word.Run.Window &&
         (word.Run.Element == 0 || _platform.FocusedInputElement == word.Run.Element);
 
@@ -88,13 +102,33 @@ public sealed partial class AppController
                 if (!AutomaticWordIsCurrent(word)) continue;
                 // Own settings/history/search fields and unidentified targets are excluded.
                 var process = _platform.GetApplicationProcessName(word.Run.Window);
-                if (string.IsNullOrEmpty(process) || Settings.ExcludedApps.Any(p =>
-                    string.Equals(p, process, StringComparison.OrdinalIgnoreCase))) continue;
+                if (string.IsNullOrEmpty(process)) { word.Outcome = AutoCorrectionReason.UnknownApplication; continue; }
+                if (Settings.ExcludedApps.Any(p => string.Equals(p, process, StringComparison.OrdinalIgnoreCase)))
+                { word.Outcome = AutoCorrectionReason.ExcludedApplication; continue; }
                 var source = FindLayout(_platform.GetCurrentLayoutId(word.Run.Window));
-                if (source is null || !source.SupportsConversion) continue;
+                if (source is null || !source.SupportsConversion) { word.Outcome = AutoCorrectionReason.UnsupportedLanguage; continue; }
+                var sourceCode = source.LanguageCode.Split('-', '_')[0];
+                word.SourceLanguage = PersonalLexicon.LanguageCodes.Contains(sourceCode) ? sourceCode : null;
                 var allowed = ApplicationCycleFor(word.Run.Window)?.Layouts ?? LayoutCatalog.Cycle(Settings).ToArray();
-                var target = new LayoutLanguageDetector(_lexicon, _personal).Suggest(word.Run.Keys[..^1], source, allowed);
-                if (target is null || !AutomaticWordIsCurrent(word)) continue;
+                var decision = new LayoutLanguageDetector(_lexicon, _personal).Analyze(word.Run.Keys[..^1], source, allowed, _converter.Layouts);
+                if (_lexicon.IsOpen) lock (_diagnosticsLock) _dictionaryHealth = DictionaryHealth.Ready;
+                word.Outcome = decision.Reason switch
+                {
+                    LanguageDetectionReason.ExcludedWord => AutoCorrectionReason.ExcludedWord,
+                    LanguageDetectionReason.InvalidInput => AutoCorrectionReason.ProtectedToken,
+                    LanguageDetectionReason.UnsupportedLanguage => AutoCorrectionReason.UnsupportedLanguage,
+                    LanguageDetectionReason.ProtectedToken => AutoCorrectionReason.ProtectedToken,
+                    LanguageDetectionReason.UnknownWord => AutoCorrectionReason.UnknownWord,
+                    LanguageDetectionReason.AlreadyCorrect => AutoCorrectionReason.AlreadyCorrect,
+                    LanguageDetectionReason.LanguageRestricted => AutoCorrectionReason.LanguageRestricted,
+                    LanguageDetectionReason.Ambiguous => AutoCorrectionReason.Ambiguous,
+                    LanguageDetectionReason.LowConfidence => AutoCorrectionReason.LowConfidence,
+                    _ => AutoCorrectionReason.Canceled,
+                };
+                var target = decision.Layout;
+                if (!AutomaticWordIsCurrent(word)) { word.Outcome = AutoCorrectionReason.Canceled; continue; }
+                if (target is null) continue;
+                word.TargetLanguage = target.LanguageCode.Split('-', '_')[0];
                 await TransformSelectionCoreAsync((text, matched) =>
                 {
                     if (matched is null || word.Run.MatchSource(text, [source]) is null) return (text, null);
@@ -104,10 +138,14 @@ public sealed partial class AppController
             catch (Exception e) when (e is IOException or Microsoft.Data.Sqlite.SqliteException or InvalidDataException or UnauthorizedAccessException)
             {
                 _dictionaryFailed = true;
+                word.Outcome = AutoCorrectionReason.DictionaryUnavailable;
+                var health = DictionaryAvailable ? DictionaryHealth.Failed : DictionaryHealth.Missing;
+                lock (_diagnosticsLock) _dictionaryHealth = health;
                 Log.Error("Automatic correction vocabulary unavailable; manual conversion remains available", e);
             }
             catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0) { }
-            catch (Exception e) { Log.Error("Automatic correction failed", e); }
+            catch (Exception e) { word.Outcome = AutoCorrectionReason.Failed; Log.Error("Automatic correction failed", e); }
+            finally { RecordAutomaticResult(word); }
         }
     }
 }

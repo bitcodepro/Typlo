@@ -60,7 +60,7 @@ internal sealed class BackgroundHost : IDisposable
                 if (int.TryParse(Program.Argument("--lifetime-seconds"), out var seconds) && seconds > 0)
                     _ = Task.Delay(TimeSpan.FromSeconds(seconds)).ContinueWith(_ => host._tray.Stop());
             }
-            if (args.Contains("--history") || args.Contains("--settings") || args.Contains("--capture") || args.Contains("--shortcuts")) host.Command(args);
+            if (args.Contains("--history") || args.Contains("--settings") || args.Contains("--capture") || args.Contains("--shortcuts") || args.Contains("--dictionary")) host.Command(args);
             else if (!diagnostic && (!File.Exists(paths.SettingsFile + ".seen") && !args.Contains("--tray") || host._controller.FailedHotkeys.Count > 0))
             { File.WriteAllText(paths.SettingsFile + ".seen", ""); host.ShowUi(["--settings"]); }
             host._tray.Run(); return 0;
@@ -83,9 +83,23 @@ internal sealed class BackgroundHost : IDisposable
     }
     private Task<RuntimeReply> DispatchAsync(RuntimeRequest command)
     {
+        if (command.Command is "auto-status" or "dictionary-check" or "personal-query" or "personal-edit" or "personal-add" or "personal-import" or "personal-export" or "personal-word" or "excluded-word")
+            return DispatchDictionaryAsync(command);
         if (_diagnostic && command.Command == "register-hotkeys" && File.Exists(Path.Combine(_paths.DataDir, "hold-hotkey-restore")))
             return HoldHotkeyRestoreAsync(command);
         return DispatchCore(command);
+    }
+    private async Task<RuntimeReply> DispatchDictionaryAsync(RuntimeRequest command)
+    {
+        try { return await DispatchCore(command); }
+        catch (Microsoft.Data.Sqlite.SqliteException e) when (e.SqliteErrorCode == 19 && command.Command == "personal-edit") { return new(false, Loc.T("manage.duplicate")); }
+        catch (Exception e) when (e is System.Text.Json.JsonException or InvalidDataException || (e is ArgumentException && command.Command == "personal-import"))
+        { return new(false, Loc.T("manage.invalidFile")); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
+        { return new(false, Loc.T("manage.fileError")); }
+        catch (ArgumentException) { return new(false, Loc.T(command.Command == "personal-export" ? "manage.fileError" : "dictionary.invalid")); }
+        catch (InvalidOperationException) { return new(false, Loc.T("manage.changed")); }
+        catch (TimeoutException) { return new(false, Loc.T("reason.Busy")); }
     }
     private async Task<RuntimeReply> HoldHotkeyRestoreAsync(RuntimeRequest command)
     {
@@ -143,6 +157,26 @@ internal sealed class BackgroundHost : IDisposable
             case "state": return State();
             case "update-start": return BeginInstall();
             case "update-state": return UpdateState();
+            case "auto-status": return new(true, AutoCorrection: await _controller.GetAutomaticStatusAsync());
+            case "dictionary-check": return new(true, AutoCorrection: await _controller.CheckDictionaryAsync());
+            case "personal-query":
+                if (command.WordQuery is null) return new(false, "Missing dictionary query");
+                return new(true, WordPage: await _controller.QueryPersonalWordsAsync(command.WordQuery));
+            case "personal-edit":
+                if (command.OriginalWord is null || command.ReplacementWord is null) return new(false, "Missing dictionary entry");
+                await _controller.EditPersonalWordAsync(command.OriginalWord, command.ReplacementWord, command.Flag); return new(true);
+            case "personal-add":
+                if (command.Words is null) return new(false, "Missing words");
+                return new(true, ImportResult: await _controller.AddPersonalWordsAsync(command.Words, command.Flag));
+            case "personal-import":
+                if (command.Text is null) return new(false, "Missing import file");
+                return new(true, ImportResult: await _controller.ImportPersonalWordsAsync(command.Text, command.Flag));
+            case "personal-export":
+                if (command.Text is null) return new(false, "Missing export file");
+                await _controller.ExportPersonalWordsAsync(command.Text, command.Flag); return new(true);
+            case "excluded-word":
+                if (command.Text is null) return new(false, Loc.T("dictionary.invalid"));
+                await _controller.SetExcludedWordAsync(command.Text, command.Flag); return new(true);
             case "personal-word":
                 if (command.Text is null || command.Args is not [var language]) return new(false, Loc.T("dictionary.invalid"));
                 await _controller.SetPersonalWordAsync(command.Text, language, command.Flag); return new(true);
@@ -175,6 +209,7 @@ internal sealed class BackgroundHost : IDisposable
         {
             new(Loc.T("tray.history"),window=>ShowUi(["--history","--target",((long)window).ToString(CultureInfo.InvariantCulture)])),
             new(Loc.T("tray.settings"),_=>ShowUi(["--settings"])),new(Loc.T("shortcuts.menu"),_=>ShowUi(["--shortcuts"])),new(""),
+            new(Loc.T("manage.title"), _ => ShowUi(["--dictionary"])),
             new(Loc.T("capture.copy"),_=>ShowUi(["--capture",_controller.Settings.ScreenshotShape==Core.Imaging.CaptureShape.Freehand?"freehand":"rectangle"])),
             new(Loc.T("capture.save"),_=>ShowUi(["--capture",_controller.Settings.ScreenshotShape==Core.Imaging.CaptureShape.Freehand?"freehand":"rectangle","--save"])),new(""),
             new(Loc.T("tray.keepAwake"),_=>_controller.SetPreventScreenLock(!_controller.Settings.PreventScreenLock),_controller.Settings.PreventScreenLock),
