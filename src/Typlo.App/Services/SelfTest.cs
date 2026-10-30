@@ -141,17 +141,42 @@ internal static class SelfTest
 
             await Check("excluded app is not stored", async () =>
             {
-                var s = controller.Settings.Clone();
-                s.ExcludedApps = ["powershell"];
-                controller.ApplySettings(s);
-                // Keep the process alive: once a copying app exits, Windows no longer reports it as the owner.
-                var ps = External.RunPowerShellAsync("Set-Clipboard -Value 'excluded-secret-123'; Start-Sleep -Seconds 2");
-                await Task.Delay(800);
-                var stored = controller.Store.List().FirstOrDefault(e => e.PreviewText == "excluded-secret-123");
-                s.ExcludedApps = [];
-                controller.ApplySettings(s);
-                await ps;
-                return stored is null ? null : $"was stored (source app '{stored.SourceApp}')";
+                const string marker = "excluded-secret-123";
+                var payload = Path.Combine(dir, "excluded-copy.txt");
+                await File.WriteAllTextAsync(payload, marker);
+                using var producer = Process.Start(External.SelfStart("--selftest-text-copy", payload))!;
+                var error = producer.StandardError.ReadToEndAsync();
+                var observed = new TaskCompletionSource<RawClip>(TaskCreationOptions.RunContinuationsAsynchronously);
+                void Captured(RawClip clip) { if (clip.Text == marker) observed.TrySetResult(clip); }
+                var saved = controller.Settings.Clone();
+                platform.ClipboardCaptured += Captured;
+                try
+                {
+                    var excluded = saved.Clone(); excluded.ExcludedApps = [producer.ProcessName];
+                    controller.ApplySettings(excluded);
+                    await producer.StandardInput.WriteLineAsync("copy"); await producer.StandardInput.FlushAsync();
+                    if (await producer.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)) != "COPIED")
+                        throw new IOException("Native text producer did not acknowledge Copy: " + await error);
+                    var clip = await observed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                    Platform.Windows.Native.GetWindowThreadProcessId(Platform.Windows.Native.GetClipboardOwner(), out var owner);
+                    if (owner != producer.Id || !string.Equals(clip.SourceApp, producer.ProcessName, StringComparison.OrdinalIgnoreCase))
+                        return "copy did not retain the excluded producer as its owner";
+                    // Our observer runs after the controller's synchronous recording handler.
+                    return controller.Store.List().Any(e => e.PreviewText == marker) ? "excluded copy was stored" : null;
+                }
+                finally
+                {
+                    platform.ClipboardCaptured -= Captured; controller.ApplySettings(saved);
+                    try
+                    {
+                        if (!producer.HasExited)
+                        {
+                            await producer.StandardInput.WriteLineAsync("exit"); await producer.StandardInput.FlushAsync();
+                            await producer.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                        }
+                    }
+                    finally { if (!producer.HasExited) producer.Kill(entireProcessTree: true); File.Delete(payload); }
+                }
             }, when: OperatingSystem.IsWindows());
 
             await Check("global hotkey fires on key press", async () =>
@@ -633,6 +658,15 @@ internal static class SelfTest
     /// <summary>Puts things on the clipboard from another process, the way a real app would.</summary>
     private static class External
     {
+        public static ProcessStartInfo SelfStart(params string[] arguments)
+        {
+            var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            if (string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath), "dotnet", StringComparison.OrdinalIgnoreCase))
+                start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Typlo.dll"));
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            return start;
+        }
         public static void SetText(string text)
         {
             if (OperatingSystem.IsWindows()) _ = RunPowerShellAsync($"Set-Clipboard -Value '{text}'; Start-Sleep -Seconds 1");
@@ -670,11 +704,7 @@ internal static class SelfTest
             await File.WriteAllTextAsync(file, cfHtml);
             try
             {
-                var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true,
-                    RedirectStandardError = true, RedirectStandardOutput = true };
-                if (string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath), "dotnet", StringComparison.OrdinalIgnoreCase))
-                    start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Typlo.dll"));
-                start.ArgumentList.Add("--selftest-html-copy"); start.ArgumentList.Add(file); start.ArgumentList.Add(plain);
+                var start = SelfStart("--selftest-html-copy", file, plain);
                 using var producer = Process.Start(start)!;
                 var error = producer.StandardError.ReadToEndAsync();
                 var output = producer.StandardOutput.ReadToEndAsync();

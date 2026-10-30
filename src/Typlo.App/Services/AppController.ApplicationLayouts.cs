@@ -22,7 +22,7 @@ public sealed partial class AppController
     }
     private AutomaticLayoutOperation? _automaticLayoutOperation;
 
-    private async Task<bool> EnterManualTextOperationAsync(nint window)
+    private async Task<bool> EnterManualTextOperationAsync(nint window, bool waitForGate = false)
     {
         AutomaticLayoutOperation? automatic;
         lock (_applicationFocusLock)
@@ -31,6 +31,15 @@ public sealed partial class AppController
             automatic = _automaticLayoutOperation; automatic?.Stop.Cancel();
         }
         if (automatic is not null) await automatic.Completed.Task;
+        if (waitForGate)
+        {
+            if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(1))) return false;
+            lock (_applicationFocusLock)
+            {
+                if (Volatile.Read(ref _disposed) != 0) { _convertGate.Release(); return false; }
+                _manualTextWindow = window; return true;
+            }
+        }
         lock (_applicationFocusLock)
         {
             if (Volatile.Read(ref _disposed) != 0 || !_convertGate.Wait(0)) return false;
@@ -73,7 +82,7 @@ public sealed partial class AppController
         lock (_applicationFocusLock)
         { Interlocked.Increment(ref _applicationFocusGeneration); _pendingApplicationFocus = null; _automaticLayoutOperation?.Stop.Cancel(); }
         if (_remote is not null || Volatile.Read(ref _disposed) != 0 ||
-            !Volatile.Read(ref _applicationCycles).Values.Any(rule => rule.Layouts.Length == 1)) return;
+            Volatile.Read(ref _applicationCycles).Count == 0) return;
         _platform.ForegroundChanged += OnApplicationForeground;
         _lastPolledApplication = _platform.ForegroundWindow;
         OnApplicationForeground(_lastPolledApplication);
@@ -126,7 +135,7 @@ public sealed partial class AppController
             {
                 if (Volatile.Read(ref _disposed) != 0 || work.Window == 0) continue;
                 var rule = ApplicationCycleFor(work.Window);
-                if (rule?.Layouts.Length != 1) continue;
+                if (rule is null) continue;
                 var automatic = new AutomaticLayoutOperation();
                 lock (_applicationFocusLock)
                 {
@@ -143,8 +152,10 @@ public sealed partial class AppController
                             Interlocked.Read(ref _applicationFocusGeneration) == work.Generation &&
                             Interlocked.Read(ref _typingVersion) == work.Input && _platform.ForegroundWindow == work.Window;
                         if (!Valid()) continue;
-                        var target = rule.Layouts[0];
-                        if (FindLayout(_platform.GetCurrentLayoutId(work.Window))?.Id == target.Id) continue;
+                        var current = FindLayout(_platform.GetCurrentLayoutId(work.Window));
+                        if (rule.Layouts.Any(layout => layout.Id == current?.Id)) continue;
+                        var target = rule.Layouts.FirstOrDefault(layout =>
+                            layout.LanguageCode.Equals("en", StringComparison.OrdinalIgnoreCase)) ?? rule.Layouts[0];
                         if (Valid() && _platform.SwitchKeyboardLayout(work.Window, target))
                         {
                             LastTransform = null;

@@ -9,12 +9,15 @@ public sealed partial class AppController
     {
         var window = _platform.ForegroundWindow;
         var version = Interlocked.Read(ref _typingVersion);
+        var focus = _platform.SupportsForegroundNotifications ? _platform.ForegroundChangeVersion : null;
         await StopPendingAutomaticWords();
-        if (!await EnterManualTextOperationAsync(window)) return;
+        // Distinct input-only gestures may queue behind a switch whose native request is
+        // already visible. Text replacement commands retain their existing no-queue behavior.
+        if (!await EnterManualTextOperationAsync(window, waitForGate: true)) return;
         try
         {
             bool Current() => Volatile.Read(ref _disposed) == 0 && _platform.ForegroundWindow == window &&
-                Interlocked.Read(ref _typingVersion) == version;
+                Interlocked.Read(ref _typingVersion) == version && !ForegroundChanged(focus);
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
             if (!Current()) return;
             var cycle = ApplicationCycleFor(window)?.Layouts ?? LayoutCatalog.Cycle(Settings).ToArray();
@@ -29,6 +32,18 @@ public sealed partial class AppController
             {
                 LastTransform = null;
                 _recentTyping.Consume(version);
+                // Windows posts the request asynchronously. Keep the gate until the source
+                // is observed, so a rapid next gesture reads the applied source, not its predecessor.
+                var started = Environment.TickCount64;
+                while (Current() && FindLayout(_platform.GetCurrentLayoutId(window))?.Id != target.Id)
+                {
+                    if (Environment.TickCount64 - started >= 250)
+                    {
+                        Log.Info("Input cycle: applied layout was not confirmed; command will not be retried");
+                        break;
+                    }
+                    await Task.Delay(5);
+                }
             }
         }
         catch (Exception e) { Log.Error("Input layout cycle failed", e); }
