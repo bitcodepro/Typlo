@@ -22,7 +22,7 @@ public sealed partial class AppController
     }
     private AutomaticLayoutOperation? _automaticLayoutOperation;
 
-    private async Task<bool> EnterManualTextOperationAsync(nint window)
+    private async Task<bool> EnterManualTextOperationAsync(nint window, bool waitForGate = false)
     {
         AutomaticLayoutOperation? automatic;
         lock (_applicationFocusLock)
@@ -31,6 +31,15 @@ public sealed partial class AppController
             automatic = _automaticLayoutOperation; automatic?.Stop.Cancel();
         }
         if (automatic is not null) await automatic.Completed.Task;
+        if (waitForGate)
+        {
+            if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(1))) return false;
+            lock (_applicationFocusLock)
+            {
+                if (Volatile.Read(ref _disposed) != 0) { _convertGate.Release(); return false; }
+                _manualTextWindow = window; return true;
+            }
+        }
         lock (_applicationFocusLock)
         {
             if (Volatile.Read(ref _disposed) != 0 || !_convertGate.Wait(0)) return false;

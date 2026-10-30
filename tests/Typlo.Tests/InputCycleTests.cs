@@ -5,6 +5,35 @@ namespace Typlo.Tests;
 public sealed partial class AppControllerTests
 {
     [Fact]
+    public async Task RapidInputCyclesWaitForThePreviousSwitchInsteadOfDroppingTheNextGesture()
+    {
+        _controller.ConfigureDiagnosticLayouts([KeyboardLayouts.English, KeyboardLayouts.Ukrainian, KeyboardLayouts.Russian]);
+        var settings = _controller.Settings.Clone(); settings.AutoCorrectEnabled = false;
+        settings.Layouts = ["en", "uk", "ru"]; _controller.ApplySettings(settings);
+        _platform.ActiveLayoutId = "en";
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocked = 0;
+        _platform.BeforeLayoutRead = _ =>
+        {
+            if (Interlocked.Exchange(ref blocked, 1) != 0) return;
+            entered.TrySetResult(); release.Task.GetAwaiter().GetResult();
+        };
+        var first = Task.Run(_controller.CycleInputLayoutAsync);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            var second = _controller.CycleInputLayoutAsync();
+            Assert.False(second.IsCompleted);
+            release.TrySetResult();
+            await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal("ru", _platform.ActiveLayoutId);
+            Assert.Equal(2, _platform.LayoutSwitches.Count);
+        }
+        finally { release.TrySetResult(); await first; }
+    }
+
+    [Fact]
     public async Task InputCycleUsesAppOrderGlobalFallbackAndSingleLanguageWithoutEditingText()
     {
         _controller.ConfigureDiagnosticLayouts([KeyboardLayouts.English, KeyboardLayouts.Russian, KeyboardLayouts.Ukrainian]);
@@ -25,5 +54,37 @@ public sealed partial class AppControllerTests
         await _controller.ApplicationLayoutsIdleAsync(); Assert.Equal("en", _platform.ActiveLayoutId);
         await _controller.CycleInputLayoutAsync(); Assert.Equal("en", _platform.ActiveLayoutId);
         Assert.Equal(0, _platform.PasteCount); Assert.Equal(0, _platform.TypedTextCount); Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task QueuedInputCyclesAbortAfterTypingOrACompleteFocusRoundTrip(bool typing)
+    {
+        _controller.ConfigureDiagnosticLayouts([KeyboardLayouts.English, KeyboardLayouts.Ukrainian, KeyboardLayouts.Russian]);
+        var settings = _controller.Settings.Clone(); settings.AutoCorrectEnabled = false;
+        settings.Layouts = ["en", "uk", "ru"]; _controller.ApplySettings(settings);
+        _platform.ActiveLayoutId = "en";
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocked = 0;
+        _platform.BeforeLayoutRead = _ =>
+        {
+            if (Interlocked.Exchange(ref blocked, 1) != 0) return;
+            entered.TrySetResult(); release.Task.GetAwaiter().GetResult();
+        };
+        var first = Task.Run(_controller.CycleInputLayoutAsync);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            var second = _controller.CycleInputLayoutAsync();
+            if (typing) _platform.Type("x");
+            else { _platform.Window = 2; _platform.Window = 1; }
+            release.TrySetResult();
+            await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Empty(_platform.LayoutSwitches);
+            Assert.Equal("en", _platform.ActiveLayoutId);
+        }
+        finally { release.TrySetResult(); await first; }
     }
 }

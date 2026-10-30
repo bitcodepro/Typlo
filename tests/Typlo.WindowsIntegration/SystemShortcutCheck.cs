@@ -124,9 +124,15 @@ internal static class SystemShortcutCheck
             foreach (var target in new[] { ru, en, uk })
             {
                 Keys((0xa0, false), (0xa2, false), (0xa2, true), (0xa0, true));
-                await Until(() => platform.GetCurrentLayoutId(popup) == target.Id, "Global Ctrl+Shift order failed");
+                await Until(() => platform.GetCurrentLayoutId(popup) == target.Id, "Global Ctrl+Shift did not select " + target.Id);
             }
             report.Add("PASS empty browser rule uses the configured UK/RU/EN global order with either modifier press order");
+            platform.SwitchKeyboardLayout(popup, en);
+            await Until(() => platform.GetCurrentLayoutId(popup) == en.Id, "English before rapid gestures");
+            Keys((0xa0, false), (0xa2, false), (0xa2, true), (0xa0, true),
+                (0xa0, false), (0xa2, false), (0xa2, true), (0xa0, true));
+            await Until(() => platform.GetCurrentLayoutId(popup) == ru.Id, "Rapid Ctrl+Shift gestures did not both advance the cycle");
+            report.Add("PASS two rapid Ctrl+Shift gestures both advance the applied input layout");
             platform.SwitchKeyboardLayout(popup, ru);
             await Until(() => platform.GetCurrentLayoutId(popup) == ru.Id, "Russian before entering restricted app");
             await Enter(window, controller);
@@ -184,7 +190,7 @@ internal static class SystemShortcutCheck
             await File.WriteAllLinesAsync(Path.Combine(work, "system-shortcuts.txt"), report);
             foreach (var line in report) Console.WriteLine(line);
         }
-        return report.Count == 8 && report.All(line => line.StartsWith("PASS ")) ? 0 : 1;
+        return report.Count == 9 && report.All(line => line.StartsWith("PASS ")) ? 0 : 1;
     }
     internal static unsafe void Keys(params (ushort Key, bool Up)[] keys)
     {

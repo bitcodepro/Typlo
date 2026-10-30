@@ -84,6 +84,7 @@ jobs:
             TestResults/webview2/typlo.log
             TestResults/webview2/direct-edit.log
             TestResults/webview2/direct-edit-native.log
+            TestResults/webview2/system-shortcuts.log
             TestResults/webview2/runtime/*.txt
             TestResults/webview2/runtime/**/*.txt
             TestResults/webview2/runtime/**/*.log
