@@ -94,8 +94,8 @@ internal static class BackgroundRuntimeCheck
             var info = File.ReadAllLines(report).Select(l => l.Split('=', 2)).ToDictionary(p => p[0], p => p[1]);
             var runtime = new RuntimeClient(info["channel"]);
             var expectedUiPid = 0;
-            var ui = new RuntimeClient("Typlo.Ui." + host.Id, diagnostic: entry =>
-                uiTrace.Enqueue($"{DateTime.UtcNow:O} expected_pid={Volatile.Read(ref expectedUiPid)} {entry.Summary}"));
+            RuntimeClient ui = null!;
+            var uiChannels = new HashSet<string>();
             var state = await runtime.CallAsync(new("state"));
             Hotkey? targetFixtureKey = null;
             Check(state.UiProcessId == 0, "Cold start has no UI child");
@@ -219,7 +219,12 @@ internal static class BackgroundRuntimeCheck
                 Check(IpcServer.Send(["--settings"], info["commands"]), "Settings command accepted");
                 await UntilAsync(async () => (state = await runtime.CallAsync(new("state"))).UiProcessId > 0, "settings UI launched");
                 child = Process.GetProcessById(state.UiProcessId);
+                var channel = state.UiChannel ?? throw new InvalidOperationException("Resident did not publish the UI generation channel");
+                if (state.UiProcessId != Volatile.Read(ref expectedUiPid) && !uiChannels.Add(channel))
+                    throw new InvalidOperationException("A new UI process reused a previous generation's channel");
                 Volatile.Write(ref expectedUiPid, state.UiProcessId);
+                ui = new RuntimeClient(channel, diagnostic: entry =>
+                    uiTrace.Enqueue($"{DateTime.UtcNow:O} expected_pid={Volatile.Read(ref expectedUiPid)} {entry.Summary}"));
                 // The editor fixture is the foreground process. Model the user granting focus to
                 // the newly spawned UI, rather than relying on Windows' foreground-lock timing.
                 if (userInitiated) Native.AllowSetForegroundWindow((uint)state.UiProcessId);
