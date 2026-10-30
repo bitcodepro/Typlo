@@ -55,6 +55,8 @@ internal static class Program
         }
         if (args.FirstOrDefault() == "--background-runtime-check")
             return BackgroundRuntimeCheck.RunAsync(args[1], args[2]).GetAwaiter().GetResult();
+        if (args.FirstOrDefault() == "--update-install-check")
+            return UpdateInstallCheck.RunAsync(args[1], args[2]).GetAwaiter().GetResult();
         if (args.FirstOrDefault() == "--ui-target-check")
             return BackgroundRuntimeCheck.RunAsync(args[1], args[2], int.Parse(args[3])).GetAwaiter().GetResult();
         if (args.FirstOrDefault() == "--clipboard-helper")

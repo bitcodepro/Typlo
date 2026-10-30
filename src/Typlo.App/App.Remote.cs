@@ -11,6 +11,7 @@ namespace Typlo.App;
 public partial class App
 {
     private RuntimeChannel? _uiChannel;
+    private RuntimeClient? _remoteRuntime;
 
     private void StartRemoteUi(IClassicDesktopStyleApplicationLifetime desktop, AppPaths paths)
     {
@@ -21,6 +22,7 @@ public partial class App
             var channel = Program.Argument("--runtime-channel") ?? throw new ArgumentException("Missing runtime channel");
             var uiPipe = Program.Argument("--ui-pipe") ?? throw new ArgumentException("Missing UI channel");
             var client = new RuntimeClient(channel, Environment.ProcessId);
+            _remoteRuntime = client;
             var platform = new WinPlatform(passive: true);
             _platform = platform;
             _controller = AppController.CreateRemote(platform, paths, PlatformFactory.CreateKeyProtector(), client);
@@ -84,6 +86,12 @@ public partial class App
                 }
                 else if (args.Contains("--shortcuts")) ShowShortcuts();
                 else if (args.Contains("--update")) ShowUpdateDialog();
+                else if (args.Contains("--update-failed")) _ = ShowUpdateFailureAsync();
+                else if (Array.IndexOf(args, "--add-word") is var wordIndex and >= 0)
+                {
+                    var languageIndex = Array.IndexOf(args, "--word-language");
+                    ShowPersonalWord(wordIndex + 1 < args.Length ? args[wordIndex + 1] : "", languageIndex >= 0 && languageIndex + 1 < args.Length ? args[languageIndex + 1] : null);
+                }
                 else if (args.Contains("--capture")) OnCommand(args);
                 else ShowSettings();
             }
@@ -107,8 +115,26 @@ public partial class App
                 }
                 catch (Exception e) { Log.Error("OCR fixture failed", e); }
             }
+            async Task ShowUpdateFailureAsync()
+            {
+                try
+                {
+                    var state = await client.CallAsync(new("update-state"));
+                    ShowUpdateDialog(state.UpdateError ?? state.Error ?? Loc.T("update.failed"));
+                }
+                catch (Exception e) { ShowUpdateDialog(e.Message); }
+            }
             _uiChannel = new RuntimeChannel(uiPipe, async request =>
             {
+                if (diagnosticUi && request.Command == "update-dialog-fixture")
+                    return await Dispatcher.UIThread.InvokeAsync(() => new RuntimeReply(_updateDialog?.IsVisible == true,
+                        Error: _updateDialog?.DisplayedError, AvailableVersion: _updates.Available?.Version.ToString()));
+                if (diagnosticUi && request.Command == "update-install-fixture")
+                    return await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        if (_updateDialog is null) return new RuntimeReply(false, "No update dialog");
+                        _ = _updateDialog.OnPrimaryAsync(); return new RuntimeReply(true);
+                    });
                 var action = request.Command == "history-target-fixture" ? "target-query" :
                     request.Args?.Contains("--dismiss") == true ? "dismiss" : request.Args?.Contains("--settings") == true ? "settings" :
                     request.Args?.Contains("--history") == true ? "history" : "other";

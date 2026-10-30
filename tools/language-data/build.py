@@ -102,7 +102,7 @@ def read_supplement(path: Path) -> tuple[dict[str, int], dict]:
     groups = set()
     for entry in data["entries"]:
         language, family, forms = entry.get("language"), entry.get("family"), entry.get("forms")
-        if language not in ("ru", "uk") or not isinstance(family, str) or not family or (language, family) in groups:
+        if language not in ("en", "ru", "uk") or not isinstance(family, str) or not family or (language, family) in groups:
             raise ValueError("Invalid/duplicate IT supplement family")
         groups.add((language, family))
         if not isinstance(forms, list) or not forms or any(not isinstance(w, str) for w in forms):
@@ -160,11 +160,11 @@ def build(output: Path, cache: Path, fetch: bool = False) -> dict:
                 PRAGMA page_size=4096;
                 PRAGMA journal_mode=OFF;
                 PRAGMA application_id={APPLICATION_ID};
-                PRAGMA user_version=2;
+                PRAGMA user_version=3;
                 CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
                 CREATE TABLE words(word TEXT PRIMARY KEY COLLATE BINARY, weights BLOB NOT NULL
                                    CHECK(length(weights)=8), supplement_mask INTEGER NOT NULL
-                                   CHECK(supplement_mask IN (0,2,4,6))) WITHOUT ROWID;
+                                   CHECK(supplement_mask BETWEEN 0 AND 7)) WITHOUT ROWID;
             """)
             db.executemany("INSERT INTO metadata VALUES (?,?)", ((k, json.dumps(v, ensure_ascii=False, sort_keys=True))
                                                                    for k, v in sorted(metadata.items())))
@@ -179,7 +179,7 @@ def build(output: Path, cache: Path, fetch: bool = False) -> dict:
     content = hashlib.sha256()
     for word in sorted(entries):
         content.update(word.encode("utf-8") + b"\0" + entries[word] + bytes([supplement.get(word, 0)]))
-    return {"schema": 2, "sha256": digest(output.read_bytes()), "content_sha256": content.hexdigest(), "bytes": output.stat().st_size,
+    return {"schema": 3, "sha256": digest(output.read_bytes()), "content_sha256": content.hexdigest(), "bytes": output.stat().st_size,
             "words": len(entries), "language_entries": sum(s["combined_words"] for s in stats.values()),
             "ambiguous_words": sum(sum(w > 0 or bool(supplement.get(word, 0) & (1 << i)) for i, w in enumerate(weights)) > 1 for word, weights in entries.items()),
             "supplement": {"sha256": supplement_info["sha256"], "unique_words": len(supplement), "families": len(supplement_info["entries"])},

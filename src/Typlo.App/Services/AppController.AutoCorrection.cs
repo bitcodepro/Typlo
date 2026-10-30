@@ -16,11 +16,32 @@ public sealed partial class AppController
 
     public bool DictionaryAvailable => File.Exists(Path.Combine(AppContext.BaseDirectory, "language-data", "words.sqlite3"));
     internal bool DictionaryIsOpen => _lexicon.IsOpen;
+    internal void OpenDictionaryForDiagnostic() => _lexicon.Lookup("hello");
+    private int _updating;
+
+    internal async Task ReplaceUpdateFilesAsync(Action replace)
+    {
+        if (Interlocked.Exchange(ref _updating, 1) != 0) throw new InvalidOperationException("An update is already being installed");
+        var editing = _editingSettings;
+        try
+        {
+            _platform.UnregisterAllHotkeys();
+            await StopPendingAutomaticWords();
+            if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(5))) throw new TimeoutException("A text operation is still running. Try the update again.");
+            try { _lexicon.Close(); replace(); }
+            finally { _convertGate.Release(); }
+        }
+        finally
+        {
+            Volatile.Write(ref _updating, 0);
+            if (Volatile.Read(ref _disposed) == 0) { if (editing) SuspendHotkeys(); else RegisterHotkeys(); }
+        }
+    }
     internal Task AutoCorrectionIdleAsync() { lock (_automaticWordLock) return _automaticWordTask; }
 
     private void QueueAutomaticWord(nint window, long version)
     {
-        if (!Settings.AutoCorrectEnabled || !_platform.SupportsAutomaticWordCorrection || _editingSettings || _capturingScreen ||
+        if (!Settings.AutoCorrectEnabled || !_platform.SupportsAutomaticWordCorrection || _editingSettings || Volatile.Read(ref _updating) != 0 || _capturingScreen ||
             _remote is not null || Volatile.Read(ref _disposed) != 0 || _dictionaryFailed) return;
         var run = _recentTyping.Capture(window);
         if (run is null || run.Keys.Length < 3 || run.Keys[^1] != ' ' || char.IsWhiteSpace(run.Keys[^2])) return;
@@ -46,7 +67,7 @@ public sealed partial class AppController
         word.Generation == Interlocked.Read(ref _automaticWordGeneration) && AutomaticWordContextIsCurrent(word);
 
     private bool AutomaticWordContextIsCurrent(AutomaticWord word) => Volatile.Read(ref _disposed) == 0 &&
-        Settings.AutoCorrectEnabled && !_editingSettings && !_capturingScreen &&
+        Settings.AutoCorrectEnabled && !_editingSettings && Volatile.Read(ref _updating) == 0 && !_capturingScreen &&
         Interlocked.Read(ref _typingVersion) == word.Version && _platform.ForegroundWindow == word.Run.Window &&
         (word.Run.Element == 0 || _platform.FocusedInputElement == word.Run.Element);
 
@@ -72,7 +93,7 @@ public sealed partial class AppController
                 var source = FindLayout(_platform.GetCurrentLayoutId(word.Run.Window));
                 if (source is null || !source.SupportsConversion) continue;
                 var allowed = ApplicationCycleFor(word.Run.Window)?.Layouts ?? LayoutCatalog.Cycle(Settings).ToArray();
-                var target = new LayoutLanguageDetector(_lexicon).Suggest(word.Run.Keys[..^1], source, allowed);
+                var target = new LayoutLanguageDetector(_lexicon, _personal).Suggest(word.Run.Keys[..^1], source, allowed);
                 if (target is null || !AutomaticWordIsCurrent(word)) continue;
                 await TransformSelectionCoreAsync((text, matched) =>
                 {

@@ -12,6 +12,9 @@ public sealed class LanguageDetectionTests : IDisposable
     [Theory]
     [InlineData("ghb", "en", "ru")]
     [InlineData("ghbdtn", "en", "ru")]
+    [InlineData("yfgbib", "en", "ru")]
+    [InlineData("sql", "ru", "en")]
+    [InlineData("sql", "uk", "en")]
     [InlineData("lzre.", "en", "uk")]
     [InlineData("hello", "ru", "en")]
     [InlineData("bonjour", "en", "fr")]
@@ -38,6 +41,7 @@ public sealed class LanguageDetectionTests : IDisposable
     {
         var detector = new LayoutLanguageDetector(_lexicon);
         Assert.Equal("uk", detector.Suggest("ghb", KeyboardLayouts.English, [KeyboardLayouts.English, KeyboardLayouts.Ukrainian])?.Id);
+        Assert.Equal("uk", detector.Suggest("yfgbib", KeyboardLayouts.English, [KeyboardLayouts.English, KeyboardLayouts.Ukrainian])?.Id);
         Assert.Null(detector.Suggest("ghb", KeyboardLayouts.English, [KeyboardLayouts.English]));
         Assert.Null(detector.Suggest("ghb", Latin("el"), All)); // no evidence to judge a current Greek word
     }

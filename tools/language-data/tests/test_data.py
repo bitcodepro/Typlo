@@ -90,7 +90,7 @@ class PackTests(unittest.TestCase):
     def test_pack_is_indexed_complete_and_self_attributed(self):
         with sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True) as db:
             self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
             self.assertEqual(db.execute("SELECT count(*) FROM words").fetchone()[0], self.manifest["words"])
             meta = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata")}
             self.assertEqual(meta["languages"], list(build.LANGUAGES))
@@ -106,7 +106,7 @@ class PackTests(unittest.TestCase):
             counts = [0]*8
             for word, weights, mask in db.execute("SELECT word,weights,supplement_mask FROM words ORDER BY word COLLATE BINARY"):
                 self.assertEqual(len(weights), 8)
-                self.assertIn(mask, (0,2,4,6))
+                self.assertIn(mask, range(8))
                 self.assertTrue(any(weights) or mask)
                 for i, weight in enumerate(weights):
                     if weight or (mask & (1 << i)):
@@ -136,7 +136,7 @@ class PackTests(unittest.TestCase):
         with sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True) as db:
             actual = dict(db.execute("SELECT word,supplement_mask FROM words WHERE supplement_mask<>0"))
             self.assertEqual(actual, masks)
-            for language, words in {"ru": ["ревьюить", "ревьюваешь", "коммитишь", "закоммитил", "пушить", "запушили", "смерджили"],
+            for language, words in {"en": ["sql", "nosql", "mysql", "postgresql", "sqlite"], "ru": ["ревьюить", "ревьюваешь", "коммитишь", "закоммитил", "пушить", "запушили", "смерджили"],
                                     "uk": ["рев’ювити", "ревʼювати", "рев'юїти", "комітити", "комітиш", "закомітила", "пушити", "запушили", "змерджили"]}.items():
                 for word in words:
                     self.assertTrue(actual[build.normalize(word)] & (1 << build.LANGUAGES.index(language)), (language, word))

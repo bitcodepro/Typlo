@@ -22,6 +22,7 @@ public sealed partial class AppController : IDisposable
     private const int ScreenshotCopyId = 6;
     private const int ScreenshotSaveId = 7;
     private const int LayoutSwitchId = 8;
+    private const int AddWordId = 9;
     private const int LayoutIdBase = 100;
     // A hotkey is delivered on key-down. Waiting a whole second for its modifiers penalises a held
     // chord; give a normal release a short grace period, then use the platform's safe release path.
@@ -65,6 +66,7 @@ public sealed partial class AppController : IDisposable
     private AppController(IPlatform platform, AppPaths paths, IKeyProtector keyProtector, bool diagnostic, RuntimeClient? remote)
     {
         _remote = remote;
+        _personal = new(Path.Combine(paths.DataDir, "personal-words.sqlite3"));
         _images = new LatestImageWorker(StoreCapturedImage);
         _memory = new IdleMemoryReclaimer(() => _convertGate.CurrentCount > 0 && !_capturingScreen && !_editingSettings && !_images.IsBusy && Environment.TickCount64 - Interlocked.Read(ref _lastInputAt) > 1500);
         _diagnostic = diagnostic;
@@ -210,6 +212,7 @@ public sealed partial class AppController : IDisposable
 
     public void RegisterHotkeys()
     {
+        if (Volatile.Read(ref _updating) != 0) return;
         if (_remote is not null)
         {
             try { UpdateRemoteState(_remote.Call(new("register-hotkeys", Id: Interlocked.Read(ref _settingsSession)))); }
@@ -239,6 +242,7 @@ public sealed partial class AppController : IDisposable
 
         Register(ToggleId, Settings.ToggleHotkey, Loc.T("hk.toggle"));
         Register(LayoutSwitchId, Settings.LayoutSwitchHotkey, Loc.T("hk.inputCycle"));
+        Register(AddWordId, Settings.AddWordHotkey, Loc.T("dictionary.title"));
         Register(ClipboardId, Settings.ClipboardHotkey, Loc.T("hk.history"));
         Register(CaseId, Settings.CaseHotkey, Loc.T("hk.case"));
         Register(TranslitId, Settings.TranslitHotkey, Loc.T("hk.translit"));
@@ -260,6 +264,7 @@ public sealed partial class AppController : IDisposable
 
     private void OnHotkey(int id)
     {
+        if (Volatile.Read(ref _updating) != 0) return;
         try
         {
             if (_capturingScreen) return;
@@ -268,6 +273,7 @@ public sealed partial class AppController : IDisposable
             else if (id == ClipboardId) ShowHistoryRequested?.Invoke(_platform.ForegroundWindow);
             else if (id == ToggleId) _ = ConvertSelectionAsync(null);
             else if (id == LayoutSwitchId) _ = CycleInputLayoutAsync();
+            else if (id == AddWordId) _ = CapturePersonalWordAsync();
             else if (id == CaseId) _ = ChangeCaseAsync();
             else if (id == TranslitId) _ = TransliterateAsync();
             else if (id == UndoId) _ = UndoLastTransformAsync();
@@ -780,7 +786,7 @@ public sealed partial class AppController : IDisposable
         Snippet? hit;
         lock (_snippets)
         {
-            if (_editingSettings) { _snippets.Reset(); return; }
+            if (_editingSettings || Volatile.Read(ref _updating) != 0) { _snippets.Reset(); return; }
             if (typedWindow != 0 && previousWindow != 0 && typedWindow != previousWindow) _snippets.Reset();
             if (key.Reset) { _snippets.Reset(); return; }
             if (key.Backspace) { _snippets.Backspace(); return; }
@@ -1251,6 +1257,7 @@ public sealed partial class AppController : IDisposable
         StopApplicationLayouts();
         _ = StopPendingAutomaticWords();
         _lexicon.Dispose();
+        _personal.Dispose();
         _memory.Dispose();
         _images.Dispose();
         if (_remote is not null) { Store.Dispose(); return; }

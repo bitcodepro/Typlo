@@ -22,6 +22,7 @@ These are the defaults. **Settings** lets you change them; **Keyboard shortcuts*
 | **Ctrl+Alt+Shift+C** | Cycle text case: lower → Title → UPPER. |
 | **Ctrl+Alt+Shift+T** | Transliterate: `Привет` ↔ `Privet`. |
 | **Ctrl+Alt+Shift+Z** | Undo the last Typlo text change. |
+| **Ctrl+Shift+K** | Add the selected, correctly spelled word to your personal dictionary; confirm its language. |
 | **Ctrl+Shift+V** | Open clipboard history. Enter pastes; Shift+Enter pastes plain text. |
 | **Win+Shift+S** | Capture a rectangle or freehand area to the clipboard; open the drawing editor. |
 | **Ctrl+Alt+Shift+F** | Capture, annotate and choose where to save a JPEG. |
@@ -42,6 +43,7 @@ For PowerShell inside Windows Terminal, choose the **WindowsTerminal** process.
 ## Also available
 
 - **Automatic correction after Space**, using offline dictionaries; switch it on or off in Settings.
+- **Personal words** survive updates. Add each form you use (`писать`, `напиши`, `написал`) separately.
 - **Multiline snippets** with a `{cursor}` marker for the insertion point.
 - **Screenshot drawing tools** and encrypted clipboard history for text, images and files.
 

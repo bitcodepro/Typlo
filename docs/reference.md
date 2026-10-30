@@ -4,6 +4,11 @@
 
 Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
 
+**Personal dictionary:** select a correctly spelled word and press `Ctrl+Shift+K`.
+Confirm its language to add that exact form; the same dialog can remove a personal
+entry. Add `писать`, `напиши` and `написал` separately. Personal words are stored on
+disk under `data/`, survive upgrades and respect application language rules.
+
 1. **Layout fix** – select text typed in the wrong layout and press a hotkey: `ghbdtn` → `привет`.
    - `Ctrl+Alt+Shift+Space` – next layout in your cycle: choose two, three, four or more languages and set their order.
    - Layouts and physical key maps come from the enabled input sources in Windows, macOS or XKB.

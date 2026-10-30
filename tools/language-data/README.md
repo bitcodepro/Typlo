@@ -10,8 +10,8 @@ on all three OSes, plus classifier and application integration tests.
 
 ## Data
 
-`resources/language-detection/words.sqlite3` contains **292,798 unique words** and
-391,148 word/language associations for English, Russian, Ukrainian, French, Spanish,
+`resources/language-detection/words.sqlite3` contains **292,803 unique words** and
+391,153 word/language associations for English, Russian, Ukrainian, French, Spanish,
 Italian, German and Portuguese. The language order is `en, ru, uk, fr, es, it, de, pt`.
 The database occupies 7,458,816 bytes (7.11 MiB), including provenance and the full licenses.
 Per-language counts and hashes are in `words.manifest.json`.
@@ -29,7 +29,7 @@ accents, `ё/е`, `і/и`, `ß`, and established Latin-script loans such as Engl
 It removes numbers, invalid token punctuation, incompatible scripts and Cyrillic
 letters outside the respective RU/UK orthography. Normalized duplicate counts are added.
 
-Format v2 (`PRAGMA user_version=2`) adds manual membership separately from frequencies.
+Format v3 (`PRAGMA user_version=3`) retains manual membership separately from frequencies and adds English IT membership.
 Each `words` row has an exact UTF-8 word key, an eight-byte corpus frequency vector,
 and `supplement_mask`. A zero frequency means absent from the corpus, not necessarily
 absent from the vocabulary. Each nonzero frequency byte is
@@ -40,23 +40,24 @@ full-corpus Zipf frequencies**. Do not compare raw subtitle counts across langua
 The `WITHOUT ROWID` primary-key B-tree searches exact words; no probabilistic hash
 or Bloom filter can falsely classify an unknown word as present.
 
-## Russian and Ukrainian IT vocabulary
+## English, Russian and Ukrainian IT vocabulary
 
 [it-terms.json](it-terms.json) is an original, curated seed list under the repository's
-MIT license: 1,137 distinct forms across 122 named groups, 659 RU and 634 UK associations
+MIT license: 1,142 distinct forms across 123 named groups, 5 EN, 659 RU and 634 UK associations
 (156 forms shared). It includes infinitives, common personal/past forms, prefixed verbs,
 nouns and explicit colloquial spelling variants, for example:
 
 - RU: `ревьюить`, `ревьюваешь`, `коммитишь`, `закоммитили`, `пушить`, `запушил`, `смерджили`.
 - UK: `рев'ювити`, `рев'ювати`, `рев'юїти`, `комітити`, `комітиш`, `закомітила`, `пушити`, `змерджили`.
 - Both: `пайплайн`, `деплой`, `пушили`; shared forms keep both language labels.
+- EN: `sql`, `nosql`, `mysql`, `postgresql`, `sqlite`.
 
 The JSON is a finite, editable list of explicit forms. The builder and reader never
 guess arbitrary suffixes/prefixes or load a runtime morphology library. Apostrophe
 normalization accepts `рев’ювити`/`ревʼювити`/`рев'ювити` with the same indexed lookup.
 These are colloquial terms, not a declaration of normative spelling.
 
-`supplement_mask` uses language-order bits (RU=2, UK=4, both=6). Manual-only words have
+`supplement_mask` uses language-order bits (EN=1, RU=2, UK=4, shared forms combine bits). Manual-only words have
 zero corpus weights; no subtitle counts or probability scores are invented. Membership
 is `(weights[i] > 0) OR (supplement_mask & (1 << i))`. The .NET reader returns both kinds
 of evidence separately. Tests fingerprint every original corpus word/vector to prove
@@ -80,8 +81,17 @@ from corpus frequency; simply treating a zero corpus weight as absent would lose
   target, not a claim that the entire .NET/SQLite process uses 128 KiB.
 
 The probe is serialized for safe reuse. A production caller should scope one lazy
-reader to language detection, release it after inactivity, and keep recognition off
-the input-hook/UI thread. No such application integration is enabled in this branch.
+reader to language detection and keep recognition off the input-hook/UI thread.
+The application drains automatic work and closes the pack before an update replaces it.
+
+## Personal words
+
+Ctrl+Shift+K reads an explicit selection and opens a confirmation dialog. The user
+chooses the word's language; forms are exact, with no conjugation or stemming.
+Personal membership is stored in `data/personal-words.sqlite3`, outside the versioned pack,
+with an indexed `(word, language)` key and a 32 KiB SQLite page-cache target. No full
+word list is loaded. Removal affects personal membership only. Updates preserve `data/`.
+Personal entries are plain text, like snippets in settings; they are not clipboard history.
 
 ## Reproduce
 

@@ -23,6 +23,7 @@ public partial class SettingsWindow : Window
     private HotkeyBox _caseBox = null!;
     private HotkeyBox _translitBox = null!;
     private HotkeyBox _undoBox = null!;
+    private HotkeyBox _addWordBox = null!;
     private readonly List<(TextBox Trigger, TextBox Text, Control Row)> _snippetRows = [];
     private readonly List<KeyboardLayout> _cycleOrder = [];
     private readonly HashSet<string> _enabledCycle = [];
@@ -157,6 +158,8 @@ public partial class SettingsWindow : Window
         AddRow(Loc.T("hk.translit"), _translitBox);
         _undoBox = new HotkeyBox { HotkeyText = _draft.UndoHotkey };
         AddRow(Loc.T("hk.undo"), _undoBox);
+        _addWordBox = new HotkeyBox { HotkeyText = _draft.AddWordHotkey };
+        AddRow(Loc.T("dictionary.title"), _addWordBox);
     }
 
     private void AddSnippetRow(Snippet snippet)
@@ -447,6 +450,7 @@ public partial class SettingsWindow : Window
         _draft.CaseHotkey = _caseBox.HotkeyText;
         _draft.TranslitHotkey = _translitBox.HotkeyText;
         _draft.UndoHotkey = _undoBox.HotkeyText;
+        _draft.AddWordHotkey = _addWordBox.HotkeyText;
         _draft.ScreenshotShape = (CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex);
         _draft.ScreenshotEditorAfterCopy = CaptureEditorBox.IsChecked == true;
         _draft.ScreenshotCopyHotkey = CaptureCopyHotkeyBox.HotkeyText;
