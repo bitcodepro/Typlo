@@ -151,7 +151,7 @@ public sealed partial class AppController
             if (!Current()) return;
             word.Outcome = AutoCorrectionReason.Corrected;
             _recentTyping.Consume(word.Version);
-            LastTransform = new(window, text, result, DateTime.UtcNow, target);
+            LastTransform = new(window, text, result, DateTime.UtcNow, target, AutomaticRun: word.Run);
             if (Settings.SwitchSystemLayout && Current()) _platform.SwitchKeyboardLayout(window, target);
         }
         finally

@@ -2,7 +2,7 @@ using Typlo.Core.Layouts;
 
 namespace Typlo.Core.Languages;
 
-public enum LanguageDetectionReason { Suggested, InvalidInput, UnsupportedLanguage, ProtectedToken, UnknownWord, AlreadyCorrect, LanguageRestricted, Ambiguous, LowConfidence }
+public enum LanguageDetectionReason { Suggested, InvalidInput, UnsupportedLanguage, ProtectedToken, UnknownWord, AlreadyCorrect, LanguageRestricted, Ambiguous, LowConfidence, ExcludedWord }
 public sealed record LanguageDetection(KeyboardLayout? Layout, LanguageDetectionReason Reason);
 
 /// <summary>Conservative keyboard correction from exact disk vocabulary evidence, not translation.</summary>
@@ -17,6 +17,8 @@ public sealed class LayoutLanguageDetector(LanguageLexicon lexicon, PersonalLexi
     public LanguageDetection Analyze(string physicalKeys, KeyboardLayout source, IReadOnlyList<KeyboardLayout> allowed, IReadOnlyList<KeyboardLayout>? installed = null)
     {
         if (physicalKeys.Length is < 2 or > 128 || physicalKeys.Any(char.IsWhiteSpace) || !source.SupportsConversion) return new(null, LanguageDetectionReason.InvalidInput);
+        var typed = LayoutConverter.Convert(physicalKeys, KeyboardLayouts.English, source, forceSource: true);
+        if (personal?.IsExcluded(typed) == true) return new(null, LanguageDetectionReason.ExcludedWord);
         if (!lexicon.Languages.Contains(source.LanguageCode.Split('-', '_')[0].ToLowerInvariant())) return new(null, LanguageDetectionReason.UnsupportedLanguage);
         var cache = new Dictionary<string, (WordEvidence? Corpus, byte Personal)>();
         var current = Read(source, physicalKeys, cache);

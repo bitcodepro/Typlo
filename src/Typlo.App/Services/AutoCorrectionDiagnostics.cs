@@ -3,7 +3,7 @@ using System.Diagnostics;
 namespace Typlo.App.Services;
 
 public enum DictionaryHealth { NotChecked, Ready, Missing, Failed }
-public enum AutoCorrectionReason { Corrected, Disabled, Unsupported, Paused, DictionaryUnavailable, Canceled, ExcludedApplication, UnknownApplication, UnsupportedLanguage, ProtectedToken, UnknownWord, AlreadyCorrect, LanguageRestricted, Ambiguous, LowConfidence, Busy, CopyUnavailable, ClipboardChanged, Unconfirmed, Failed, SettingsOpen, ScreenCapture, Updating, DictionaryChecking }
+public enum AutoCorrectionReason { Corrected, Disabled, Unsupported, Paused, DictionaryUnavailable, Canceled, ExcludedApplication, UnknownApplication, UnsupportedLanguage, ProtectedToken, UnknownWord, AlreadyCorrect, LanguageRestricted, Ambiguous, LowConfidence, Busy, CopyUnavailable, ClipboardChanged, Unconfirmed, Failed, SettingsOpen, ScreenCapture, Updating, DictionaryChecking, ExcludedWord, UndoSuppressed }
 public sealed record AutoCorrectionEntry(DateTimeOffset At, AutoCorrectionReason Reason, long Milliseconds, string? Source = null, string? Target = null);
 public sealed record AutoCorrectionStatus(bool Enabled, bool Supported, DictionaryHealth Health, AutoCorrectionEntry[] Recent, AutoCorrectionReason? PauseReason = null);
 

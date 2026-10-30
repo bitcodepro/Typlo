@@ -23,7 +23,7 @@ public sealed partial class PersonalLexicon(string path) : IDisposable
         {
             connection.Open();
             using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA cache_size=-32; PRAGMA mmap_size=0; CREATE TABLE IF NOT EXISTS words (word TEXT NOT NULL, language TEXT NOT NULL, PRIMARY KEY(word,language)) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS words_language ON words(language,word);";
+            command.CommandText = "PRAGMA cache_size=-32; PRAGMA mmap_size=0; CREATE TABLE IF NOT EXISTS words (word TEXT NOT NULL, language TEXT NOT NULL, PRIMARY KEY(word,language)) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS words_language ON words(language,word); CREATE TABLE IF NOT EXISTS excluded_words (word TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID;";
             command.ExecuteNonQuery();
             return _connection = connection;
         }

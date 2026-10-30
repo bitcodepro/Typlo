@@ -83,7 +83,7 @@ internal sealed class BackgroundHost : IDisposable
     }
     private Task<RuntimeReply> DispatchAsync(RuntimeRequest command)
     {
-        if (command.Command is "auto-status" or "dictionary-check" or "personal-query" or "personal-edit" or "personal-add" or "personal-import" or "personal-export" or "personal-word")
+        if (command.Command is "auto-status" or "dictionary-check" or "personal-query" or "personal-edit" or "personal-add" or "personal-import" or "personal-export" or "personal-word" or "excluded-word")
             return DispatchDictionaryAsync(command);
         if (_diagnostic && command.Command == "register-hotkeys" && File.Exists(Path.Combine(_paths.DataDir, "hold-hotkey-restore")))
             return HoldHotkeyRestoreAsync(command);
@@ -164,16 +164,19 @@ internal sealed class BackgroundHost : IDisposable
                 return new(true, WordPage: await _controller.QueryPersonalWordsAsync(command.WordQuery));
             case "personal-edit":
                 if (command.OriginalWord is null || command.ReplacementWord is null) return new(false, "Missing dictionary entry");
-                await _controller.EditPersonalWordAsync(command.OriginalWord, command.ReplacementWord); return new(true);
+                await _controller.EditPersonalWordAsync(command.OriginalWord, command.ReplacementWord, command.Flag); return new(true);
             case "personal-add":
                 if (command.Words is null) return new(false, "Missing words");
-                return new(true, ImportResult: await _controller.AddPersonalWordsAsync(command.Words));
+                return new(true, ImportResult: await _controller.AddPersonalWordsAsync(command.Words, command.Flag));
             case "personal-import":
                 if (command.Text is null) return new(false, "Missing import file");
-                return new(true, ImportResult: await _controller.ImportPersonalWordsAsync(command.Text));
+                return new(true, ImportResult: await _controller.ImportPersonalWordsAsync(command.Text, command.Flag));
             case "personal-export":
                 if (command.Text is null) return new(false, "Missing export file");
-                await _controller.ExportPersonalWordsAsync(command.Text); return new(true);
+                await _controller.ExportPersonalWordsAsync(command.Text, command.Flag); return new(true);
+            case "excluded-word":
+                if (command.Text is null) return new(false, Loc.T("dictionary.invalid"));
+                await _controller.SetExcludedWordAsync(command.Text, command.Flag); return new(true);
             case "personal-word":
                 if (command.Text is null || command.Args is not [var language]) return new(false, Loc.T("dictionary.invalid"));
                 await _controller.SetPersonalWordAsync(command.Text, language, command.Flag); return new(true);

@@ -36,7 +36,7 @@ internal sealed class RuntimeTransportProgress(bool server, long channel = 0, lo
         "state" or "settings" or "paste" or "capture-begin" or "capture-end" or "image-write-begin" or
         "image-write-end" or "ui" or "probe-hotkey" or "clear-probes" or "image-fixture" or
         "history-target-fixture" or "update-fixture" or "register-hotkeys" or "suspend-hotkeys" or "refresh-layouts" or
-        "auto-status" or "dictionary-check" or "personal-query" or "personal-edit" or "personal-add" or "personal-import" or "personal-export" or "personal-word" => command,
+        "auto-status" or "dictionary-check" or "personal-query" or "personal-edit" or "personal-add" or "personal-import" or "personal-export" or "personal-word" or "excluded-word" => command,
         _ => "unknown",
     };
 

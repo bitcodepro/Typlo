@@ -48,7 +48,7 @@ public sealed partial class AppController
         if (_remote is not null || Volatile.Read(ref _disposed) != 0) return;
         var run = _recentTyping.Capture(window);
         if (run is null || run.Keys.Length < 3 || run.Keys[^1] != ' ' || char.IsWhiteSpace(run.Keys[^2])) return;
-        AutoCorrectionReason? skip = !Settings.AutoCorrectEnabled ? AutoCorrectionReason.Disabled :
+        AutoCorrectionReason? skip = run.SuppressAutomatic ? AutoCorrectionReason.UndoSuppressed : !Settings.AutoCorrectEnabled ? AutoCorrectionReason.Disabled :
             !_platform.SupportsAutomaticWordCorrection ? AutoCorrectionReason.Unsupported :
             _dictionaryFailed ? AutoCorrectionReason.DictionaryUnavailable :
             AutomaticPauseReason();
@@ -114,6 +114,7 @@ public sealed partial class AppController
                 if (_lexicon.IsOpen) lock (_diagnosticsLock) _dictionaryHealth = DictionaryHealth.Ready;
                 word.Outcome = decision.Reason switch
                 {
+                    LanguageDetectionReason.ExcludedWord => AutoCorrectionReason.ExcludedWord,
                     LanguageDetectionReason.InvalidInput => AutoCorrectionReason.ProtectedToken,
                     LanguageDetectionReason.UnsupportedLanguage => AutoCorrectionReason.UnsupportedLanguage,
                     LanguageDetectionReason.ProtectedToken => AutoCorrectionReason.ProtectedToken,

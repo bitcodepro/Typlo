@@ -22,6 +22,21 @@ entries and 64 MiB per import. Format: `typlo-personal-dictionary`, version `1`,
 a `words` array of objects containing `word` and `language` (en/ru/uk/fr/es/it/de/pt).
 Built-in vocabulary and its frequencies are never modified by these operations.
 
+Choose **Never correct** in the dictionary section to manage exact word/term exceptions.
+They apply to all languages, ignoring case; punctuation around a word is tolerated.
+Exceptions do not become language evidence and do not block explicit manual conversion.
+Search, edit, delete and batch add work as in the personal dictionary. The selected-word
+`Ctrl+Shift+K` dialog also has **Never correct this word**. Exclusions have a separate
+JSON export/import: `{"format":"typlo-auto-correction-exclusions","version":1,"words":["sql","ghb"]}`.
+The same streaming, size limits, duplicate handling and atomic import rules apply.
+
+Undo of a confirmed automatic correction restores the original word and temporarily
+suppresses automatic correction at that caret. Removing/retyping its trailing space or
+editing that word preserves the exemption, including after a pause. Starting the next
+word, deleting the entire restored run, navigating, clicking, or changing field/window
+ends it. Explicit manual conversion remains available; no permanent exclusion is added.
+An unconfirmed or canceled Undo never establishes this exemption.
+
 The **Auto-correction** tab shows dictionary-reader health and the last 20 automatic
 attempts: timestamp, reason, language codes and elapsed time. It distinguishes unknown
 words, ambiguity, language restrictions, input/focus/manual cancellation, changed

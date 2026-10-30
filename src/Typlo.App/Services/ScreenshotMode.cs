@@ -175,8 +175,11 @@ internal static class ScreenshotMode
 
                 Loc.SetLanguage("ru");
                 await controller.AddPersonalWordsAsync([new("напиши", "ru"), new("писать", "ru"), new("написал", "ru"), new("рев'ювати", "uk"), new("sql", "en")]);
+                await controller.SetExcludedWordAsync("ghb"); await controller.SetExcludedWordAsync("sql");
                 var manager = new DictionaryWindow(controller); manager.Show(); await Task.Delay(500);
-                Save(manager, Path.Combine(outDir, "dictionary_manager.png")); manager.Close();
+                Save(manager, Path.Combine(outDir, "dictionary_manager.png"));
+                manager.ShowExclusions(); await Task.Delay(500);
+                Save(manager, Path.Combine(outDir, "dictionary_exclusions.png")); manager.Close();
                 var diagnosis = new DictionaryWindow(controller, diagnostics: true); diagnosis.Show(); await Task.Delay(500);
                 diagnosis.DisplayStatus(new(true, true, DictionaryHealth.Ready,
                     [new(DateTimeOffset.UtcNow, AutoCorrectionReason.Corrected, 194, "en", "ru"),

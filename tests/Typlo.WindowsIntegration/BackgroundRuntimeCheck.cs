@@ -218,6 +218,15 @@ internal static class BackgroundRuntimeCheck
             await runtime.CallAsync(new("personal-export", Text: wordExport));
             var imported = await runtime.CallAsync(new("personal-import", Text: wordExport));
             Check(imported.ImportResult is { Added: 0, Skipped: 2 }, "Native AOT exports, validates and imports a personal dictionary without duplicates");
+            await runtime.CallAsync(new("excluded-word", Text: "GhB"));
+            var excludedPage = await runtime.CallAsync(new("personal-query", WordQuery: new("GH", Exclusions: true)));
+            Check(excludedPage.WordPage is { Total: 1 } && excludedPage.WordPage.Items[0].Word == "ghb", "Native AOT adds and queries a normalized global exclusion");
+            await runtime.CallAsync(new("personal-edit", OriginalWord: new("ghb", ""), ReplacementWord: new("sql", ""), Flag: true));
+            var excludedExport = Path.Combine(output, "excluded-export.json");
+            await runtime.CallAsync(new("personal-export", Text: excludedExport, Flag: true));
+            await runtime.CallAsync(new("excluded-word", Text: "sql", Flag: true));
+            var importedExcluded = await runtime.CallAsync(new("personal-import", Text: excludedExport, Flag: true));
+            Check(importedExcluded.ImportResult is { Added: 1 }, "Native AOT edits, deletes, exports and imports exclusions independently of personal forms");
             var checkedDictionary = await runtime.CallAsync(new("dictionary-check"));
             Check(checkedDictionary.AutoCorrection?.Health == DictionaryHealth.Ready, "Resident verifies dictionary readers without restarting");
             Check(IpcServer.Send(["--dictionary"], info["commands"]), "Dictionary manager UI command accepted");

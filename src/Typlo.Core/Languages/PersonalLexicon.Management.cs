@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace Typlo.Core.Languages;
 
 public sealed record PersonalWord(string Word, string Language);
-public sealed record PersonalWordQuery(string Prefix = "", string? Language = null, int Page = 0, int PageSize = 50);
+public sealed record PersonalWordQuery(string Prefix = "", string? Language = null, int Page = 0, int PageSize = 50, bool Exclusions = false);
 public sealed record PersonalWordPage(PersonalWord[] Items, int Total, int Page, int PageSize);
 public sealed record PersonalImportResult(int Added, int Skipped);
 
@@ -27,7 +27,8 @@ public sealed partial class PersonalLexicon
         var prefix = LanguageLexicon.Normalize(query.Prefix.Trim());
         // An indexed ordinal prefix range works for non-ASCII words too, unlike SQLite NOCASE.
         var upper = prefix.Length == 0 ? "" : prefix[..^1] + (char)(prefix[^1] + 1);
-        var where = (query.Language is null ? "" : "language=$language AND ") + (prefix.Length == 0 ? "1=1" : "word >= $prefix AND word < $upper");
+        var table = query.Exclusions ? "excluded_words" : "words";
+        var where = (query.Exclusions || query.Language is null ? "" : "language=$language AND ") + (prefix.Length == 0 ? "1=1" : "word >= $prefix AND word < $upper");
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -37,10 +38,10 @@ public sealed partial class PersonalLexicon
             command.Transaction = snapshot;
             command.Parameters.AddWithValue("$language", query.Language ?? "");
             command.Parameters.AddWithValue("$prefix", prefix); command.Parameters.AddWithValue("$upper", upper);
-            command.CommandText = "SELECT count(*) FROM words WHERE " + where;
+            command.CommandText = "SELECT count(*) FROM " + table + " WHERE " + where;
             var total = Convert.ToInt32(command.ExecuteScalar());
             var page = Math.Min(query.Page, Math.Max(0, (total - 1) / query.PageSize));
-            command.CommandText = "SELECT word,language FROM words WHERE " + where + " ORDER BY word,language LIMIT $limit OFFSET $offset";
+            command.CommandText = (query.Exclusions ? "SELECT word,'' FROM " : "SELECT word,language FROM ") + table + " WHERE " + where + (query.Exclusions ? " ORDER BY word" : " ORDER BY word,language") + " LIMIT $limit OFFSET $offset";
             command.Parameters.AddWithValue("$limit", query.PageSize); command.Parameters.AddWithValue("$offset", page * query.PageSize);
             using var rows = command.ExecuteReader();
             var result = new List<PersonalWord>(query.PageSize);
@@ -49,32 +50,32 @@ public sealed partial class PersonalLexicon
         }
     }
 
-    public void Edit(PersonalWord original, PersonalWord replacement)
+    public void Edit(PersonalWord original, PersonalWord replacement, bool exclusions = false)
     {
-        original = Validate(original); replacement = Validate(replacement);
+        original = exclusions ? ValidateExclusion(original) : Validate(original); replacement = exclusions ? ValidateExclusion(replacement) : Validate(replacement);
         lock (_gate)
         {
             using var transaction = Open().BeginTransaction();
             using var command = _connection!.CreateCommand(); command.Transaction = transaction;
             command.Parameters.AddWithValue("$word", original.Word); command.Parameters.AddWithValue("$language", original.Language);
-            command.CommandText = "DELETE FROM words WHERE word=$word AND language=$language";
+            command.CommandText = exclusions ? "DELETE FROM excluded_words WHERE word=$word" : "DELETE FROM words WHERE word=$word AND language=$language";
             if (command.ExecuteNonQuery() != 1) throw new InvalidOperationException("The entry changed. Refresh the dictionary.");
             command.Parameters[0].Value = replacement.Word; command.Parameters[1].Value = replacement.Language;
-            command.CommandText = "INSERT INTO words VALUES ($word,$language)";
+            command.CommandText = exclusions ? "INSERT INTO excluded_words VALUES ($word)" : "INSERT INTO words VALUES ($word,$language)";
             command.ExecuteNonQuery(); // A duplicate rolls the deletion back; never discard another entry.
             transaction.Commit();
         }
     }
 
-    public PersonalImportResult AddMany(IReadOnlyList<PersonalWord> entries)
+    public PersonalImportResult AddMany(IReadOnlyList<PersonalWord> entries, bool exclusions = false)
     {
         if (entries.Count > MaxImportWords) throw new InvalidDataException("At most 100000 words can be imported at once.");
-        var validated = entries.Select(Validate).ToArray(); // Complete validation precedes any mutation.
+        var validated = entries.Select(entry => exclusions ? ValidateExclusion(entry) : Validate(entry)).ToArray(); // Complete validation precedes any mutation.
         lock (_gate)
         {
             using var transaction = Open().BeginTransaction();
             using var command = _connection!.CreateCommand(); command.Transaction = transaction;
-            command.CommandText = "INSERT OR IGNORE INTO words VALUES ($word,$language)";
+            command.CommandText = exclusions ? "INSERT OR IGNORE INTO excluded_words VALUES ($word)" : "INSERT OR IGNORE INTO words VALUES ($word,$language)";
             command.Parameters.AddWithValue("$word", ""); command.Parameters.AddWithValue("$language", ""); command.Prepare();
             var added = 0;
             foreach (var entry in validated)
@@ -86,22 +87,22 @@ public sealed partial class PersonalLexicon
         }
     }
 
-    public PersonalImportResult Import(string file)
+    public PersonalImportResult Import(string file, bool exclusions = false)
     {
         using var stream = File.OpenRead(file);
-        return Import(stream);
+        return Import(stream, exclusions);
     }
 
-    public PersonalImportResult Import(Stream stream)
+    public PersonalImportResult Import(Stream stream, bool exclusions = false)
     {
         if (stream.CanSeek && stream.Length > MaxImportBytes) throw new InvalidDataException("Dictionary import is limited to 64 MiB.");
         lock (_gate) { ObjectDisposedException.ThrowIf(_disposed, this); Open(); }
         // Slow file I/O must not hold the reader's gate or stall automatic/manual text tools.
         using var worker = new PersonalLexicon(path);
-        return worker.ImportCore(stream);
+        return worker.ImportCore(stream, exclusions);
     }
 
-    private PersonalImportResult ImportCore(Stream stream)
+    private PersonalImportResult ImportCore(Stream stream, bool exclusions)
     {
         lock (_gate)
         {
@@ -117,10 +118,10 @@ public sealed partial class PersonalLexicon
                 command.Parameters.AddWithValue("$word", ""); command.Parameters.AddWithValue("$language", ""); command.Prepare();
                 var count = ReadImport(stream, entry =>
                 {
-                    var valid = Validate(entry); command.Parameters[0].Value = valid.Word; command.Parameters[1].Value = valid.Language; command.ExecuteNonQuery();
-                });
+                    var valid = exclusions ? ValidateExclusion(entry) : Validate(entry); command.Parameters[0].Value = valid.Word; command.Parameters[1].Value = valid.Language; command.ExecuteNonQuery();
+                }, exclusions);
                 command.Parameters.Clear();
-                command.CommandText = "INSERT OR IGNORE INTO words SELECT word,language FROM temp.word_import";
+                command.CommandText = exclusions ? "INSERT OR IGNORE INTO excluded_words SELECT word FROM temp.word_import" : "INSERT OR IGNORE INTO words SELECT word,language FROM temp.word_import";
                 var added = command.ExecuteNonQuery();
                 command.CommandText = "DROP TABLE temp.word_import"; command.ExecuteNonQuery();
                 transaction.Commit(); return new(added, count - added);
@@ -129,7 +130,7 @@ public sealed partial class PersonalLexicon
         }
     }
 
-    private static int ReadImport(Stream stream, Action<PersonalWord> accept)
+    private static int ReadImport(Stream stream, Action<PersonalWord> accept, bool exclusions)
     {
         // A small streaming parser plus a disk-backed staging table keeps large imports bounded.
         var buffer = new byte[4096];
@@ -151,12 +152,17 @@ public sealed partial class PersonalLexicon
                 if (token == JsonTokenType.StartObject && depth == 0 && !complete) continue;
                 if (token == JsonTokenType.PropertyName && depth == 1 && !inWords) { property = reader.GetString(); continue; }
                 if (token == JsonTokenType.String && depth == 1 && property == "format" && !format)
-                { if (reader.GetString() != "typlo-personal-dictionary") throw InvalidImport(); format = true; property = null; continue; }
+                { if (reader.GetString() != (exclusions ? "typlo-auto-correction-exclusions" : "typlo-personal-dictionary")) throw InvalidImport(); format = true; property = null; continue; }
                 if (token == JsonTokenType.Number && depth == 1 && property == "version" && !version)
                 { if (reader.GetInt32() != 1) throw InvalidImport(); version = true; property = null; continue; }
                 if (token == JsonTokenType.StartArray && depth == 1 && property == "words" && !words)
                 { words = inWords = true; property = null; continue; }
-                if (token == JsonTokenType.StartObject && depth == 2 && inWords && !inEntry)
+                if (exclusions && token == JsonTokenType.String && depth == 2 && inWords)
+                {
+                    if (++count > MaxImportWords) throw new InvalidDataException("At most 100000 words can be imported at once.");
+                    accept(new(reader.GetString()!, "")); continue;
+                }
+                if (!exclusions && token == JsonTokenType.StartObject && depth == 2 && inWords && !inEntry)
                 { inEntry = true; word = language = null; continue; }
                 if (token == JsonTokenType.PropertyName && depth == 3 && inEntry) { property = reader.GetString(); continue; }
                 if (token == JsonTokenType.String && depth == 3 && inEntry)
@@ -184,14 +190,14 @@ public sealed partial class PersonalLexicon
         static InvalidDataException InvalidImport() => new("Not a supported Typlo personal dictionary.");
     }
 
-    public void Export(string file)
+    public void Export(string file, bool exclusions = false)
     {
         lock (_gate) ObjectDisposedException.ThrowIf(_disposed, this);
         using var worker = new PersonalLexicon(path);
-        worker.ExportCore(file);
+        worker.ExportCore(file, exclusions);
     }
 
-    private void ExportCore(string file)
+    private void ExportCore(string file, bool exclusions)
     {
         var target = Path.GetFullPath(file);
         if (!target.EndsWith(".json", StringComparison.OrdinalIgnoreCase) || string.Equals(target, Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase))
@@ -204,14 +210,15 @@ public sealed partial class PersonalLexicon
                 ObjectDisposedException.ThrowIf(_disposed, this);
                 using var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write);
                 using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
-                writer.WriteStartObject(); writer.WriteString("format", "typlo-personal-dictionary"); writer.WriteNumber("version", 1); writer.WriteStartArray("words");
+                writer.WriteStartObject(); writer.WriteString("format", exclusions ? "typlo-auto-correction-exclusions" : "typlo-personal-dictionary"); writer.WriteNumber("version", 1); writer.WriteStartArray("words");
                 if (_connection is not null || File.Exists(path))
                 {
-                    using var command = Open().CreateCommand(); command.CommandText = "SELECT word,language FROM words ORDER BY word,language";
+                    using var command = Open().CreateCommand(); command.CommandText = exclusions ? "SELECT word FROM excluded_words ORDER BY word" : "SELECT word,language FROM words ORDER BY word,language";
                     using var rows = command.ExecuteReader();
                     while (rows.Read())
                     {
-                        writer.WriteStartObject(); writer.WriteString("word", rows.GetString(0)); writer.WriteString("language", rows.GetString(1)); writer.WriteEndObject();
+                        if (exclusions) writer.WriteStringValue(rows.GetString(0));
+                        else { writer.WriteStartObject(); writer.WriteString("word", rows.GetString(0)); writer.WriteString("language", rows.GetString(1)); writer.WriteEndObject(); }
                         if (writer.BytesPending >= 16 * 1024) writer.Flush(); // Bounded buffering, independent of dictionary size.
                     }
                 }

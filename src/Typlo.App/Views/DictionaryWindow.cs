@@ -14,6 +14,9 @@ internal sealed class DictionaryWindow : Window
 {
     private readonly AppController _controller;
     private readonly TextBox _search = new() { PlaceholderText = Loc.T("manage.search"), MinWidth = 180 };
+    private readonly ComboBox _collection = new() { MinWidth = 170 };
+    private bool Exclusions => _collection.SelectedIndex == 1;
+    private readonly TextBlock _formsHint = new() { TextWrapping = TextWrapping.Wrap };
     private readonly ComboBox _filter = new() { MinWidth = 170 };
     private readonly ListBox _words = new();
     private readonly TextBox _forms = new() { AcceptsReturn = true, MinHeight = 120, MaxLength = 64_000, TextWrapping = TextWrapping.Wrap, PlaceholderText = Loc.T("manage.forms") };
@@ -40,40 +43,47 @@ internal sealed class DictionaryWindow : Window
         _controller = controller;
         Title = Loc.T("manage.title"); Icon = AppIcon.Create(); Width = 900; Height = 670; MinWidth = 760; MinHeight = 560;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        _collection.ItemsSource = new[] { Loc.T("dictionary.title"), Loc.T("exclude.title") }; _collection.SelectedIndex = 0;
         _filter.ItemsSource = new[] { Loc.T("manage.all") }.Concat(_languages.Select(l => l.Name)).ToArray(); _filter.SelectedIndex = 0;
         _language.ItemsSource = _languages.Select(l => l.Name).ToArray();
         _language.SelectedIndex = Math.Max(0, Array.FindIndex(_languages, l => l.Code == Loc.Current));
         _words.ItemTemplate = new FuncDataTemplate<PersonalWord>((entry, _) => new TextBlock
-        { Text = entry is null ? "" : $"{entry.Word}  ·  {LanguageName(entry.Language)}", Margin = new Thickness(8, 6) });
+        { Text = entry is null ? "" : entry.Language.Length == 0 ? entry.Word : $"{entry.Word}  ·  {LanguageName(entry.Language)}", Margin = new Thickness(8, 6) });
         _words.SelectionChanged += (_, _) =>
         {
             _selected = _words.SelectedItem as PersonalWord;
             if (_selected is not { } selected) return;
             _forms.Text = selected.Word; _language.SelectedIndex = Array.FindIndex(_languages, l => l.Code == selected.Language);
         };
-        var filters = new Grid { ColumnDefinitions = new("*,Auto"), ColumnSpacing = 10 };
-        filters.Children.Add(_search); Grid.SetColumn(_filter, 1); filters.Children.Add(_filter);
+        var filters = new Grid { ColumnDefinitions = new("Auto,*,Auto"), ColumnSpacing = 10 };
+        filters.Children.Add(_collection); Grid.SetColumn(_search, 1); filters.Children.Add(_search); Grid.SetColumn(_filter, 2); filters.Children.Add(_filter);
         var footer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _previous, _pageLabel, _next, ActionButton("manage.refresh", LoadWordsAsync) } };
-        _actions.Children.Add(new TextBlock { Text = Loc.T("manage.formsHint"), TextWrapping = TextWrapping.Wrap });
+        _formsHint.Text = Loc.T("manage.formsHint"); _actions.Children.Add(_formsHint);
         _actions.Children.Add(_forms); _actions.Children.Add(_language);
         _actions.Children.Add(ActionButton("dictionary.add", () => Mutate(async () =>
         {
-            var language = SelectedLanguage();
+            var language = Exclusions ? "" : SelectedLanguage();
             var entries = (_forms.Text ?? "").Split(['\r', '\n', ',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(word => new PersonalWord(word, language)).ToArray();
             if (entries.Length == 0) throw new ArgumentException(Loc.T("dictionary.invalid"));
-            ShowImportResult(await _controller.AddPersonalWordsAsync(entries));
+            ShowImportResult(await _controller.AddPersonalWordsAsync(entries, Exclusions));
         })));
         _actions.Children.Add(ActionButton("manage.edit", () => Mutate(async () =>
         {
             if (_selected is null) throw new InvalidOperationException(Loc.T("manage.select"));
-            await _controller.EditPersonalWordAsync(_selected, new(_forms.Text ?? "", SelectedLanguage()));
+            await _controller.EditPersonalWordAsync(_selected, new(_forms.Text ?? "", Exclusions ? "" : SelectedLanguage()), Exclusions);
             _message.Text = Loc.T("manage.saved");
         })));
         _actions.Children.Add(ActionButton("history.ctx.delete", () => Mutate(async () =>
         {
             if (_selected is null) throw new InvalidOperationException(Loc.T("manage.select"));
-            await _controller.SetPersonalWordAsync(_selected.Word, _selected.Language, remove: true); _message.Text = Loc.T("manage.saved");
+            if (Exclusions) await _controller.SetExcludedWordAsync(_selected.Word, remove: true);
+            else await _controller.SetPersonalWordAsync(_selected.Word, _selected.Language, remove: true); _message.Text = Loc.T("manage.saved");
+        })));
+        _actions.Children.Add(ActionButton("exclude.never", () => Mutate(async () =>
+        {
+            if (_selected is null) throw new InvalidOperationException(Loc.T("manage.select"));
+            await _controller.SetExcludedWordAsync(_selected.Word); _message.Text = Loc.T("exclude.saved");
         })));
         _actions.Children.Add(ActionButton("manage.import", ImportAsync));
         _actions.Children.Add(ActionButton("manage.export", ExportAsync));
@@ -100,6 +110,13 @@ internal sealed class DictionaryWindow : Window
         _tabs.SelectedIndex = diagnostics ? 1 : 0;
         var root = new DockPanel { Margin = new Thickness(22) }; DockPanel.SetDock(_message, Dock.Bottom); root.Children.Add(_message); root.Children.Add(_tabs); Content = root;
         _search.TextChanged += async (_, _) => { var version = ++_queryVersion; await Task.Delay(200); if (!_closed && version == _queryVersion) { _page = 0; await LoadWordsAsync(); } };
+        _collection.SelectionChanged += async (_, _) =>
+        {
+            _filter.IsVisible = _language.IsVisible = !Exclusions;
+            if (!Exclusions && _language.SelectedIndex < 0) _language.SelectedIndex = 0;
+            _formsHint.Text = Loc.T(Exclusions ? "exclude.hint" : "manage.formsHint");
+            _forms.Text = ""; _page = 0; await LoadWordsAsync();
+        };
         _filter.SelectionChanged += async (_, _) => { _page = 0; await LoadWordsAsync(); };
         _previous.Click += async (_, _) => { _page--; await LoadWordsAsync(); };
         _next.Click += async (_, _) => { _page++; await LoadWordsAsync(); };
@@ -107,6 +124,8 @@ internal sealed class DictionaryWindow : Window
         Opened += async (_, _) => { await LoadWordsAsync(); await RefreshStatusAsync(); if (!_closed) _timer.Start(); };
         Closed += (_, _) => { _closed = true; _queryVersion++; _timer.Stop(); };
     }
+
+    internal void ShowExclusions() => _collection.SelectedIndex = 1;
 
     private string LanguageName(string code) => _languages.FirstOrDefault(l => l.Code == code).Name ?? code;
     private string SelectedLanguage() => _language.SelectedIndex >= 0 ? _languages[_language.SelectedIndex].Code : throw new ArgumentException(Loc.T("dictionary.invalid"));
@@ -120,10 +139,10 @@ internal sealed class DictionaryWindow : Window
     {
         if (_closed) return;
         var version = ++_queryVersion;
-        var language = _filter.SelectedIndex > 0 ? _languages[_filter.SelectedIndex - 1].Code : null;
+        var language = !Exclusions && _filter.SelectedIndex > 0 ? _languages[_filter.SelectedIndex - 1].Code : null;
         try
         {
-            var page = await _controller.QueryPersonalWordsAsync(new(_search.Text ?? "", language, Math.Max(0, _page)));
+            var page = await _controller.QueryPersonalWordsAsync(new(_search.Text ?? "", language, Math.Max(0, _page), Exclusions: Exclusions));
             if (_closed || version != _queryVersion) return;
             DisplayedPage = page;
             _selected = null; _words.ItemsSource = page.Items; _page = page.Page;
@@ -134,23 +153,23 @@ internal sealed class DictionaryWindow : Window
     }
     private async Task Mutate(Func<Task> action)
     {
-        if (_mutating) return; _mutating = true; _actions.IsEnabled = false;
+        if (_mutating) return; _mutating = true; _actions.IsEnabled = _collection.IsEnabled = false;
         try { await action(); if (!_closed) await LoadWordsAsync(); }
         catch (Exception e) { if (!_closed) _message.Text = e.Message; }
-        finally { _mutating = false; if (!_closed) _actions.IsEnabled = true; }
+        finally { _mutating = false; if (!_closed) _actions.IsEnabled = _collection.IsEnabled = true; }
     }
     private void ShowImportResult(PersonalImportResult result) => _message.Text = Loc.T("manage.imported", result.Added, result.Skipped);
     private async Task ImportAsync()
     {
         var files = await StorageProvider.OpenFilePickerAsync(new() { Title = Loc.T("manage.import"), FileTypeFilter = [JsonType] });
         if (files.Count == 0) return;
-        await Mutate(async () => ShowImportResult(await _controller.ImportPersonalWordsAsync(LocalPath(files[0]))));
+        await Mutate(async () => ShowImportResult(await _controller.ImportPersonalWordsAsync(LocalPath(files[0]), Exclusions)));
     }
     private async Task ExportAsync()
     {
-        var file = await StorageProvider.SaveFilePickerAsync(new() { Title = Loc.T("manage.export"), SuggestedFileName = "Typlo-personal-dictionary.json", DefaultExtension = "json", FileTypeChoices = [JsonType] });
+        var file = await StorageProvider.SaveFilePickerAsync(new() { Title = Loc.T("manage.export"), SuggestedFileName = Exclusions ? "Typlo-exclusions.json" : "Typlo-personal-dictionary.json", DefaultExtension = "json", FileTypeChoices = [JsonType] });
         if (file is null) return;
-        await Mutate(async () => { await _controller.ExportPersonalWordsAsync(LocalPath(file)); _message.Text = Loc.T("manage.saved"); });
+        await Mutate(async () => { await _controller.ExportPersonalWordsAsync(LocalPath(file), Exclusions); _message.Text = Loc.T("manage.saved"); });
     }
     private static readonly FilePickerFileType JsonType = new("JSON") { Patterns = ["*.json"] };
     private static string LocalPath(IStorageItem file) => file.TryGetLocalPath() ?? throw new IOException("Choose a local file.");

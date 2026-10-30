@@ -13,8 +13,29 @@ internal sealed class RecentTyping
     private nint _window, _element;
     private long _lastAt, _version;
     private bool _overflow;
+    private bool _suppressAutomatic;
+    private nint _suppressionElement;
+    private long? _suppressionFocus;
+
+    public void RestoreAfterUndo(Run run, long version, long now, nint element, long? focus)
+    {
+        lock (_gate)
+        {
+            if (_version > version) return;
+            Clear(); _keys.Append(run.Keys); _window = run.Window; _element = run.Element;
+            _version = version; _lastAt = now; _suppressAutomatic = true;
+            _suppressionElement = element; _suppressionFocus = focus;
+        }
+    }
+
+    public void ValidateUndoContext(nint window, nint element, long? focus)
+    {
+        lock (_gate)
+            if (_suppressAutomatic && (window != _window || element != _suppressionElement || focus != _suppressionFocus)) Clear();
+    }
 
     public nint Window { get { lock (_gate) return _window; } }
+    public bool HasUndoSuppression { get { lock (_gate) return _suppressAutomatic; } }
 
     public void Record(char key, nint window, long now, long version, nint element = 0)
     {
@@ -26,7 +47,7 @@ internal sealed class RecentTyping
                 _version = version;
                 return;
             }
-            if (window != _window || element != _element || now - _lastAt >= PauseMilliseconds ||
+            if (window != _window || element != _element || (!_suppressAutomatic && now - _lastAt >= PauseMilliseconds) ||
                 (_keys.Length > 0 && char.IsWhiteSpace(_keys[^1]) && !char.IsWhiteSpace(key))) Clear();
             _window = window;
             _element = element;
@@ -52,8 +73,8 @@ internal sealed class RecentTyping
     {
         lock (_gate)
         {
-            if (window != _window || element != _element || now - _lastAt >= PauseMilliseconds || _overflow) Clear();
-            else if (_keys.Length > 0) _keys.Length--;
+            if (window != _window || element != _element || (!_suppressAutomatic && now - _lastAt >= PauseMilliseconds) || _overflow) Clear();
+            else if (_keys.Length > 0) { _keys.Length--; if (_keys.Length == 0) Clear(); }
             _lastAt = now;
             _version = version;
         }
@@ -74,7 +95,7 @@ internal sealed class RecentTyping
         lock (_gate)
         {
             if (window == 0 || window != _window) { Clear(); return null; }
-            return _keys.Length == 0 || _overflow ? null : new Run(window, _keys.ToString(), _element);
+            return _keys.Length == 0 || _overflow ? null : new Run(window, _keys.ToString(), _element, _suppressAutomatic);
         }
     }
 
@@ -84,9 +105,12 @@ internal sealed class RecentTyping
         _window = 0;
         _element = 0;
         _overflow = false;
+        _suppressAutomatic = false;
+        _suppressionElement = 0;
+        _suppressionFocus = null;
     }
 
-    internal sealed record Run(nint Window, string Keys, nint Element = 0)
+    internal sealed record Run(nint Window, string Keys, nint Element = 0, bool SuppressAutomatic = false)
     {
         // Match against what the app actually copied. Dead keys, IME, or ignored keystrokes must never
         // make Typlo replace older text just because the number of physical key presses happens to fit.

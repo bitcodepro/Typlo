@@ -27,23 +27,31 @@ internal sealed class PersonalWordDialog : Window
         var cancel = new Button { Content = Loc.T("settings.cancel") };
         var add = new Button { Content = Loc.T("dictionary.add"), Classes = { "accent" } };
         var remove = new Button { Content = Loc.T("dictionary.remove") };
+        var never = new Button { Content = Loc.T("exclude.never") };
+        never.Click += async (_, _) =>
+        {
+            add.IsEnabled = remove.IsEnabled = never.IsEnabled = false;
+            try { await controller.SetExcludedWordAsync(Word.Text ?? ""); Close(); }
+            catch (Exception e) { _error.Text = e.Message; }
+            finally { add.IsEnabled = remove.IsEnabled = never.IsEnabled = true; }
+        };
         cancel.Click += (_, _) => Close();
         add.Click += async (_, _) => await Save(false);
         remove.Click += async (_, _) => await Save(true);
         Content = new StackPanel { Margin = new Thickness(22), Spacing = 12, Children =
         {
             new TextBlock { Text = Loc.T("dictionary.hint"), TextWrapping = TextWrapping.Wrap },
-            Word, _language, _error,
+            Word, _language, never, _error,
             new WrapPanel { Orientation = Orientation.Horizontal, Children = { remove, cancel, add } },
         }};
         async Task Save(bool delete)
         {
             var word = LanguageLexicon.Normalize((Word.Text ?? "").Trim());
             if (!PersonalLexicon.IsWord(word) || _language.SelectedIndex < 0) { _error.Text = Loc.T("dictionary.invalid"); return; }
-            add.IsEnabled = remove.IsEnabled = false;
+            add.IsEnabled = remove.IsEnabled = never.IsEnabled = false;
             try { await controller.SetPersonalWordAsync(word, _languages[_language.SelectedIndex].Code, delete); Close(); }
             catch (Exception e) { _error.Text = e.Message; }
-            finally { add.IsEnabled = remove.IsEnabled = true; }
+            finally { add.IsEnabled = remove.IsEnabled = never.IsEnabled = true; }
         }
     }
 }
