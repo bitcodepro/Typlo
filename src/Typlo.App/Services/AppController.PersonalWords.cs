@@ -18,13 +18,13 @@ public sealed partial class AppController
         var window = _platform.ForegroundWindow;
         var input = Interlocked.Read(ref _typingVersion);
         var focus = _platform.ForegroundChangeVersion;
+        bool Valid() => Volatile.Read(ref _disposed) == 0 && IsTargetActive(window) && !ForegroundChanged(focus) && input == Interlocked.Read(ref _typingVersion);
         await StopPendingAutomaticWords();
         if (!await EnterManualTextOperationAsync(window)) return;
         Platform.ClipboardSnapshot? snapshot = null;
         string? selected = null, language = null;
         try
         {
-            bool Valid() => Volatile.Read(ref _disposed) == 0 && IsTargetActive(window) && !ForegroundChanged(focus) && input == Interlocked.Read(ref _typingVersion);
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
             if (!Valid()) return;
             using var capture = _platform.SuspendCapture();
@@ -33,13 +33,15 @@ public sealed partial class AppController
             if (!Valid()) { selected = null; return; }
             language = FindLayout(_platform.GetCurrentLayoutId(window))?.LanguageCode.Split('-', '_')[0].ToLowerInvariant();
         }
-        catch (Exception e) { Log.Error("Read personal dictionary selection failed", e); }
+        catch (SelectionChangedException) { return; }
+        catch (Exception e) { Log.Error("Read personal dictionary selection failed", e); return; }
         finally
         {
             if (snapshot is not null) { using var capture = _platform.SuspendCapture(); RestoreIfUnchanged(snapshot); }
             ExitManualTextOperation();
         }
         // The source field and clipboard are untouched before another UI is activated.
+        if (!Valid()) return;
         PersonalWordRequested?.Invoke(selected is { Length: <= 128 } ? selected.Trim() : "", language);
     }
 }
