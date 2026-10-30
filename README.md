@@ -10,15 +10,16 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
      Settings → layout cycle lets you enable/reorder sources and refresh after an OS input-settings change.
      Input methods without a direct character map are shown as switch-only sources.
    - **Layouts for applications** lets you pick a running process or enter its name, then select
-     and reorder its own Typlo cycle. A rule with one layout activates it when you enter the app;
-     it does not change existing text or continuously override a later manual layout choice.
+     and reorder its own Typlo cycle. On entry, an allowed active layout stays unchanged. Otherwise
+     English is activated if selected, or the first layout in the rule. A one-layout rule activates
+     that layout. This does not change text or continuously override a later manual layout choice.
      Manual conversion shortcuts take precedence over a pending automatic activation.
      Other apps use the global cycle, and direct language shortcuts keep their assigned targets.
      Rules match exact process names (case-insensitive, optional `.exe`); all windows of that process
      share the rule. They are included in settings import/export. If any selected layout is missing,
      the rule stays saved and the global cycle is used until all its layouts are available.
      Windows uses foreground events. macOS and X11 check focus twice a second only when an automatic
-     single-layout rule is enabled; Wayland retains its existing foreground/input restrictions.
+     application rule is enabled; Wayland retains its existing foreground/input restrictions.
    - Nothing selected? Only the recently typed input is converted (can be turned off).
      Windows first tries direct replacement in supported native Edit and single-line plain-text RichEdit fields.
      It binds the exact control and verifies its text and caret before writing, so a notification can take focus

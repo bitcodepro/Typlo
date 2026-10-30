@@ -45,6 +45,19 @@ internal static class SystemShortcutCheck
                 var watch = Stopwatch.StartNew();
                 while (!condition()) { if (watch.Elapsed > TimeSpan.FromSeconds(5)) throw new InvalidOperationException(message); await Task.Delay(10); }
             }
+            async Task Enter(nint target, AppController owner)
+            {
+                var seen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                void Focused(nint foreground) { if (foreground == target) seen.TrySetResult(); }
+                platform.ForegroundChanged += Focused;
+                try
+                {
+                    platform.ActivateWindow(target);
+                    await seen.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                    await owner.ApplicationLayoutsIdleAsync();
+                }
+                finally { platform.ForegroundChanged -= Focused; }
+            }
             foreach (var id in new[] { "00000409", "00000419", "00000422" })
             {
                 var handle = LoadKeyboardLayoutW(id, 0);
@@ -114,6 +127,32 @@ internal static class SystemShortcutCheck
                 await Until(() => platform.GetCurrentLayoutId(popup) == target.Id, "Global Ctrl+Shift order failed");
             }
             report.Add("PASS empty browser rule uses the configured UK/RU/EN global order with either modifier press order");
+            platform.SwitchKeyboardLayout(popup, ru);
+            await Until(() => platform.GetCurrentLayoutId(popup) == ru.Id, "Russian before entering restricted app");
+            await Enter(window, controller);
+            await Until(() => platform.GetCurrentLayoutId(window) == en.Id, "Restricted EN/UK entry did not replace Russian with English");
+            platform.SwitchKeyboardLayout(window, uk);
+            await Until(() => platform.GetCurrentLayoutId(window) == uk.Id, "Ukrainian before entering unrestricted app");
+            await Enter(popup, controller);
+            if (platform.GetCurrentLayoutId(popup) != uk.Id) throw new InvalidOperationException("Unrestricted app changed the active language");
+            await Enter(window, controller);
+            if (platform.GetCurrentLayoutId(window) != uk.Id) throw new InvalidOperationException("Restricted app replaced its allowed Ukrainian layout");
+            var entrySettings = controller.Settings.Clone();
+            entrySettings.ApplicationLayouts[0].Layouts = [uk.Id, ru.Id];
+            entrySettings.ApplicationLayouts[1].Layouts = [uk.Id, ru.Id, en.Id];
+            controller.ApplySettings(entrySettings); await controller.ApplicationLayoutsIdleAsync();
+            platform.SwitchKeyboardLayout(window, en);
+            await Until(() => platform.GetCurrentLayoutId(window) == en.Id, "English before no-English rule");
+            await Enter(popup, controller);
+            if (platform.GetCurrentLayoutId(popup) != en.Id) throw new InvalidOperationException("Wider three-language rule changed an allowed layout");
+            await Enter(window, controller);
+            await Until(() => platform.GetCurrentLayoutId(window) == uk.Id, "Rule without English did not choose its first layout");
+            state = await Command(new { op = "read" });
+            if (state.GetProperty("text").GetString() != "existing text") throw new InvalidOperationException("Automatic app entry edited existing text");
+            entrySettings.ApplicationLayouts[0].Layouts = [en.Id, uk.Id];
+            entrySettings.ApplicationLayouts[1].Layouts = [];
+            controller.ApplySettings(entrySettings); await controller.ApplicationLayoutsIdleAsync();
+            report.Add("PASS app entry prefers English for a disallowed layout, otherwise preserves allowed languages or chooses the first configured layout");
             popupProcess = "powershell"; controller.ApplySettings(controller.Settings.Clone());
             platform.ActivateWindow(window); await Until(() => platform.ForegroundWindow == window, "Teams focus");
             platform.SwitchKeyboardLayout(popup, ru); await Until(() => platform.GetCurrentLayoutId(popup) == ru.Id, "PowerShell initial layout");
@@ -145,7 +184,7 @@ internal static class SystemShortcutCheck
             await File.WriteAllLinesAsync(Path.Combine(work, "system-shortcuts.txt"), report);
             foreach (var line in report) Console.WriteLine(line);
         }
-        return report.Count == 7 && report.All(line => line.StartsWith("PASS ")) ? 0 : 1;
+        return report.Count == 8 && report.All(line => line.StartsWith("PASS ")) ? 0 : 1;
     }
     internal static unsafe void Keys(params (ushort Key, bool Up)[] keys)
     {

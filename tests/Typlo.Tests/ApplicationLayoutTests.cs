@@ -95,6 +95,84 @@ public sealed partial class AppControllerTests
         Assert.False(_controller.Settings.SwitchSystemLayout);
     }
 
+    [Theory]
+    [InlineData("ru", "en")]
+    [InlineData("uk", "uk")]
+    [InlineData("en", "en")]
+    [InlineData("unknown", "en")]
+    public async Task AppEntryKeepsAllowedLayoutAndPrefersEnglishOverFirstLayout(string current, string expected)
+    {
+        _platform.ApplicationProcess = window => window == 2 ? "editor" : "other";
+        _platform.ActiveLayoutId = current;
+        SetApplicationRules(new ApplicationLayoutRule { ProcessName = "editor", Layouts = ["uk", "en"] });
+        await _controller.ApplicationLayoutsIdleAsync();
+        _platform.Window = 2;
+        await _controller.ApplicationLayoutsIdleAsync();
+        Assert.Equal(expected, _platform.ActiveLayoutId);
+        Assert.Equal(current == expected ? 0 : 1, _platform.LayoutSwitches.Count);
+        Assert.Equal(0, _platform.PasteCount); Assert.Equal(0, _platform.TypedTextCount);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+        _platform.ActiveLayoutId = "ru"; // No continuous enforcement while staying in the app.
+        await _controller.ApplicationLayoutsIdleAsync();
+        Assert.Equal("ru", _platform.ActiveLayoutId);
+    }
+
+    [Theory]
+    [InlineData("uk", "ru")]
+    [InlineData("ru", "uk")]
+    public async Task AppEntryWithoutEnglishUsesTheFirstConfiguredLayout(string first, string second)
+    {
+        _platform.ApplicationProcess = window => window == 2 ? "editor" : "other";
+        _platform.ActiveLayoutId = "en";
+        SetApplicationRules(new ApplicationLayoutRule { ProcessName = "editor", Layouts = [first, second] });
+        await _controller.ApplicationLayoutsIdleAsync();
+        _platform.Window = 2;
+        await _controller.ApplicationLayoutsIdleAsync();
+        Assert.Equal(first, _platform.ActiveLayoutId);
+    }
+
+    [Fact]
+    public async Task AppEntryUsesLanguageCodeForNativeEnglishVariantAndLeavesGlobalAppUnchanged()
+    {
+        var british = new KeyboardLayout("native:gb", "British", 0x0809,
+            KeyboardLayouts.English.Normal, KeyboardLayouts.English.Shifted, "en");
+        _controller.ConfigureDiagnosticLayouts([KeyboardLayouts.Russian, KeyboardLayouts.Ukrainian, british]);
+        _platform.ApplicationProcess = window => window == 2 ? "editor" : "browser";
+        _platform.ActiveLayoutId = "ru";
+        var settings = _controller.Settings.Clone(); settings.SwitchSystemLayout = false;
+        settings.Layouts = ["uk", "ru", british.Id];
+        settings.ApplicationLayouts = [new() { ProcessName = "editor", Layouts = ["uk", british.Id] },
+            new() { ProcessName = "browser", Layouts = [] }];
+        _controller.ApplySettings(settings);
+        await _controller.ApplicationLayoutsIdleAsync();
+        _platform.Window = 2;
+        await _controller.ApplicationLayoutsIdleAsync();
+        Assert.Equal(british.Id, _platform.ActiveLayoutId);
+        _platform.ActiveLayoutId = "uk";
+        _platform.Window = 1;
+        await _controller.ApplicationLayoutsIdleAsync();
+        Assert.Equal("uk", _platform.ActiveLayoutId);
+        Assert.Single(_platform.LayoutSwitches);
+    }
+
+    [Fact]
+    public async Task EnteringAWiderExplicitRulePreservesTheLanguageFromTheRestrictedApp()
+    {
+        _platform.ApplicationProcess = window => window == 2 ? "editor" : "browser";
+        _platform.ActiveLayoutId = "ru";
+        SetApplicationRules(new ApplicationLayoutRule { ProcessName = "editor", Layouts = ["uk", "en"] },
+            new ApplicationLayoutRule { ProcessName = "browser", Layouts = ["uk", "ru", "en"] });
+        await _controller.ApplicationLayoutsIdleAsync();
+        Assert.Empty(_platform.LayoutSwitches);
+        _platform.Window = 2;
+        await _controller.ApplicationLayoutsIdleAsync();
+        Assert.Equal("en", _platform.ActiveLayoutId);
+        _platform.Window = 1;
+        await _controller.ApplicationLayoutsIdleAsync();
+        Assert.Equal("en", _platform.ActiveLayoutId);
+        Assert.Single(_platform.LayoutSwitches);
+    }
+
     [Fact]
     public async Task UnavailableMemberDoesNotTurnTwoLayoutRuleIntoAutomaticSingleLayout()
     {
@@ -117,11 +195,13 @@ public sealed partial class AppControllerTests
         Assert.Equal("при", _platform.Document.Text);
     }
 
-    [Fact]
-    public async Task PendingEntryCannotSwitchAnAppAfterNewTypingOrASecondFocusChange()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PendingEntryCannotSwitchAnAppAfterNewTypingOrASecondFocusChange(bool multiple)
     {
         _platform.ApplicationProcess = window => window == 2 ? "editor" : "other";
-        SetApplicationRules(new ApplicationLayoutRule { ProcessName = "editor", Layouts = ["uk"] });
+        SetApplicationRules(new ApplicationLayoutRule { ProcessName = "editor", Layouts = multiple ? ["en", "uk"] : ["uk"] });
         await _controller.ApplicationLayoutsIdleAsync();
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _platform.BeforeModifiers = () => release.Task;
