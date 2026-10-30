@@ -16,6 +16,7 @@ public enum KeyModifiers
 /// </summary>
 public sealed record Hotkey(KeyModifiers Modifiers, string Key)
 {
+    public bool IsModifierOnly => Key.Length == 0 && Modifiers == (KeyModifiers.Ctrl | KeyModifiers.Shift);
     public static readonly IReadOnlyList<string> NamedKeys =
     [
         "Space", "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "Up", "Down", "Left", "Right",
@@ -36,7 +37,7 @@ public sealed record Hotkey(KeyModifiers Modifiers, string Key)
 
     /// <summary>A global shortcut without Ctrl/Alt/Win would swallow normal typing (F-keys excepted).</summary>
     public bool IsUsable =>
-        IsValidKey(Key) &&
+        IsModifierOnly || IsValidKey(Key) &&
         ((Modifiers & (KeyModifiers.Ctrl | KeyModifiers.Alt | KeyModifiers.Win)) != 0 || IsFunctionKey(Key));
 
     public override string ToString()
@@ -46,7 +47,7 @@ public sealed record Hotkey(KeyModifiers Modifiers, string Key)
         if (Modifiers.HasFlag(KeyModifiers.Alt)) parts.Add("Alt");
         if (Modifiers.HasFlag(KeyModifiers.Shift)) parts.Add("Shift");
         if (Modifiers.HasFlag(KeyModifiers.Win)) parts.Add("Win");
-        parts.Add(Key);
+        if (Key.Length > 0) parts.Add(Key);
         return string.Join('+', parts);
     }
 
@@ -69,7 +70,8 @@ public sealed record Hotkey(KeyModifiers Modifiers, string Key)
                     break;
             }
         }
-        return key is not null && IsValidKey(key) ? new Hotkey(mods, key) : null;
+        return key is not null && IsValidKey(key) ? new Hotkey(mods, key) :
+            key is null && mods == (KeyModifiers.Ctrl | KeyModifiers.Shift) ? new Hotkey(mods, "") : null;
     }
 
     private static string Normalize(string raw)

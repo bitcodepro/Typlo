@@ -21,6 +21,7 @@ public sealed partial class AppController : IDisposable
     private const int UndoId = 5;
     private const int ScreenshotCopyId = 6;
     private const int ScreenshotSaveId = 7;
+    private const int LayoutSwitchId = 8;
     private const int LayoutIdBase = 100;
     // A hotkey is delivered on key-down. Waiting a whole second for its modifiers penalises a held
     // chord; give a normal release a short grace period, then use the platform's safe release path.
@@ -70,6 +71,7 @@ public sealed partial class AppController : IDisposable
         _platform = platform;
         _settingsStore = new SettingsStore(paths.SettingsFile);
         Settings = _settingsStore.Load();
+        if (_remote is null && !_diagnostic && _platform.Name == "Windows") Settings.InitializeWindowsShortcuts();
         DiscoverLayouts();
         LayoutCatalog.Synchronize(Settings);
         if (_remote is null) _settingsStore.Save(Settings);
@@ -236,6 +238,7 @@ public sealed partial class AppController : IDisposable
         }
 
         Register(ToggleId, Settings.ToggleHotkey, Loc.T("hk.toggle"));
+        Register(LayoutSwitchId, Settings.LayoutSwitchHotkey, Loc.T("hk.inputCycle"));
         Register(ClipboardId, Settings.ClipboardHotkey, Loc.T("hk.history"));
         Register(CaseId, Settings.CaseHotkey, Loc.T("hk.case"));
         Register(TranslitId, Settings.TranslitHotkey, Loc.T("hk.translit"));
@@ -264,6 +267,7 @@ public sealed partial class AppController : IDisposable
             else if (id == ScreenshotSaveId) ScreenshotRequested?.Invoke(CaptureDestination.File);
             else if (id == ClipboardId) ShowHistoryRequested?.Invoke(_platform.ForegroundWindow);
             else if (id == ToggleId) _ = ConvertSelectionAsync(null);
+            else if (id == LayoutSwitchId) _ = CycleInputLayoutAsync();
             else if (id == CaseId) _ = ChangeCaseAsync();
             else if (id == TranslitId) _ = TransliterateAsync();
             else if (id == UndoId) _ = UndoLastTransformAsync();
@@ -580,7 +584,8 @@ public sealed partial class AppController : IDisposable
             Log.Info("Paste skipped: the user typed or moved the caret before it");
             return false;
         }
-        SetOwnText(text);
+        var unicode = PreferUnicodeReplacement(window, text);
+        if (!unicode) SetOwnText(text);
         // SetOwnText returns only after the write is readable and its sequence has been verified.
         // There is no pending clipboard write to wait for before sending Paste.
         // Clipboard, target, clipboard again, target again: the clipboard check can block (Linux runs xclip), so
@@ -597,7 +602,7 @@ public sealed partial class AppController : IDisposable
             if (resumed || SelectionFocusChanged(window, expectedSelection))
             {
                 if (!await VerifyAfterResume()) return false;
-                SetOwnText(text);
+                if (!unicode) SetOwnText(text);
             }
             if (!stillValid())
             {
@@ -607,10 +612,21 @@ public sealed partial class AppController : IDisposable
         }
         EnsureClipboardIsOurs();
         if (!IsTargetActive(window) || !stillValid() || SelectionFocusChanged(window, expectedSelection)) return false;
-        _platform.SendPaste();
+        if (unicode)
+        {
+            try { if (!_platform.TypeText(text, stillValid)) return false; }
+            catch
+            {
+                // A partial SendInput is an uncertain write. Discard range ownership/Undo
+                // and never attempt clipboard replacement for this same command.
+                LastTransform = null; onSent?.Invoke(); throw;
+            }
+        }
+        else _platform.SendPaste();
+        Log.Info("Text replacement: " + (unicode ? "unicode" : "clipboard"));
         onSent?.Invoke();
         // Give the target app time to read the clipboard before it changes again.
-        await Task.Delay(300);
+        await Task.Delay(unicode ? 40 : 300);
         return true;
     }
 
@@ -680,6 +696,8 @@ public sealed partial class AppController : IDisposable
             }
             using var _ = _platform.SuspendCapture();
             snapshot = CaptureClipboard();
+            using var protectedSelection = NeedsPasteVerification(window) && _platform.SupportsProtectedCopy
+                ? _platform.ProtectCopySelection(window, StillValid) : null;
             // Only replace what Typlo inserted: if the user typed or moved since, the selection is different.
             var selected = await SelectTransformResultAsync(last, StillValid);
             if (selected is null || !StillValid())
@@ -935,7 +953,8 @@ public sealed partial class AppController : IDisposable
                 _platform.IsClipboardOwnedBy(window) == true && _platform.ClipboardSequence == observed)
             {
                 var copied = _platform.ReadText();
-                if (copied is not null && expectedCopy(copied) && _platform.ClipboardSequence == observed && _platform.IsClipboardOwnedBy(window) == true)
+                if (copied is not null && MatchKnownEditorCopy(window, copied, expectedCopy) is not null &&
+                    _platform.ClipboardSequence == observed && _platform.IsClipboardOwnedBy(window) == true)
                 { _expectedSequence = observed; _adoptedCopy = (copied, window); }
             }
             throw new SelectionChangedException();
@@ -946,9 +965,11 @@ public sealed partial class AppController : IDisposable
         if (owned == false || (owned is null && change.ChangedAgain) || _platform.ClipboardSequence != observed)
             throw new ClipboardTakenException();
         var text = _platform.ReadText();
-        if (text is not null && expectedCopy is not null && !expectedCopy(text)) throw new ClipboardTakenException();
+        var rawText = text;
+        if (text is not null && expectedCopy is not null)
+            text = MatchKnownEditorCopy(window, text, expectedCopy) ?? throw new ClipboardTakenException();
         _expectedSequence = observed;
-        if (text is not null && _platform.IsClipboardOwnedBy(window) == true) _adoptedCopy = (text, window);
+        if (rawText is not null && _platform.IsClipboardOwnedBy(window) == true) _adoptedCopy = (rawText, window);
         EnsureClipboardIsOurs();
         var lineCopy = _platform.IsEmptySelectionLineCopy();
         EnsureClipboardIsOurs();
@@ -1044,7 +1065,8 @@ public sealed partial class AppController : IDisposable
             {
                 var status = await _platform.SelectPreviousCharactersAsync(window, remaining, BeforeSelectionKey);
                 if (status == SelectionStatus.Cancelled || !await _platform.WaitForTargetAsync(window, stillValid)) return null;
-                var text = await CopySelectionAsync(window, stillValid);
+                var text = await CopySelectionAsync(window, stillValid, expectedCopy: NeedsPasteVerification(window)
+                    ? candidate => matches(candidate) || status == SelectionStatus.Interrupted && remainingSteps?.Invoke(candidate) is > 0 : null);
                 if (text is not null && stillValid() && matches(text))
                 {
                     selectedByUs = false; // keep this verified selection for the replacement

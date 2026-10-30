@@ -31,6 +31,12 @@ public enum SelectionStatus { Completed, Interrupted, Cancelled }
 public interface IPlatform : IDisposable
 {
     bool SupportsAutomaticWordCorrection => false;
+    bool SupportsUnicodeTextReplacement => false;
+    bool SupportsProtectedCopy => false;
+    /// <summary>Owns a programmatic selection across asynchronous Copy; closes it before continuing physical input.
+    /// Dispose on the editing worker after Copy/commit, before releasing the operation gate.</summary>
+    IDisposable? ProtectCopySelection(nint window, Func<bool> valid) => null;
+    bool TryReplacePreviousText(nint window, int characters, string text, Func<bool> stillValid) => false;
     bool SupportsTextRangeBatch => false;
     /// <summary>Nonblocking sequence read for a keyboard callback; null on polling clipboards.</summary>
     ulong? ImmediateClipboardSequence => null;

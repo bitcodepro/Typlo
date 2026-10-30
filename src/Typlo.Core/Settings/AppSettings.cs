@@ -51,6 +51,16 @@ public sealed class AppSettings
 
     /// <summary>Converts the selection to the other layout of the pair.</summary>
     public string ToggleHotkey { get; set; } = "Ctrl+Alt+Shift+Space";
+    public string LayoutSwitchHotkey { get; set; } = "";
+    public bool WindowsShortcutsInitialized { get; set; }
+
+    public void InitializeWindowsShortcuts()
+    {
+        if (WindowsShortcutsInitialized) return;
+        if (LayoutSwitchHotkey.Length == 0) LayoutSwitchHotkey = "Ctrl+Shift";
+        if (ScreenshotCopyHotkey == "Ctrl+Alt+Shift+S") ScreenshotCopyHotkey = "Win+Shift+S";
+        WindowsShortcutsInitialized = true;
+    }
 
     /// <summary>Converts the selection into a specific layout.</summary>
     public List<LayoutHotkey> LayoutHotkeys { get; set; } = [];
@@ -138,6 +148,7 @@ public sealed class AppSettings
         foreach (var h in LayoutHotkeys) h.Hotkey ??= "";
         ExcludedApps = (ExcludedApps ?? []).Where(a => !string.IsNullOrWhiteSpace(a)).ToList();
         ToggleHotkey ??= "";
+        LayoutSwitchHotkey ??= "";
         ClipboardHotkey ??= "";
         Format = FormatId;
         SchemaVersion = CurrentSchemaVersion;

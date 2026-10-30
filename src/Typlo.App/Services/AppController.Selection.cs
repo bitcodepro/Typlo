@@ -22,8 +22,12 @@ public sealed partial class AppController
         string? ownedSelection = null;
         var pasteSent = false;
         var preserveRecentInput = false;
+        IDisposable? protectedSelection = null;
         try
         {
+            if (Settings.ConvertLastWord && (run is not null || last is not null) &&
+                NeedsPasteVerification(window) && _platform.SupportsProtectedCopy)
+                protectedSelection = _platform.ProtectCopySelection(window, StillValid);
             timing.Mark("clipboard snapshot");
             string? text;
             KeyboardLayout? activeLayout = FindLayout(_platform.GetCurrentLayoutId(window));
@@ -104,7 +108,8 @@ public sealed partial class AppController
                 })) return;
                 if (NeedsPasteVerification(window))
                 {
-                    var state = await VerifyPastedRangeAsync(window, text, result, StillValid);
+                    var state = await VerifyPastedRangeAsync(window, text, result, StillValid,
+                        probeRemainingSelection: !PreferUnicodeReplacement(window, result));
                     if (state != ClipboardPasteState.Confirmed)
                     {
                         preserveRecentInput = state == ClipboardPasteState.Unchanged;
@@ -129,11 +134,15 @@ public sealed partial class AppController
                 // An aborted paste used to leave our verified selection highlighted. The next
                 // command extended it into older text and failed again. Collapse only our still-
                 // verified range, never a selection changed by input or a foreground transition.
-                if (ownedSelection is not null && StillValid() && IsTargetActive(window) &&
+                if (protectedSelection is null && ownedSelection is not null && StillValid() && IsTargetActive(window) &&
                     !SelectionFocusChanged(window, ownedSelection)) Collapse(window);
                 if (pasteSent && !preserveRecentInput) _recentTyping.Consume(inputVersion);
             }
-            finally { RestoreIfUnchanged(snapshot); }
+            finally
+            {
+                try { protectedSelection?.Dispose(); }
+                finally { RestoreIfUnchanged(snapshot); }
+            }
         }
     }
 }

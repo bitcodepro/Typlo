@@ -18,6 +18,7 @@ public partial class SettingsWindow : Window
     private readonly AppSettings _draft;
     private readonly List<(HotkeyBox Box, TextBlock Status)> _hotkeyRows = [];
     private HotkeyBox _toggleBox = null!;
+    private HotkeyBox _inputCycleBox = null!;
     private readonly Dictionary<string, HotkeyBox> _layoutBoxes = [];
     private HotkeyBox _caseBox = null!;
     private HotkeyBox _translitBox = null!;
@@ -137,6 +138,8 @@ public partial class SettingsWindow : Window
 
     private void BuildHotkeyRows()
     {
+        _inputCycleBox = new HotkeyBox { HotkeyText = _draft.LayoutSwitchHotkey };
+        AddRow(Loc.T("hk.inputCycle"), _inputCycleBox);
         _toggleBox = new HotkeyBox { HotkeyText = _draft.ToggleHotkey };
         AddRow(Loc.T("settings.toggle"), _toggleBox);
         foreach (var layout in _controller.AvailableLayouts)
@@ -439,6 +442,7 @@ public partial class SettingsWindow : Window
     private void Collect()
     {
         _draft.ToggleHotkey = _toggleBox.HotkeyText;
+        _draft.LayoutSwitchHotkey = _inputCycleBox.HotkeyText;
         _draft.ApplicationLayouts = CollectApplicationLayouts();
         _draft.CaseHotkey = _caseBox.HotkeyText;
         _draft.TranslitHotkey = _translitBox.HotkeyText;

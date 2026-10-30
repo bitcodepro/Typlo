@@ -30,6 +30,11 @@ public sealed partial class WinPlatform : IPlatform
     private nint _foregroundHook, _lastForeground;
     private long _foregroundVersion;
     private readonly HashSet<int> _hotkeyIds = [];
+    private readonly Dictionary<int, Hotkey> _nativeHotkeyDefinitions = [];
+    private static readonly nint OwnInputTag = 0x5459504c;
+    private readonly WindowsShortcutInterceptor _systemShortcuts = new();
+    internal bool AcceptSimulatedSystemShortcuts { get; set; }
+    internal Action<SharpHook.Data.KeyCode, bool, WindowsShortcutInterceptor.Decision>? SystemShortcutDiagnostic { get; set; }
     private readonly HashSet<uint> _ownSequences = [];
     private readonly uint _fmtPng, _fmtExclude, _fmtCanInclude, _fmtViewerIgnore, _fmtHtml, _fmtRtf, _fmtDropEffect;
     private nint _hwnd;
@@ -42,6 +47,7 @@ public sealed partial class WinPlatform : IPlatform
     public bool SupportsForegroundNotifications => _foregroundHook != 0;
     public string? GetApplicationProcessName(nint window)
     {
+        if (ApplicationProcessProbe is { } probe) return probe(window);
         GetWindowThreadProcessId(window, out var pid);
         return pid == 0 || IsOwnProcess(pid) ? null : ProcessNameOf(window);
     }
@@ -87,7 +93,22 @@ public sealed partial class WinPlatform : IPlatform
                 _typingHook = hook;
                 hook.HookEnabled += (_, _) => _typingReady.TrySetResult();
                 Shared.TypingEvents.Attach(hook, key => { if (_typingWatchEnabled) KeyTyped?.Invoke(key); },
-                    physicalCharacter: WindowsKeyboardLayouts.PhysicalCharacter);
+                    isOwnPress: (_, _) => _observingCopyReplay,
+                    physicalCharacter: WindowsKeyboardLayouts.PhysicalCharacter,
+                    ownsModifierShortcut: key => key.IsModifierOnly && _systemShortcuts.OwnsModifierGesture(GetForegroundWindow()));
+                void Intercept(SharpHook.KeyboardHookEventArgs e, bool up)
+                {
+                    if (_observingCopyReplay) return;
+                    if (e.IsEventSimulated && !AcceptSimulatedSystemShortcuts) return;
+                    var decision = _systemShortcuts.Handle(e.Data.KeyCode, up, GetForegroundWindow());
+                    SystemShortcutDiagnostic?.Invoke(e.Data.KeyCode, up, decision);
+                    if (decision.ReplayDown != 0 && !Send([(decision.ReplayDown, false)]))
+                        Log.Error("Could not restore a deferred shortcut modifier");
+                    if (decision.Suppress) e.SuppressEvent = true;
+                    if (decision.Fire is { } id) ThreadPool.QueueUserWorkItem(_ => HotkeyPressed?.Invoke(id));
+                }
+                hook.KeyPressed += (_, e) => Intercept(e, false);
+                hook.KeyReleased += (_, e) => Intercept(e, true);
                 _typingThread = new Thread(() =>
                 {
                     try
@@ -117,6 +138,8 @@ public sealed partial class WinPlatform : IPlatform
 
     public string Name => "Windows";
     public bool SupportsScreenCapture => true;
+    public bool SupportsUnicodeTextReplacement => !_passive && !Volatile.Read(ref _disposed);
+    internal Func<nint, string?>? ApplicationProcessProbe { get; set; }
 
     public PlatformCapabilities Capabilities { get; } = new(
         GlobalHotkeys: true, SimulateInput: true, SwitchLayout: true, DetectHotkeyConflicts: true);
@@ -193,6 +216,7 @@ public sealed partial class WinPlatform : IPlatform
                 _suspendCount = Math.Max(0, _suspendCount - 1);
                 return 0;
             case WM_CLOSE:
+                UnhookCopyGuard();
                 if (_foregroundHook != 0) { UnhookWinEvent(_foregroundHook); _foregroundHook = 0; }
                 RemoveClipboardFormatListener(hwnd);
                 foreach (var hk in _hotkeyIds) UnregisterHotKey(hwnd, hk);
@@ -269,6 +293,12 @@ public sealed partial class WinPlatform : IPlatform
     public bool RegisterHotkey(int id, Hotkey hotkey)
     {
         if (_passive) return HotkeyProbe?.Invoke(id, hotkey) ?? false;
+        if (WindowsShortcutInterceptor.Supports(hotkey))
+        {
+            SetTypingWatch(true);
+            WaitForTypingWatchAsync().GetAwaiter().GetResult();
+            return _systemShortcuts.Register(id, hotkey);
+        }
         var vk = VirtualKeys.FromName(hotkey.Key);
         if (vk == 0) return false;
         uint mods = MOD_NOREPEAT;
@@ -279,8 +309,10 @@ public sealed partial class WinPlatform : IPlatform
         return Invoke(() =>
         {
             if (_hotkeyIds.Remove(id)) UnregisterHotKey(_hwnd, id);
+            _nativeHotkeyDefinitions.Remove(id);
             if (!RegisterHotKey(_hwnd, id, mods, vk)) return false;
             _hotkeyIds.Add(id);
+            _nativeHotkeyDefinitions[id] = hotkey;
             return true;
         });
     }
@@ -289,8 +321,10 @@ public sealed partial class WinPlatform : IPlatform
 
     private void UnregisterNativeHotkeys() => Invoke(() =>
     {
+        _systemShortcuts.Clear();
         foreach (var id in _hotkeyIds) UnregisterHotKey(_hwnd, id);
         _hotkeyIds.Clear();
+        _nativeHotkeyDefinitions.Clear();
     });
 
     // ---------------------------------------------------------------- clipboard
@@ -569,6 +603,7 @@ public sealed partial class WinPlatform : IPlatform
             input.ki.wVk = vk;
             input.ki.wScan = scan;
             input.ki.dwFlags = flags;
+            input.ki.dwExtraInfo = OwnInputTag;
             inputs.Add(input);
         }
         foreach (var c in text)
@@ -577,7 +612,9 @@ public sealed partial class WinPlatform : IPlatform
             Key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
         }
         var array = inputs.ToArray();
-        fixed (INPUT* p = array) SendInput((uint)array.Length, p, sizeof(INPUT));
+        fixed (INPUT* p = array)
+            if (SendInput((uint)array.Length, p, sizeof(INPUT)) != array.Length)
+                throw new IOException("Windows could not send the complete Unicode text action.");
         return true;
     }
     public void SendPaste() => SendChord(KeyModifiers.Ctrl, "V");
@@ -596,7 +633,7 @@ public sealed partial class WinPlatform : IPlatform
             if (!keepGoing()) return SelectionStatus.Cancelled;
             if (ForegroundWindow != window) return SelectionStatus.Interrupted;
             // Keep native stack allocation bounded, and re-check focus/input between batches.
-            if (!Send(keys))
+            if (!Send(keys, CopySelectionTag()))
             {
                 Send([(left, true), (VK_SHIFT, true)]);
                 throw new IOException("Windows could not send the complete text selection.");
@@ -622,7 +659,7 @@ public sealed partial class WinPlatform : IPlatform
         Send(seq);
     }
 
-    private static unsafe bool Send(IReadOnlyList<(ushort Vk, bool Up)> keys)
+    private static unsafe bool Send(IReadOnlyList<(ushort Vk, bool Up)> keys, nint tag = 0)
     {
         var inputs = stackalloc INPUT[keys.Count];
         for (var i = 0; i < keys.Count; i++)
@@ -630,7 +667,8 @@ public sealed partial class WinPlatform : IPlatform
             inputs[i] = default;
             inputs[i].type = INPUT_KEYBOARD;
             inputs[i].ki.wVk = keys[i].Vk;
-            inputs[i].ki.dwFlags = keys[i].Up ? KEYEVENTF_KEYUP : 0;
+            inputs[i].ki.dwFlags = (keys[i].Up ? KEYEVENTF_KEYUP : 0) | (keys[i].Vk is 0xa3 or 0xa5 ? 1u : 0u);
+            inputs[i].ki.dwExtraInfo = tag == 0 ? OwnInputTag : tag;
         }
         return SendInput((uint)keys.Count, inputs, sizeof(INPUT)) == keys.Count;
     }
@@ -670,8 +708,7 @@ public sealed partial class WinPlatform : IPlatform
         GetKeyboardLayoutList(count, list);
         var hkl = list.FirstOrDefault(h => (h & 0xFFFF) == langId);
         if (hkl == 0 || window == 0) return false;
-        var root = GetAncestor(window, 2 /* GA_ROOT */);
-        return PostMessageW(root != 0 ? root : window, WM_INPUTLANGCHANGEREQUEST, 0, hkl);
+        return PostMessageW(WindowsKeyboardLayouts.InputWindow(window), WM_INPUTLANGCHANGEREQUEST, 0, hkl);
     }
 
     // ---------------------------------------------------------------- keep awake
@@ -744,6 +781,8 @@ public sealed partial class WinPlatform : IPlatform
                     if (typingThread is { IsAlive: true } && !typingThread.Join(TimeSpan.FromSeconds(5))) throw;
                     // Failed startup has already been logged by its owning thread.
                 }
+                var deferred = _systemShortcuts.ReleaseForShutdown();
+                if (deferred != 0) Send([(deferred, false)]);
                 try { hook.Dispose(); }
                 catch (SharpHook.HookException e) when (e.Result == SharpHook.Data.UioHookResult.Failure)
                 {
