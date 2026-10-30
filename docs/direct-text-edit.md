@@ -63,6 +63,30 @@ fallback. UI Automation TextPattern alone can read ranges but cannot replace one
 ValuePattern replacement would risk formatting and editor undo semantics and is not used here.
 Additional platform/editor adapters can implement the same explicit result contract.
 
+For Windows Teams, verified single-line replacements up to 4096 UTF-16 units use Unicode
+SendInput instead of Ctrl+V. Automatic correction selects the tracked range and types the
+replacement in one input batch; manual commands replace the independently verified selection.
+The source/result verification accepts exactly one copied paragraph terminator only when
+the rest matches the known input or retained result. Explicit multiline selections keep their
+real line breaks and use clipboard paste. No clipboard retry follows an uncertain Unicode write.
+
+Teams must finish exporting Copy before its selection is collapsed: moving the caret in the
+same input batch can produce a partial or stale word. A lazily installed native keyboard hook
+protects only the automatically selected range. Continuing physical input cancels the edit,
+collapses that range, and replays the intercepted events in order, including modifier/key-up
+events. Private input-stream barriers acknowledge cleanup before another operation starts;
+these markers never reach an editor. Other editors keep the existing copy/collapse batch.
+Reading and switching an input source resolves the focused GUI thread within the original
+window: a WebView2 renderer can have a different HKL from its host.
+
+Modifier-only layout gestures invalidate a conversion without moving its caret. They advance
+the editing/input version but not the separate caret-ownership version. Protected Copy therefore
+uses two predicates: whether selection/editing may continue, and whether the already selected
+range is still ours to collapse. Cleanup still requires the original window, focused input and
+foreground version; typing, navigation and mouse input revoke caret ownership. Delayed-Copy
+tests exercise the physical-release translator for Alt+Shift and unbound Ctrl+Shift, for both
+manual and automatic conversion, with adjacent text to detect extra caret movement.
+
 ## Verification
 
 Regression tests reproduce loss of an entire recent word, or conversion of only its final letter,

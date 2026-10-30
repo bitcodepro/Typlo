@@ -17,6 +17,18 @@ internal static class Program
     public static int Main(string[] args)
     {
         Args = args;
+        if (OperatingSystem.IsWindows() && args is ["--selftest-html-copy", var htmlFile, var plain])
+        {
+            // Isolated self-test producer: publish materialized formats in one native clipboard
+            // transaction instead of racing OLE delayed rendering against clipboard monitoring.
+            try
+            {
+                using var clipboard = new Platform.Windows.WinPlatform(monitorClipboard: false);
+                clipboard.SetRichText(plain, File.ReadAllText(htmlFile), null);
+                return 0;
+            }
+            catch (Exception e) { Console.Error.WriteLine(e.GetType().Name + ": " + e.Message); return 1; }
+        }
         if (args.Contains("--update-probe"))
         {
             try { return UpdateProbe.WorkerAsync().GetAwaiter().GetResult(); }

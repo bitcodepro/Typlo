@@ -6,8 +6,11 @@ namespace Typlo.App.Platform.Shared;
 /// <summary>One typed character, or a signal that the typed text so far no longer leads up to the caret.</summary>
 public readonly record struct TypedKey(char Char, bool Reset, bool Backspace, Typlo.Core.Hotkeys.Hotkey? Shortcut = null)
 {
+    /// <summary>A modifier-only layout gesture invalidates conversion, without moving the caret.</summary>
+    public bool LayoutGesture { get; init; }
     public static TypedKey ForChar(char c) => new(c, false, false);
     public static readonly TypedKey ResetKey = new('\0', true, false);
+    public static readonly TypedKey LayoutGestureKey = ResetKey with { LayoutGesture = true };
     public static readonly TypedKey BackspaceKey = new('\0', false, true);
     /// <summary>A key combination such as Ctrl+V or Ctrl+Alt+Shift+Z; it may move the caret (unless it is Typlo's own hotkey).</summary>
     public static TypedKey ForShortcut(Typlo.Core.Hotkeys.Hotkey? shortcut) => new('\0', true, false, shortcut);
@@ -46,7 +49,9 @@ internal static class TypingEvents
     /// Consumes a key press (key code, raw code) Typlo itself injected, on platforms whose hook does not flag them.
     /// </param>
     public static void Attach(IGlobalHook hook, Action<TypedKey> raise, Func<KeyCode, ushort, bool>? isOwnPress = null,
-        Func<KeyCode, ushort, bool, char?>? physicalCharacter = null)
+        Func<KeyCode, ushort, bool, char?>? physicalCharacter = null,
+        Func<Typlo.Core.Hotkeys.Hotkey, bool>? ownsModifierShortcut = null,
+        Func<KeyboardHookEventArgs, bool>? isPhysicalEvent = null)
     {
         var down = new HashSet<KeyCode>();
         // Effective key state also follows injected releases (otherwise Shift/Ctrl can get stuck).
@@ -54,19 +59,28 @@ internal static class TypingEvents
         // neither start nor complete a modifier-only layout chord.
         var physicalModifiers = new HashSet<KeyCode>();
         var layoutChordPending = false;
+        var layoutChordModifiers = Typlo.Core.Hotkeys.KeyModifiers.None;
+        bool Physical(KeyboardHookEventArgs e) => isPhysicalEvent?.Invoke(e) ?? !e.IsEventSimulated;
         hook.KeyReleased += (_, e) =>
         {
             bool reset;
+            Typlo.Core.Hotkeys.Hotkey? chord = null;
             lock (down)
             {
                 down.Remove(e.Data.KeyCode);
-                if (!e.IsEventSimulated) physicalModifiers.Remove(e.Data.KeyCode);
-                reset = !e.IsEventSimulated && layoutChordPending && physicalModifiers.Count == 0;
-                if (reset) layoutChordPending = false;
+                if (Physical(e)) physicalModifiers.Remove(e.Data.KeyCode);
+                reset = Physical(e) && layoutChordPending && physicalModifiers.Count == 0;
+                if (reset)
+                {
+                    layoutChordPending = false;
+                    chord = new(layoutChordModifiers, "");
+                    layoutChordModifiers = Typlo.Core.Hotkeys.KeyModifiers.None;
+                }
             }
             // Modifier-only Alt+Shift / Ctrl+Shift commonly changes the input layout. A full hotkey
             // clears the pending chord on its main key, so Typlo's own shortcuts preserve the input run.
-            if (reset) raise(TypedKey.ResetKey);
+            if (reset) raise(chord is not null && ownsModifierShortcut?.Invoke(chord) == true
+                ? TypedKey.ForShortcut(chord) : TypedKey.LayoutGestureKey);
         };
         hook.KeyPressed += (_, e) =>
         {
@@ -84,9 +98,9 @@ internal static class TypingEvents
                 if (down.Contains(KeyCode.VcLeftMeta) || down.Contains(KeyCode.VcRightMeta)) mods |= Typlo.Core.Hotkeys.KeyModifiers.Win;
                 shortcut = mods != Typlo.Core.Hotkeys.KeyModifiers.None;
                 if (shift) mods |= Typlo.Core.Hotkeys.KeyModifiers.Shift;
-                if (!e.IsEventSimulated && !own)
+                if (Physical(e) && !own)
                 {
-                    if (!modifier) layoutChordPending = false;
+                    if (!modifier) { layoutChordPending = false; layoutChordModifiers = Typlo.Core.Hotkeys.KeyModifiers.None; }
                     else
                     {
                         physicalModifiers.Add(code);
@@ -94,6 +108,16 @@ internal static class TypingEvents
                         var physicalCtrlAlt = physicalModifiers.Any(key => key is KeyCode.VcLeftControl or KeyCode.VcRightControl
                             or KeyCode.VcLeftAlt or KeyCode.VcRightAlt);
                         if (physicalShift && physicalCtrlAlt) layoutChordPending = true;
+                        if (layoutChordPending)
+                            foreach (var physical in physicalModifiers)
+                                layoutChordModifiers |= physical switch
+                                {
+                                    KeyCode.VcLeftControl or KeyCode.VcRightControl => Typlo.Core.Hotkeys.KeyModifiers.Ctrl,
+                                    KeyCode.VcLeftShift or KeyCode.VcRightShift => Typlo.Core.Hotkeys.KeyModifiers.Shift,
+                                    KeyCode.VcLeftAlt or KeyCode.VcRightAlt => Typlo.Core.Hotkeys.KeyModifiers.Alt,
+                                    KeyCode.VcLeftMeta or KeyCode.VcRightMeta => Typlo.Core.Hotkeys.KeyModifiers.Win,
+                                    _ => Typlo.Core.Hotkeys.KeyModifiers.None,
+                                };
                     }
                 }
             }

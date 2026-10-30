@@ -63,7 +63,7 @@ public class TypingEventsTests
         _hook.Press(KeyCode.VcLeftShift);
         _hook.Release(KeyCode.VcLeftShift);
         _hook.Release(modifier);
-        Assert.Equal([TypedKey.ResetKey], _raised);
+        Assert.Equal([TypedKey.LayoutGestureKey], _raised);
     }
 
     [Fact]
@@ -112,7 +112,7 @@ public class TypingEventsTests
         Assert.Empty(_raised);
         _hook.Release(KeyCode.VcLeftShift);
         _hook.Release(KeyCode.VcLeftControl);
-        Assert.Equal([TypedKey.ResetKey], _raised);
+        Assert.Equal([TypedKey.LayoutGestureKey], _raised);
     }
 
     [Fact]
@@ -124,7 +124,24 @@ public class TypingEventsTests
         _hook.Release(KeyCode.VcC, simulated: true);
         _hook.Release(KeyCode.VcLeftShift);
         _hook.Release(KeyCode.VcLeftControl);
-        Assert.Equal([TypedKey.ResetKey], _raised);
+        Assert.Equal([TypedKey.LayoutGestureKey], _raised);
+    }
+
+    [Theory]
+    [InlineData(KeyCode.VcLeftAlt)]
+    [InlineData(KeyCode.VcLeftControl)]
+    public void PhysicalReleaseClassificationKeepsLayoutCancellationDistinctFromCaretMovement(KeyCode modifier)
+    {
+        var hook = new FakeHook(); var observed = new List<TypedKey>();
+        TypingEvents.Attach(hook, observed.Add, isPhysicalEvent: _ => true);
+        hook.Press(modifier, simulated: true); hook.Press(KeyCode.VcLeftShift, simulated: true);
+        hook.Release(KeyCode.VcLeftShift, simulated: true); hook.Release(modifier, simulated: true);
+        var change = Assert.Single(observed);
+        Assert.True(change.Reset); Assert.True(change.LayoutGesture);
+        hook.Press(KeyCode.VcLeft); hook.Release(KeyCode.VcLeft);
+        Assert.Equal(TypedKey.ResetKey, observed[^1]); Assert.False(observed[^1].LayoutGesture);
+        hook.Press(KeyCode.VcBackspace);
+        Assert.False(observed[^1].LayoutGesture);
     }
 
     [Fact]

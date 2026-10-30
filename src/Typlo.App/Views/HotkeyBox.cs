@@ -16,9 +16,12 @@ public sealed class HotkeyBox : TextBox
         IsReadOnly = true;
         PlaceholderText = Services.Loc.T("hotkey.placeholder");
         Cursor = new Cursor(StandardCursorType.Hand);
+        LostFocus += (_, _) => { _modifiers.Clear(); _modifierCandidate = false; };
     }
 
     public event Action? HotkeyChanged;
+    private bool _modifierCandidate;
+    private readonly HashSet<Key> _modifiers = [];
 
     public string HotkeyText
     {
@@ -29,6 +32,14 @@ public sealed class HotkeyBox : TextBox
     protected override void OnKeyDown(KeyEventArgs e)
     {
         e.Handled = true;
+        if (e.Key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift)
+        {
+            _modifiers.Add(e.Key);
+            if (_modifiers.Any(k => k is Key.LeftCtrl or Key.RightCtrl) && _modifiers.Any(k => k is Key.LeftShift or Key.RightShift) &&
+                (e.KeyModifiers & (AvKeyModifiers.Alt | AvKeyModifiers.Meta)) == 0) _modifierCandidate = true;
+            return;
+        }
+        _modifierCandidate = false;
         if (e.KeyModifiers == AvKeyModifiers.None && e.Key is Key.Back or Key.Delete or Key.Escape)
         {
             if (e.Key != Key.Escape) { Text = ""; HotkeyChanged?.Invoke(); }
@@ -46,6 +57,16 @@ public sealed class HotkeyBox : TextBox
         if (e.KeyModifiers.HasFlag(AvKeyModifiers.Meta)) mods |= HkModifiers.Win;
         Text = new Hotkey(mods, name).ToString();
         HotkeyChanged?.Invoke();
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        _modifiers.Remove(e.Key);
+        if (_modifierCandidate && _modifiers.Count == 0)
+        {
+            _modifierCandidate = false; Text = "Ctrl+Shift"; HotkeyChanged?.Invoke(); e.Handled = true;
+        }
+        base.OnKeyUp(e);
     }
 
     private static string? KeyName(Key key) => key switch

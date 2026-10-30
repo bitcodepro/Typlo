@@ -23,6 +23,7 @@ public sealed class ShortcutsWindow : Window
         string Key(string hotkey) => string.IsNullOrWhiteSpace(hotkey) ? Loc.T("hotkey.off") : hotkey;
 
         Section(body, Loc.T("shortcuts.global"), Loc.T("shortcuts.globalHint"));
+        Row(body, Key(settings.LayoutSwitchHotkey), Loc.T("hk.inputCycle"));
         Row(body, Key(settings.ToggleHotkey), Loc.T("shortcuts.toggle"));
         foreach (var lh in settings.LayoutHotkeys)
             if (layouts?.FirstOrDefault(l => l.Id == lh.LayoutId) is { } layout)

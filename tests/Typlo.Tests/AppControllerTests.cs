@@ -1962,6 +1962,14 @@ public sealed partial class AppControllerTests : IDisposable
         public bool SupportsScreenCapture { get; set; }
         public bool SupportsAutomaticWordCorrection { get; set; }
         public bool SupportsTextRangeBatch { get; set; }
+        public bool SupportsUnicodeTextReplacement { get; set; }
+        public string CopySuffix = "";
+        public bool TryReplacePreviousText(nint window, int characters, string text, Func<bool> valid)
+        {
+            if (!SupportsUnicodeTextReplacement || !valid() || Window != window) return false;
+            for (var i = 0; i < characters; i++) Document.Left(true, false);
+            return TypeText(text, valid);
+        }
         private bool _inTextRangeBatch;
         private readonly Queue<Action> _deferredTyping = new();
         public bool DropNextPaste;
@@ -2073,7 +2081,7 @@ public sealed partial class AppControllerTests : IDisposable
         {
             LastCopyWasLine = Document.Selection.Length == 0 && CopyLineWhenUnselected;
             if (LastCopyWasLine) SetText(Document.Text + "\n");
-            else if (Document.Selection.Length > 0) SetText(Document.Selection);
+            else if (Document.Selection.Length > 0) SetText(Document.Selection + CopySuffix);
             if (LastCopyWasLine || Document.Selection.Length > 0) ClipboardOwner = Window; // the target app copied
             AfterCopy?.Invoke();
         }

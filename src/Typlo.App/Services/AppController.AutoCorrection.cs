@@ -7,7 +7,7 @@ public sealed partial class AppController
 {
     private readonly LanguageLexicon _lexicon = new(Path.Combine(AppContext.BaseDirectory, "language-data", "words.sqlite3"));
     private readonly Lock _automaticWordLock = new();
-    private sealed record AutomaticWord(RecentTyping.Run Run, long Version, long Generation);
+    private sealed record AutomaticWord(RecentTyping.Run Run, long Version, long Generation, long Started);
     private AutomaticWord? _pendingAutomaticWord;
     private bool _automaticWordWorker;
     private Task _automaticWordTask = Task.CompletedTask;
@@ -26,7 +26,7 @@ public sealed partial class AppController
         if (run is null || run.Keys.Length < 3 || run.Keys[^1] != ' ' || char.IsWhiteSpace(run.Keys[^2])) return;
         lock (_automaticWordLock)
         {
-            _pendingAutomaticWord = new(run, version, _automaticWordGeneration);
+            _pendingAutomaticWord = new(run, version, _automaticWordGeneration, System.Diagnostics.Stopwatch.GetTimestamp());
             if (_automaticWordWorker) return;
             _automaticWordWorker = true;
             _automaticWordTask = Task.Run(DrainAutomaticWordsAsync);

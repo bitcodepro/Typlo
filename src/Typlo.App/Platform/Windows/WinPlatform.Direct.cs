@@ -11,6 +11,26 @@ public sealed partial class WinPlatform
     public bool SupportsAutomaticWordCorrection => SupportsDirectTextEditing;
     public bool SupportsTextRangeBatch => SupportsDirectTextEditing;
     public ulong? ImmediateClipboardSequence => GetClipboardSequenceNumber();
+    public unsafe bool TryReplacePreviousText(nint window, int characters, string text, Func<bool> stillValid)
+    {
+        if (characters is < 1 or > 2000 || text.Length > 4096 || text.IndexOfAny(['\n', '\r', '\t']) >= 0 ||
+            !SupportsUnicodeTextReplacement || !stillValid() || ForegroundWindow != window) return false;
+        var inputs = new INPUT[characters * 2 + text.Length * 2 + 2];
+        var offset = 0;
+        void Key(ushort vk, ushort scan, uint flags) => inputs[offset++] = new INPUT
+        { type = INPUT_KEYBOARD, ki = new KEYBDINPUT { wVk = vk, wScan = scan, dwFlags = flags, dwExtraInfo = OwnInputTag } };
+        Key(VK_SHIFT, 0, 0);
+        for (var i = 0; i < characters; i++) { Key(0x25, 0, 0); Key(0x25, 0, KEYEVENTF_KEYUP); }
+        Key(VK_SHIFT, 0, KEYEVENTF_KEYUP);
+        foreach (var c in text) { Key(0, c, KEYEVENTF_UNICODE); Key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP); }
+        if (!stillValid() || ForegroundWindow != window) return false;
+        fixed (INPUT* pointer = inputs)
+        {
+            if (SendInput((uint)inputs.Length, pointer, sizeof(INPUT)) == inputs.Length) return true;
+        }
+        Send([(VK_SHIFT, true)]);
+        throw new IOException("Windows could not send the complete Unicode replacement. The action will not be retried.");
+    }
     public bool TrySendTextRangeBatch(nint window, int characters, bool paste, Func<bool> stillValid)
     {
         if (characters is < 1 or > 2000 || !SupportsTextRangeBatch || !stillValid() || ForegroundWindow != window) return false;

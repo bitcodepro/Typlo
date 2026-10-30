@@ -666,15 +666,26 @@ internal static class SelfTest
             var endFragment = startFragment + System.Text.Encoding.UTF8.GetByteCount(fragment);
             var endHtml = endFragment + System.Text.Encoding.UTF8.GetByteCount(post);
             var cfHtml = string.Format(header, startHtml, endHtml, startFragment, endFragment) + pre + fragment + post;
-            var file = Path.Combine(Path.GetTempPath(), "typlo-selftest-html.txt");
+            var file = Path.Combine(Path.GetTempPath(), "typlo-selftest-html-" + Guid.NewGuid().ToString("N") + ".txt");
             await File.WriteAllTextAsync(file, cfHtml);
-            _ = RunPowerShellAsync($"""
-                Add-Type -AssemblyName System.Windows.Forms
-                $d = New-Object System.Windows.Forms.DataObject
-                $d.SetData('HTML Format', [System.IO.File]::ReadAllText('{file}'))
-                $d.SetData('UnicodeText', '{plain}')
-                [System.Windows.Forms.Clipboard]::SetDataObject($d, $true); Start-Sleep -Seconds 1
-                """);
+            try
+            {
+                var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardError = true, RedirectStandardOutput = true };
+                if (string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath), "dotnet", StringComparison.OrdinalIgnoreCase))
+                    start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Typlo.dll"));
+                start.ArgumentList.Add("--selftest-html-copy"); start.ArgumentList.Add(file); start.ArgumentList.Add(plain);
+                using var producer = Process.Start(start)!;
+                var error = producer.StandardError.ReadToEndAsync();
+                var output = producer.StandardOutput.ReadToEndAsync();
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                try { await producer.WaitForExitAsync(timeout.Token); }
+                catch (OperationCanceledException) { producer.Kill(entireProcessTree: true); throw new TimeoutException("HTML clipboard producer timed out"); }
+                await output;
+                if (producer.ExitCode != 0) throw new IOException("HTML clipboard producer failed: " + await error);
+                await error;
+            }
+            finally { File.Delete(file); }
         }
 
         public static async Task<string> ReadHtmlWindowsAsync() => (await RunPowerShellAsync("""
@@ -733,15 +744,20 @@ internal static class SelfTest
         {
             var psi = new ProcessStartInfo("powershell.exe")
             {
-                ArgumentList = { "-NoProfile", "-STA", "-NonInteractive", "-Command", script },
+                ArgumentList = { "-NoProfile", "-STA", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; " + script },
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
             };
             using var p = Process.Start(psi)!;
-            var output = await p.StandardOutput.ReadToEndAsync();
-            await p.WaitForExitAsync();
-            return output;
+            var output = p.StandardOutput.ReadToEndAsync();
+            var error = p.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try { await p.WaitForExitAsync(timeout.Token); }
+            catch (OperationCanceledException) { p.Kill(entireProcessTree: true); throw new TimeoutException("Clipboard test producer timed out"); }
+            if (p.ExitCode != 0) throw new IOException("Clipboard test producer failed: " + await error);
+            await error;
+            return await output;
         }
     }
 }

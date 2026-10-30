@@ -24,7 +24,7 @@ internal sealed class BackgroundHost : IDisposable
     private readonly SemaphoreSlim _uiCommands = new(1, 1);
     private Process? _ui;
     private long _settingsSession;
-    private readonly string _uiPipe = "Typlo.Ui." + Environment.ProcessId;
+    private string? _uiPipe;
     private bool _stopping;
     private bool _installing;
     private readonly bool _diagnostic;
@@ -67,15 +67,16 @@ internal sealed class BackgroundHost : IDisposable
     private RuntimeReply State()
     {
         int pid = 0;
+        string? uiPipe = null;
         lock (_uiLock)
         {
             var child = _ui;
             // HasExited can synchronously raise Exited; its handler clears/disposes _ui.
-            try { if (child is not null && !child.HasExited && ReferenceEquals(_ui, child)) pid = child.Id; }
+            try { if (child is not null && !child.HasExited && ReferenceEquals(_ui, child)) { pid = child.Id; uiPipe = _uiPipe; } }
             catch (InvalidOperationException) { }
         }
         var (count, _) = _controller.Store.Stats();
-        return new(true, FailedHotkeys: _controller.FailedHotkeys.ToArray(), PausedUntil: _controller.PausedUntil, UiProcessId: pid, StoredItems: count, AvailableVersion: _updates.Available?.Version.ToString());
+        return new(true, FailedHotkeys: _controller.FailedHotkeys.ToArray(), PausedUntil: _controller.PausedUntil, UiProcessId: pid, StoredItems: count, AvailableVersion: _updates.Available?.Version.ToString(), UiChannel: uiPipe);
     }
     private Task<RuntimeReply> DispatchAsync(RuntimeRequest command)
     {
@@ -208,10 +209,11 @@ internal sealed class BackgroundHost : IDisposable
         try
         {
             Process? current;
-            lock (_uiLock) { if (_stopping || _installing) return; current = _ui; }
+            string? pipe;
+            lock (_uiLock) { if (_stopping || _installing) return; current = _ui; pipe = _uiPipe; }
             if (current is not null)
             {
-                try { await new RuntimeClient(_uiPipe).CallAsync(new("ui", Args: args), 3000); return; }
+                try { await new RuntimeClient(pipe!).CallAsync(new("ui", Args: args), 3000); return; }
                 catch (Exception e) when (e is IOException or OperationCanceledException)
                 {
                     try { if (!current.WaitForExit(500)) { Log.Error("UI is not responding", e); return; } }
@@ -221,13 +223,16 @@ internal sealed class BackgroundHost : IDisposable
             lock (_uiLock)
             {
                 if (_stopping || _installing) return;
+                // A local trace connected to the previous UI's endpoint after a new PID was
+                // published. Give each generation a distinct name, regardless of handle lifetime.
+                var uiPipe = "Typlo.Ui." + Environment.ProcessId + "." + Guid.NewGuid().ToString("N");
                 var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, WorkingDirectory = AppContext.BaseDirectory };
                 if (string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath), "dotnet", StringComparison.OrdinalIgnoreCase))
                     start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Typlo.dll"));
-                foreach (var arg in new[] { "--ui", "--runtime-channel", _runtime.Name, "--ui-pipe", _uiPipe, "--profile", _paths.DataDir, "--parent-pid", Environment.ProcessId.ToString(CultureInfo.InvariantCulture) }) start.ArgumentList.Add(arg);
+                foreach (var arg in new[] { "--ui", "--runtime-channel", _runtime.Name, "--ui-pipe", uiPipe, "--profile", _paths.DataDir, "--parent-pid", Environment.ProcessId.ToString(CultureInfo.InvariantCulture) }) start.ArgumentList.Add(arg);
                 if (_diagnostic) start.ArgumentList.Add("--diagnostic-ui");
                 foreach (var arg in args) start.ArgumentList.Add(arg);
-                var child = Process.Start(start) ?? throw new IOException("Cannot start UI"); _ui = child;
+                var child = Process.Start(start) ?? throw new IOException("Cannot start UI"); _ui = child; _uiPipe = uiPipe;
                 _settingsSession = 0;
                 _platform.UiProcessId = child.Id;
                 child.EnableRaisingEvents = true;
@@ -236,12 +241,12 @@ internal sealed class BackgroundHost : IDisposable
                     lock (_uiLock)
                     {
                         if (!ReferenceEquals(_ui, child)) return;
-                        _ui = null; _platform.UiProcessId = 0; _controller.EndExternalCapture();
+                        _ui = null; _uiPipe = null; _platform.UiProcessId = 0; _controller.EndExternalCapture();
                         if (!_stopping) _controller.RegisterHotkeys();
                         child.Dispose();
                     }
                 };
-                if (child.HasExited) { _ui = null; _platform.UiProcessId = 0; _controller.EndExternalCapture(); _controller.RegisterHotkeys(); child.Dispose(); }
+                if (child.HasExited) { _ui = null; _uiPipe = null; _platform.UiProcessId = 0; _controller.EndExternalCapture(); _controller.RegisterHotkeys(); child.Dispose(); }
             }
         }
         catch (Exception e) { Log.Error("Cannot open UI", e); }
@@ -249,13 +254,13 @@ internal sealed class BackgroundHost : IDisposable
     }
     private void CloseUi()
     {
-        Process? child; lock (_uiLock) { child = _ui; }
+        Process? child; string? pipe; lock (_uiLock) { child = _ui; pipe = _uiPipe; }
         if (child is null) return;
         try
         {
             if (!child.HasExited)
             {
-                try { new RuntimeClient(_uiPipe).Call(new("ui", Args: ["--shutdown"]), 1000); }
+                try { new RuntimeClient(pipe!).Call(new("ui", Args: ["--shutdown"]), 1000); }
                 catch (Exception e) when (e is IOException or OperationCanceledException) { }
                 if (!child.WaitForExit(3000)) child.Kill(entireProcessTree: true);
             }

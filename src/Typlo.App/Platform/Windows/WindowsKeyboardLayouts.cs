@@ -25,7 +25,7 @@ internal static partial class WindowsKeyboardLayouts
     // Invert the same mapping before comparing recent keys/snippet triggers with physical layout maps.
     public static char? PhysicalCharacter(KeyCode code, ushort raw, bool shift)
     {
-        var inputThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
+        var inputThread = GetWindowThreadProcessId(InputWindow(GetForegroundWindow()), out _);
         return PhysicalCharacter(code, raw, shift, GetKeyboardLayout(0), GetKeyboardLayout(inputThread));
     }
 
@@ -130,7 +130,8 @@ internal static partial class WindowsKeyboardLayouts
 
     public static string? Current(nint window)
     {
-        var thread = window == 0 ? 0 : GetWindowThreadProcessId(window, out _);
+        var input = InputWindow(window);
+        var thread = input == 0 ? 0 : GetWindowThreadProcessId(input, out _);
         var handle = GetKeyboardLayout(thread);
         return handle == 0 ? null : Id(handle);
     }
@@ -144,8 +145,20 @@ internal static partial class WindowsKeyboardLayouts
         GetKeyboardLayoutList(handles.Length, handles);
         var handle = handles.FirstOrDefault(h => unchecked((uint)(long)h) == bits);
         if (handle == 0) return false;
-        var root = GetAncestor(window, 2);
-        return PostMessageW(root != 0 ? root : window, WM_INPUTLANGCHANGEREQUEST, 0, handle);
+        return PostMessageW(InputWindow(window), WM_INPUTLANGCHANGEREQUEST, 0, handle);
+    }
+
+    // Embedded WebView2 input can belong to another GUI thread/process. Its HKL can differ
+    // from the host window's HKL. Resolve only the focus within this exact root window.
+    internal static nint InputWindow(nint window)
+    {
+        if (window == 0) return 0;
+        var root = GetAncestor(window, 2); if (root == 0) root = window;
+        var thread = GetWindowThreadProcessId(root, out _);
+        var info = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
+        if (GetGUIThreadInfo(root == GetForegroundWindow() ? 0 : thread, ref info) && info.Focus != 0 &&
+            GetAncestor(info.Focus, 2) == root) return info.Focus;
+        return window;
     }
 
     [LibraryImport("user32.dll")] private static partial nint GetKeyboardLayout(uint thread);

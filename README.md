@@ -79,11 +79,23 @@ Tray utility for Windows, macOS and Linux (Avalonia / .NET 10):
    - Rules match the process owning the window. For PowerShell hosted inside Windows Terminal,
      choose **WindowsTerminal**, whose window title is shown in the process picker.
    - If you keep typing, automatic correction cancels. Its copy/read stage collapses the selection
-     before waiting for clipboard data, so further typing appends instead of replacing the word.
+     before waiting for clipboard data. Teams retains a protected selection until its asynchronous
+     Copy completes; continuing input first closes that selection and then reaches the editor in order.
      Manual conversion remains available for every convertible layout and does not require a
      dictionary match. Session/input/clipboard checks still apply; unresponsive editors can be skipped.
+   - On Windows, **Ctrl+Shift** switches only the input language, without converting existing text.
+     Application rules apply: EN/UK for Teams, the configured global cycle for an empty rule,
+     or one language activated on entry. Assign another shortcut or disable it in Settings.
+     Plain Ctrl+Shift is intercepted on full release; Ctrl+Shift+C/arrows retain their usual actions.
+     Only installed input sources can be selected; add Ukrainian in Windows if it is absent.
+   - Short single-line replacements in Teams use verified Unicode keyboard input instead of Ctrl+V.
+     Known copied word/result ranges accept one virtual paragraph terminator. Multiline text retains
+     the guarded clipboard path. Uncertain writes are never retried through a different mechanism.
 4. **Screenshots (Windows)** – tray → Screenshots or Settings → Screenshots:
-   - `Ctrl+Alt+Shift+S`: capture to the clipboard; `Ctrl+Alt+Shift+F`: capture for saving.
+   - `Win+Shift+S`: capture to the clipboard; `Ctrl+Alt+Shift+F`: capture for saving.
+     While Typlo is running, its capture replaces Windows snipping for Win+Shift+S. Closing Typlo
+     restores the system shortcut automatically. Upgrades migrate the old default capture shortcut;
+     custom bindings remain unchanged.
      Both shortcuts are configurable and can be disabled. Choose the default rectangle/freehand shape in Settings;
      `R` / `F` changes shape in the overlay before drawing.
    - The desktop freezes before the selection overlay opens. Drag with the crosshair, then release to capture.

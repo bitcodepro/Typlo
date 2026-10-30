@@ -76,3 +76,16 @@ action labels, thread IDs and traces. No payloads or window titles are recorded.
 
 The original single CI timeout cannot be attributed retroactively beyond its available logs. These
 checks verify the independently reproduced blocking path rather than treating a green retry as proof.
+
+A later local Native AOT repetition recorded a different failure: after the harness observed
+the previous UI process exit and the resident reported a new UI PID, a client connected to a
+pipe whose reported server PID still belonged to the previous UI. Writing the request header
+then failed with `ERROR_BROKEN_PIPE`. The logs establish the stale endpoint, not the precise
+Windows handle-retention mechanism. Each UI generation now receives a fresh pipe name;
+the resident publishes that name alongside the corresponding PID in its state reply. Production
+commands and the harness use that generation's name. The repeated UI test rejects name reuse
+across processes. No command is retried as a workaround for an uncertain write.
+
+The runtime harness binds its client from one current-state reply after every UI launch:
+Settings, screenshot capture and both OCR/history lifetimes. This keeps channel uniqueness
+checks while ensuring capture/OCR commands never use the previously closed Settings channel.

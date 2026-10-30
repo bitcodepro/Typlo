@@ -29,6 +29,10 @@ internal static class Program
         }
         if (args.FirstOrDefault() == "--direct-edit-check")
             return DirectEditCheck.RunAsync(args[1]).GetAwaiter().GetResult();
+        if (args.FirstOrDefault() == "--system-shortcuts-check")
+            return SystemShortcutCheck.RunAsync(args[1]).GetAwaiter().GetResult();
+        if (args.FirstOrDefault() == "--interactive-input-check")
+            return InteractiveInputCheck.RunAsync(args[1]).GetAwaiter().GetResult();
         if (args.FirstOrDefault() == "--typing-hook-lifecycle-check")
         {
             try
@@ -137,6 +141,37 @@ internal sealed class EditorCheck : Form
             Native.EnumChildWindows(Handle, (window, _) => { Native.GetWindowThreadProcessId(window, out var pid); childPids.Add(pid); return true; }, 0);
             _report.Add($"Host PID={hostPid}; clipboard PID={ownerPid}; native child PIDs={string.Join(',', childPids)}; accepted={platform.IsClipboardOwnedBy(Handle)}");
             if (ownerPid == 0 || ownerPid == hostPid) throw new InvalidOperationException("Fixture did not produce a cross-process clipboard owner");
+
+            await Check("input layout follows the focused WebView2 thread rather than the host", async () =>
+            {
+                await Prepare("", select: false);
+                var input = WindowsKeyboardLayouts.InputWindow(Handle);
+                var inputThread = Native.GetWindowThreadProcessId(input, out _);
+                var hostThread = Native.GetWindowThreadProcessId(Handle, out _);
+                if (input == Handle || inputThread == hostThread) throw new InvalidOperationException("Fixture does not have a separate input GUI thread");
+                var prior = new nint[Native.GetKeyboardLayoutList(0, null)]; Native.GetKeyboardLayoutList(prior.Length, prior);
+                var ukrainian = LoadKeyboardLayoutW("00000422", 0);
+                if (ukrainian == 0 || english is null) throw new InvalidOperationException("Fixture layouts unavailable");
+                try
+                {
+                    Native.PostMessageW(input, Native.WM_INPUTLANGCHANGEREQUEST, 0, ukrainian);
+                    await Until(() => platform.GetCurrentLayoutId(Handle) == WindowsKeyboardLayouts.Id(ukrainian), "Focused input HKL was read from the host thread");
+                    if (GetKeyboardLayout(hostThread) == GetKeyboardLayout(inputThread))
+                        throw new InvalidOperationException("Fixture did not establish different host/input layouts");
+                    SystemShortcutCheck.Keys((0x53, false), (0x53, true));
+                    await ExpectTextEventually("і");
+                    if (!platform.SwitchKeyboardLayout(Handle, english)) throw new InvalidOperationException("Input layout switch was rejected");
+                    await Until(() => platform.GetCurrentLayoutId(Handle) == english.Id, "Layout request was sent to the host instead of its input field");
+                    SystemShortcutCheck.Keys((0x53, false), (0x53, true));
+                    await ExpectTextEventually("іs");
+                }
+                finally
+                {
+                    platform.SwitchKeyboardLayout(Handle, english);
+                    await Until(() => platform.GetCurrentLayoutId(Handle) == english.Id, "Fixture did not restore the input layout");
+                    if (!prior.Contains(ukrainian)) UnloadKeyboardLayout(ukrainian);
+                }
+            });
 
             await Check("explicit selection in a WebView2 contenteditable", async () =>
             {
@@ -286,6 +321,189 @@ internal sealed class EditorCheck : Form
                     await ExpectText("готовое при\u00a0");
                 }
                 finally { await _browser.ExecuteScriptAsync("document.getElementById('editor').removeEventListener('input',window.serializeSpace)"); }
+            });
+
+            foreach (var automatic in new[] { false, true })
+            foreach (var interruption in new[] { 0, 1, 2, 3 })
+            {
+                var interruptCopy = interruption != 0;
+                var gestureName = interruption == 2 ? " after physical Alt+Shift" : interruption == 3 ? " after disabled physical Ctrl+Shift" : "";
+                await Check(interruptCopy ? $"continuing input{gestureName} during delayed Teams {(automatic ? "automatic" : "manual")} copy preserves the word" :
+                    automatic ? "dictionary correction in a Teams-like editor with delayed paragraph copy and blocked paste" :
+                    "manual repeat and Undo in a Teams-like editor with delayed paragraph copy and blocked paste", async () =>
+                {
+                    var active = true;
+                    var continuedKeys = 0;
+                    var modifierResets = 0;
+                    var gestureSent = false;
+                    Task gesture = Task.CompletedTask;
+                    void ObserveContinuation(TypedKey key)
+                    {
+                        if (key.Char is 'x' or 'y' or 'Z') Interlocked.Increment(ref continuedKeys);
+                        if (key.LayoutGesture) Interlocked.Increment(ref modifierResets);
+                    }
+                    async Task ModifierGestureAsync()
+                    {
+                        var first = interruption == 2 ? (ushort)0xa4 : (ushort)0xa2;
+                        SystemShortcutCheck.Keys((first, false), (0xa0, false), (0xa0, true), (first, true));
+                        await Until(() => Volatile.Read(ref modifierResets) == 1, "Physical modifier-release cancellation was not observed");
+                        // Windows applies its native layout gesture asynchronously. Let it finish
+                        // before restoring the fixture source; the test never changes OS preferences.
+                        await Task.Delay(100);
+                        if (english is null) throw new InvalidOperationException("English fixture layout unavailable");
+                        platform.SwitchKeyboardLayout(Handle, english);
+                        await Until(() => platform.GetCurrentLayoutId(Handle) == english.Id, "Fixture did not restore English after native layout gesture");
+                        SystemShortcutCheck.Keys((0x58, false), (0x58, true));
+                    }
+                    platform.KeyTyped += ObserveContinuation;
+                    void OnCopy(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+                    {
+                        if (!active) return;
+                        using var message = JsonDocument.Parse(e.WebMessageAsJson);
+                        if (message.RootElement.TryGetProperty("fixtureCopy", out var value)) platform.SetText(value.GetString()!);
+                        if (interruptCopy && !gestureSent && message.RootElement.TryGetProperty("fixtureCopyStarted", out _))
+                        {
+                            gestureSent = true;
+                            if (interruption > 1) gesture = ModifierGestureAsync();
+                            else SystemShortcutCheck.Keys((0x58, false), (0x58, true), (0x59, false), (0x59, true),
+                                (0xa0, false), (0x5a, false), (0x5a, true), (0xa0, true));
+                        }
+                    }
+                    _browser.CoreWebView2.WebMessageReceived += OnCopy;
+                    platform.ApplicationProcessProbe = target => target == Handle ? "ms-teams" : null;
+                    try
+                    {
+                        using var controller = Controller(platform, automatic ? "teams-auto" : "teams-manual", recent: true);
+                        var source = english ?? KeyboardLayouts.English;
+                        controller.ConfigureDiagnosticLayouts([source, KeyboardLayouts.Russian, KeyboardLayouts.Ukrainian]);
+                        var settings = controller.Settings.Clone(); settings.Layouts = [source.Id, "ru", "uk"]; settings.AutoCorrectEnabled = automatic;
+                        settings.LayoutSwitchHotkey = "";
+                        controller.ApplySettings(settings); TypingEvents.AcceptSimulated = true;
+                        platform.AcceptSimulatedSystemShortcuts = interruptCopy;
+                        platform.AcceptSimulatedPhysicalInput = interruption > 1;
+                        await platform.WaitForTypingWatchAsync();
+                        if (english is not null) platform.SwitchKeyboardLayout(Handle, english);
+                        await Prepare("готовое ", select: false, formatted: true);
+                        await _browser.ExecuteScriptAsync("""
+                            (() => {const e=document.getElementById('editor');window.blockedPastes=0;
+                            window.fixtureCopy=e => {e.preventDefault();chrome.webview.postMessage({fixtureCopyStarted:true});
+                              setTimeout(()=>{const text=getSelection().toString();
+                              chrome.webview.postMessage({fixtureCopy:text ? text+'\r\n' : ''});},window.fixtureCopyDelay);};
+                            window.fixturePaste=e => {window.blockedPastes++;e.preventDefault();};
+                            e.addEventListener('copy',window.fixtureCopy);e.addEventListener('paste',window.fixturePaste);})()
+                            """);
+                        await _browser.ExecuteScriptAsync($"window.fixtureCopyDelay={(interruption > 1 ? 350 : 60)}");
+                        const string marker = "teams-copy-clipboard-fixture";
+                        platform.SetText(marker);
+                        await TypeFixture(platform);
+                        if (interruption > 1)
+                            await _browser.ExecuteScriptAsync("""
+                                (()=>{const selection=getSelection(),range=selection.getRangeAt(0),tail=document.createTextNode('TAIL');
+                                range.insertNode(tail);range.setStartBefore(tail);range.collapse(true);
+                                selection.removeAllRanges();selection.addRange(range);})()
+                                """);
+                        if (platform.CanRetainDirectInputTarget(Handle, platform.FocusedInputElement))
+                            throw new InvalidOperationException("Teams fixture unexpectedly used native Edit replacement");
+                        if (automatic) platform.SendChord(KeyModifiers.None, "Space");
+                        else await controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
+                        var suffix = automatic ? " " : "";
+                        if (interruptCopy)
+                        {
+                            var typed = interruption > 1 ? "x" : "xyZ";
+                            var tail = interruption > 1 ? "TAIL" : "";
+                            await ExpectNormalizedText("готовое ghb" + suffix + typed + tail);
+                            await controller.AutoCorrectionIdleAsync();
+                            await gesture;
+                            await ExpectNormalizedText("готовое ghb" + suffix + typed + tail);
+                            if (continuedKeys != typed.Length) throw new InvalidOperationException("Continuing input was observed more than once or lost");
+                            if (new[] { 0x58, 0x59, 0x5a, 0xa0, 0xa2, 0xa4 }.Any(key => (Native.GetAsyncKeyState(key) & 0x8000) != 0))
+                                throw new InvalidOperationException("Continuing input left a key or modifier held");
+                            return;
+                        }
+                        await ExpectNormalizedText("готовое при" + suffix);
+                        await controller.AutoCorrectionIdleAsync();
+                        await controller.ConvertSelectionAsync(KeyboardLayouts.English);
+                        await ExpectNormalizedText("готовое ghb" + suffix);
+                        await controller.UndoLastTransformAsync();
+                        await ExpectNormalizedText("готовое при" + suffix);
+                        if (await _browser.ExecuteScriptAsync("window.blockedPastes") != "0") throw new InvalidOperationException("Replacement still depended on Ctrl+V");
+                        if (platform.ReadText() != marker) throw new InvalidOperationException("Teams replacement did not restore the clipboard");
+                    }
+                    finally
+                    {
+                        active = false;
+                        try { await gesture; } catch { /* The scenario reports its input/expectation failure. */ }
+                        platform.ApplicationProcessProbe = null; platform.AcceptSimulatedSystemShortcuts = false;
+                        platform.AcceptSimulatedPhysicalInput = false;
+                        if (english is not null)
+                        {
+                            platform.SwitchKeyboardLayout(Handle, english);
+                            await Until(() => platform.GetCurrentLayoutId(Handle) == english.Id, "Fixture did not restore English during cleanup");
+                        }
+                        platform.KeyTyped -= ObserveContinuation;
+                        _browser.CoreWebView2.WebMessageReceived -= OnCopy;
+                        await _browser.ExecuteScriptAsync("""
+                            (()=>{const e=document.getElementById('editor');e.removeEventListener('copy',window.fixtureCopy);
+                            e.removeEventListener('paste',window.fixturePaste);})()
+                            """);
+                    }
+                });
+            }
+
+            await Check("protected selection drops stale batches and closes exactly once before continuing input", async () =>
+            {
+                using var controller = Controller(platform, "protected-selection", recent: true);
+                platform.AcceptSimulatedSystemShortcuts = true;
+                try
+                {
+                    await platform.WaitForTypingWatchAsync();
+                    await Prepare("ghbTAIL", select: false);
+                    await _browser.ExecuteScriptAsync("""
+                        (()=>{const e=document.getElementById('editor'),r=document.createRange();
+                        r.setStart(e.firstChild,3);r.collapse(true);getSelection().removeAllRanges();getSelection().addRange(r);})()
+                        """);
+                    using (platform.ProtectCopySelection(Handle, () => true))
+                    {
+                        await platform.SelectPreviousCharactersAsync(Handle, 3, () => true);
+                        SystemShortcutCheck.Keys((0x58, false), (0x58, true));
+                        await ExpectTextEventually("ghbxTAIL");
+                        // Represents an already queued selection whose worker validity check ran
+                        // before the user key. Its closed lease must suppress every native event.
+                        await platform.SelectPreviousCharactersAsync(Handle, 3, () => true);
+                        SystemShortcutCheck.Keys((0x59, false), (0x59, true));
+                        await ExpectTextEventually("ghbxyTAIL");
+                    }
+                    SystemShortcutCheck.Keys((0x5a, false), (0x5a, true));
+                    await ExpectTextEventually("ghbxyzTAIL");
+                }
+                finally { platform.AcceptSimulatedSystemShortcuts = false; }
+            });
+
+            await Check("canceled protected selection still collapses an owned range before dropping a late batch", async () =>
+            {
+                using var controller = Controller(platform, "canceled-protected-selection", recent: true);
+                platform.AcceptSimulatedSystemShortcuts = true;
+                try
+                {
+                    await platform.WaitForTypingWatchAsync();
+                    await Prepare("ghbTAIL", select: false);
+                    await _browser.ExecuteScriptAsync("""
+                        (()=>{const e=document.getElementById('editor'),r=document.createRange();
+                        r.setStart(e.firstChild,3);r.collapse(true);getSelection().removeAllRanges();getSelection().addRange(r);})()
+                        """);
+                    var valid = true;
+                    using (platform.ProtectCopySelection(Handle, () => valid, () => true))
+                    {
+                        await platform.SelectPreviousCharactersAsync(Handle, 3, () => true);
+                        valid = false; // Cancellation did not move the caret or change our range.
+                        await platform.SelectPreviousCharactersAsync(Handle, 1, () => true);
+                        SystemShortcutCheck.Keys((0x58, false), (0x58, true));
+                        await ExpectTextEventually("ghbxTAIL");
+                    }
+                    SystemShortcutCheck.Keys((0x59, false), (0x59, true));
+                    await ExpectTextEventually("ghbxyTAIL");
+                }
+                finally { platform.AcceptSimulatedSystemShortcuts = false; }
             });
 
             foreach (var takesFocus in new[] { false, true })
@@ -473,8 +691,11 @@ internal sealed class EditorCheck : Form
 
     private async Task Check(string name, Func<Task> check)
     {
+        var filter = Environment.GetEnvironmentVariable("TYPLO_WEBVIEW_FILTER");
+        if (!string.IsNullOrEmpty(filter) && !name.Contains(filter, StringComparison.OrdinalIgnoreCase)) return;
         try { await check(); _report.Add("PASS " + name); }
         catch (Exception e) { _report.Add("FAIL " + name + ": " + e); }
+        finally { await File.WriteAllLinesAsync(Path.Combine(_work, "webview2.txt"), _report); }
     }
 
     private async Task Prepare(string text, bool select, bool formatted = false)
@@ -566,6 +787,21 @@ internal sealed class EditorCheck : Form
         await ExpectText(expected);
     }
 
+    private async Task ExpectNormalizedText(string expected)
+    {
+        var watch = Stopwatch.StartNew(); string? actual;
+        do
+        {
+            actual = JsonSerializer.Deserialize<string>(await _browser.ExecuteScriptAsync("document.getElementById('editor').innerText.replace(/\\u00a0/g,' ')") );
+            if (actual == expected) return;
+            await Task.Delay(20);
+        } while (watch.Elapsed < TimeSpan.FromSeconds(5));
+        throw new InvalidOperationException($"Expected fixture text '{expected}', got '{actual}'");
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern nint LoadKeyboardLayoutW(string id, uint flags);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool UnloadKeyboardLayout(nint layout);
+    [DllImport("user32.dll")] private static extern nint GetKeyboardLayout(uint thread);
     private static async Task Until(Func<bool> condition, string failure)
     {
         var timer = Stopwatch.StartNew();
