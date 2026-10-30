@@ -44,6 +44,7 @@ For PowerShell inside Windows Terminal, choose the **WindowsTerminal** process.
 
 - **Automatic correction after Space**, using offline dictionaries; switch it on or off in Settings.
 - **Personal words** survive updates. Add each form you use (`писать`, `напиши`, `написал`) separately.
+- **Dictionaries and diagnostics** in Settings: search/edit personal words, import/export JSON, check dictionary health and see why auto-correction skipped a word.
 - **Multiline snippets** with a `{cursor}` marker for the insertion point.
 - **Screenshot drawing tools** and encrypted clipboard history for text, images and files.
 

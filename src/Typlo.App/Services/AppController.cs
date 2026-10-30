@@ -66,6 +66,7 @@ public sealed partial class AppController : IDisposable
     private AppController(IPlatform platform, AppPaths paths, IKeyProtector keyProtector, bool diagnostic, RuntimeClient? remote)
     {
         _remote = remote;
+        _dictionaryDataDir = paths.DataDir;
         _personal = new(Path.Combine(paths.DataDir, "personal-words.sqlite3"));
         _images = new LatestImageWorker(StoreCapturedImage);
         _memory = new IdleMemoryReclaimer(() => _convertGate.CurrentCount > 0 && !_capturingScreen && !_editingSettings && !_images.IsBusy && Environment.TickCount64 - Interlocked.Read(ref _lastInputAt) > 1500);
@@ -399,6 +400,7 @@ public sealed partial class AppController : IDisposable
     {
         if (!_platform.Capabilities.SimulateInput && !_platform.SupportsDirectTextEditing)
         {
+            if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Unsupported;
             Log.Info("Text tools: synthetic input is not available on this platform/session");
             return;
         }
@@ -406,7 +408,7 @@ public sealed partial class AppController : IDisposable
         var originInput = Interlocked.Read(ref _typingVersion);
         if (automaticWord is null) await StopPendingAutomaticWords();
         else if (!AutomaticWordIsCurrent(automaticWord)) return;
-        if (!await EnterManualTextOperationAsync(origin)) return;
+        if (!await EnterManualTextOperationAsync(origin)) { if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Busy; return; }
         var timing = new TransformTiming();
         try
         {
@@ -447,14 +449,17 @@ public sealed partial class AppController : IDisposable
         }
         catch (SelectionChangedException)
         {
+            if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Canceled;
             Log.Info("Text tool stopped: the copied selection is no longer verified");
         }
         catch (ClipboardTakenException)
         {
+            if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.ClipboardChanged;
             Log.Info("Text tool stopped: another app changed the clipboard meanwhile");
         }
         catch (Exception e)
         {
+            if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Failed;
             Log.Error("Text tool failed", e);
         }
         finally

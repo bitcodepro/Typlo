@@ -85,6 +85,7 @@ public partial class App
                     ShowHistory(target);
                 }
                 else if (args.Contains("--shortcuts")) ShowShortcuts();
+                else if (args.Contains("--dictionary")) ShowDictionary();
                 else if (args.Contains("--update")) ShowUpdateDialog();
                 else if (args.Contains("--update-failed")) _ = ShowUpdateFailureAsync();
                 else if (Array.IndexOf(args, "--add-word") is var wordIndex and >= 0)
@@ -126,6 +127,9 @@ public partial class App
             }
             _uiChannel = new RuntimeChannel(uiPipe, async request =>
             {
+                if (diagnosticUi && request.Command == "dictionary-manager-fixture")
+                    return await Dispatcher.UIThread.InvokeAsync(() => new RuntimeReply(_dictionaryWindow?.IsVisible == true,
+                        WordPage: _dictionaryWindow?.DisplayedPage, AutoCorrection: _dictionaryWindow?.DisplayedStatus));
                 if (diagnosticUi && request.Command == "update-dialog-fixture")
                     return await Dispatcher.UIThread.InvokeAsync(() => new RuntimeReply(_updateDialog?.IsVisible == true,
                         Error: _updateDialog?.DisplayedError, AvailableVersion: _updates.Available?.Version.ToString()));

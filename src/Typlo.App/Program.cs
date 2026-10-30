@@ -17,13 +17,19 @@ internal static class Program
     public static int Main(string[] args)
     {
         Args = args;
-        if (OperatingSystem.IsWindows() && args is ["--selftest-text-copy", var textFile])
+        if (OperatingSystem.IsWindows() && args is [var copyMode, var copyFile] && copyMode is "--selftest-text-copy" or "--selftest-image-copy")
         {
             try
             {
                 using var clipboard = new Platform.Windows.WinPlatform(monitorClipboard: false);
                 if (Console.ReadLine() != "copy") return 1;
-                clipboard.SetText(File.ReadAllText(textFile));
+                if (copyMode == "--selftest-text-copy") clipboard.SetText(File.ReadAllText(copyFile));
+                else
+                {
+                    var png = File.ReadAllBytes(copyFile);
+                    var image = ImageCodec.DecodeBgra(png);
+                    clipboard.SetImage(png, image.Bgra, image.Width, image.Height);
+                }
                 Console.WriteLine("COPIED"); Console.Out.Flush();
                 return Console.ReadLine() == "exit" ? 0 : 1;
             }

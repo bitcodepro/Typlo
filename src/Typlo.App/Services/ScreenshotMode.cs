@@ -27,6 +27,7 @@ internal static class ScreenshotMode
         {
             var s = controller.Settings.Clone();
             s.AutoCorrectEnabled = false;
+            s.AddWordHotkey = ""; s.LayoutSwitchHotkey = "";
             s.ToggleHotkey = ""; s.ClipboardHotkey = ""; s.CaseHotkey = ""; s.TranslitHotkey = ""; s.UndoHotkey = ""; s.ScreenshotCopyHotkey = ""; s.ScreenshotSaveHotkey = ""; s.StartWithSystem = false;
             controller.ApplySettings(s);
 
@@ -171,6 +172,18 @@ internal static class ScreenshotMode
                 var personalWord = new PersonalWordDialog(controller, "напиши", "ru");
                 personalWord.Show(); await Task.Delay(250);
                 Save(personalWord, Path.Combine(outDir, "personal_dictionary.png")); personalWord.Close();
+
+                Loc.SetLanguage("ru");
+                await controller.AddPersonalWordsAsync([new("напиши", "ru"), new("писать", "ru"), new("написал", "ru"), new("рев'ювати", "uk"), new("sql", "en")]);
+                var manager = new DictionaryWindow(controller); manager.Show(); await Task.Delay(500);
+                Save(manager, Path.Combine(outDir, "dictionary_manager.png")); manager.Close();
+                var diagnosis = new DictionaryWindow(controller, diagnostics: true); diagnosis.Show(); await Task.Delay(500);
+                diagnosis.DisplayStatus(new(true, true, DictionaryHealth.Ready,
+                    [new(DateTimeOffset.UtcNow, AutoCorrectionReason.Corrected, 194, "en", "ru"),
+                     new(DateTimeOffset.UtcNow, AutoCorrectionReason.UnknownWord, 153, "en"),
+                     new(DateTimeOffset.UtcNow, AutoCorrectionReason.Canceled, 210, "en", "uk"),
+                     new(DateTimeOffset.UtcNow, AutoCorrectionReason.ClipboardChanged, 224, "en", "ru")]));
+                await Task.Delay(50); Save(diagnosis, Path.Combine(outDir, "dictionary_diagnostics.png")); diagnosis.Close();
 
                 // The update dialog checks the feed when it opens (TYPLO_UPDATE_FEED points it at a test server).
                 using var updates = new UpdateService(dataDir);

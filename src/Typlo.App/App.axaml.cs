@@ -89,7 +89,7 @@ public partial class App : Application
         CreateTray();
         desktop.Exit += (_, _) => Cleanup();
 
-        if (Program.Args.Contains("--capture")) OnCommand(Program.Args);
+        if (Program.Args.Contains("--capture") || Program.Args.Contains("--dictionary")) OnCommand(Program.Args);
         else if (_controller.FailedHotkeys.Count > 0 || !Program.Args.Contains("--tray") && !File.Exists(paths.SettingsFile + ".seen"))
         {
             File.WriteAllText(paths.SettingsFile + ".seen", "");
@@ -120,6 +120,8 @@ public partial class App : Application
             });
         else if (args.Contains("--settings"))
             Dispatcher.UIThread.Post(ShowSettings);
+        else if (args.Contains("--dictionary"))
+            Dispatcher.UIThread.Post(ShowDictionary);
         else if (Array.IndexOf(args, "--convert") is var i and >= 0)
         {
             var target = i + 1 < args.Length ? args[i + 1] : "toggle";
@@ -252,6 +254,8 @@ public partial class App : Application
         menu.Items.Add(history);
         menu.Items.Add(settings);
         menu.Items.Add(shortcuts);
+        var dictionary = new NativeMenuItem(Loc.T("manage.title"));
+        dictionary.Click += (_, _) => ShowDictionary(); menu.Items.Add(dictionary);
         menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(keepAwake);
         menu.Items.Add(BuildPauseItem());
@@ -283,6 +287,16 @@ public partial class App : Application
 
     private UpdateDialog? _updateDialog;
     private PersonalWordDialog? _personalWordDialog;
+    private DictionaryWindow? _dictionaryWindow;
+
+    private void ShowDictionary()
+    {
+        if (_controller is null) return;
+        if (_dictionaryWindow is { IsVisible: true }) { _dictionaryWindow.Activate(); return; }
+        _dictionaryWindow = new(_controller);
+        _dictionaryWindow.Closed += (_, _) => _dictionaryWindow = null;
+        _dictionaryWindow.Show(); _dictionaryWindow.Activate();
+    }
 
     private void ShowPersonalWord(string word, string? language)
     {
@@ -326,6 +340,7 @@ public partial class App : Application
             Reopen = () => Dispatcher.UIThread.Post(ShowSettings),
             CheckForUpdates = ShowUpdateDialog,
             ShowShortcuts = ShowShortcuts,
+            ShowDictionary = ShowDictionary,
             CaptureScreenshot = (mode, destination) => _ = _screenCapture!.StartAsync(mode, destination),
         };
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;

@@ -9,6 +9,29 @@ Confirm its language to add that exact form; the same dialog can remove a person
 entry. Add `писать`, `напиши` and `написал` separately. Personal words are stored on
 disk under `data/`, survive upgrades and respect application language rules.
 
+Open **Dictionaries and diagnostics** from the tray or Settings to manage personal
+words. Search matches the beginning of a word, ignoring case and normalizing Unicode;
+filter by language and browse pages of 50 entries. Select an entry to edit its exact
+form/language or delete it. The editor also adds several forms, one per line.
+Duplicate edits preserve the original entry and report the conflict.
+
+JSON export includes all personal entries, independently of the current filter.
+Import merges entries and skips duplicates; an invalid or incomplete file imports
+nothing. Files are streamed with a disk-backed staging table, limited to 100,000
+entries and 64 MiB per import. Format: `typlo-personal-dictionary`, version `1`, with
+a `words` array of objects containing `word` and `language` (en/ru/uk/fr/es/it/de/pt).
+Built-in vocabulary and its frequencies are never modified by these operations.
+
+The **Auto-correction** tab shows dictionary-reader health and the last 20 automatic
+attempts: timestamp, reason, language codes and elapsed time. It distinguishes unknown
+words, ambiguity, language restrictions, input/focus/manual cancellation, changed
+clipboard and unconfirmed replacement. A replacement is reported as confirmed only
+after verification. The trail stays in memory and contains no typed words, clipboard
+contents or process names. Saving a report exports this metadata, not raw logs.
+**Check / retry search** closes and reopens dictionary readers, validates the pack
+and personal database, and re-enables lookup after a transient failure without
+restarting Typlo. It never deletes user data or repairs a corrupt file silently.
+
 1. **Layout fix** – select text typed in the wrong layout and press a hotkey: `ghbdtn` → `привет`.
    - `Ctrl+Alt+Shift+Space` – next layout in your cycle: choose two, three, four or more languages and set their order.
    - Layouts and physical key maps come from the enabled input sources in Windows, macOS or XKB.

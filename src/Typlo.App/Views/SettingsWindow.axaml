@@ -72,6 +72,7 @@
         <CheckBox x:Name="AutoCorrectBox" Margin="0,6,0,0" Content="{l:Tr auto.enabled}" />
         <TextBlock Classes="hint" Text="{l:Tr auto.hint}" Margin="28,0,0,4" TextWrapping="Wrap" />
         <TextBlock x:Name="DictionaryStatus" Classes="hint" Margin="28,0,0,4" TextWrapping="Wrap" />
+        <Button x:Name="ManageDictionaryButton" Content="{l:Tr manage.title}" Margin="28,4,0,8" />
         <CheckBox x:Name="SwitchLayoutBox" Margin="0,4,0,0"
                   Content="{l:Tr settings.switchLayout}" />
         <Grid ColumnDefinitions="*,Auto" Margin="0,16,0,6">

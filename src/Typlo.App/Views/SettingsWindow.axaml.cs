@@ -37,6 +37,7 @@ public partial class SettingsWindow : Window
 
     /// <summary>Opens the list of all keyboard shortcuts.</summary>
     public Action? ShowShortcuts { get; set; }
+    public Action? ShowDictionary { get; set; }
     public Action<CaptureShape, CaptureDestination>? CaptureScreenshot { get; set; }
     private bool _saved;
 
@@ -94,8 +95,13 @@ public partial class SettingsWindow : Window
         // The passive Windows UI delegates input to the resident process. Other platforms report
         // session capabilities directly (e.g. no global typing watch under Wayland).
         AutoCorrectBox.IsEnabled = OperatingSystem.IsWindows() || controller.Platform.SupportsAutomaticWordCorrection;
-        DictionaryStatus.Text = Loc.T(!AutoCorrectBox.IsEnabled ? "auto.unavailable" :
-            controller.DictionaryAvailable ? "auto.ready" : "auto.missing");
+        DictionaryStatus.Text = Loc.T("health.NotChecked");
+        ManageDictionaryButton.Click += (_, _) => ShowDictionary?.Invoke();
+        Opened += async (_, _) =>
+        {
+            try { DictionaryStatus.Text = Loc.T("health." + (await controller.GetAutomaticStatusAsync()).Health); }
+            catch { DictionaryStatus.Text = Loc.T("health.Failed"); }
+        };
         HistoryEnabledBox.IsChecked = _draft.HistoryEnabled;
         MaxItemsBox.Value = _draft.MaxItems;
         MaxTotalBox.Value = _draft.MaxTotalMegabytes;

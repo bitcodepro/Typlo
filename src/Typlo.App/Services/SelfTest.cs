@@ -116,14 +116,14 @@ internal static class SelfTest
             await Check("external text copy is captured (encrypted store)", async () =>
             {
                 var marker = "selftest-" + Guid.NewGuid().ToString("N")[..8];
-                External.SetText(marker);
+                await using var copy = await External.CopyTextAsync(marker);
                 return await WaitFor(() => controller.Store.List().Any(e => e.PreviewText == marker), 5000)
-                    ? null : "not captured within 5 s";
+                    ? null : "acknowledged external text was not captured within 5 s";
             });
 
             await Check("external image copy is captured with thumbnail", async () =>
             {
-                External.SetImage(await MakePng(200, 120));
+                await using var copy = await External.CopyImageAsync(await MakePng(200, 120));
                 var ok = await WaitFor(() => controller.Store.List().Any(e => e is { Kind: ClipKind.Image, Width: 200, Height: 120, Thumbnail.Length: > 0 }), 5000);
                 return ok ? null : "image not captured";
             });
@@ -347,12 +347,10 @@ internal static class SelfTest
 
             await Check("second press pastes the previous item", async () =>
             {
-                External.SetText("older-item-55");
+                await using var olderCopy = await External.CopyTextAsync("older-item-55");
                 if (!await WaitFor(() => controller.Store.List().Any(e => e.PreviewText == "older-item-55"), 5000)) return "older not captured";
-                await Task.Delay(1500); // let the external writer finish
-                External.SetText("newer-item-55");
+                await using var newerCopy = await External.CopyTextAsync("newer-item-55");
                 if (!await WaitFor(() => controller.Store.List().Any(e => e.PreviewText == "newer-item-55"), 5000)) return "newer not captured";
-                await Task.Delay(1500);
                 await controller.PastePreviousAsync(0, paste: false);
                 var text = platform.ReadText();
                 var order = string.Join(" | ", controller.Store.List().OrderByDescending(e => e.LastUsed).Take(3).Select(e => $"{e.Kind}:{e.PreviewText}"));
@@ -417,12 +415,12 @@ internal static class SelfTest
             await Check("paused history stores nothing, resume stores again", async () =>
             {
                 controller.PauseHistory(TimeSpan.FromMinutes(1));
-                External.SetText("paused-secret-777");
+                await using var pausedCopy = await External.CopyTextAsync("paused-secret-777");
                 await Task.Delay(2000);
                 var stored = controller.Store.List().Any(e => e.PreviewText == "paused-secret-777");
                 controller.ResumeHistory();
                 if (stored) return "stored while paused";
-                External.SetText("after-resume-777");
+                await using var resumedCopy = await External.CopyTextAsync("after-resume-777");
                 return await WaitFor(() => controller.Store.List().Any(e => e.PreviewText == "after-resume-777"), 5000)
                     ? null : "not stored after resume";
             });
@@ -507,6 +505,7 @@ internal static class SelfTest
     {
         // Self-test must not grab the user's real shortcuts or touch autostart.
         s.ToggleHotkey = "";
+        s.CaseHotkey = ""; s.TranslitHotkey = ""; s.UndoHotkey = ""; s.AddWordHotkey = ""; s.LayoutSwitchHotkey = "";
         s.AutoCorrectEnabled = false;
         s.ClipboardHotkey = "";
         s.ScreenshotCopyHotkey = "";
@@ -667,25 +666,62 @@ internal static class SelfTest
             foreach (var argument in arguments) start.ArgumentList.Add(argument);
             return start;
         }
-        public static void SetText(string text)
+        public static async Task<ClipboardProducer> CopyTextAsync(string text)
         {
-            if (OperatingSystem.IsWindows()) _ = RunPowerShellAsync($"Set-Clipboard -Value '{text}'; Start-Sleep -Seconds 1");
+            if (OperatingSystem.IsWindows()) return await ClipboardProducer.StartAsync("--selftest-text-copy", System.Text.Encoding.UTF8.GetBytes(text));
             else if (OperatingSystem.IsMacOS()) Proc.Run("/usr/bin/pbcopy", [], System.Text.Encoding.UTF8.GetBytes(text));
             else Proc.Run("xclip", ["-selection", "clipboard", "-t", "UTF8_STRING", "-i"], System.Text.Encoding.UTF8.GetBytes(text), captureOutput: false);
+            return new(null, null);
         }
 
-        public static void SetImage(byte[] png)
+        public static async Task<ClipboardProducer> CopyImageAsync(byte[] png)
         {
+            if (OperatingSystem.IsWindows()) return await ClipboardProducer.StartAsync("--selftest-image-copy", png);
             var file = Path.Combine(Path.GetTempPath(), "typlo-selftest.png");
             File.WriteAllBytes(file, png);
-            if (OperatingSystem.IsWindows())
-                _ = RunPowerShellAsync($"""
-                    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-                    [System.Windows.Forms.Clipboard]::SetImage([System.Drawing.Image]::FromFile('{file}')); Start-Sleep -Seconds 1
-                    """);
-            else if (OperatingSystem.IsMacOS())
+            if (OperatingSystem.IsMacOS())
                 Proc.Run("/usr/bin/osascript", ["-e", $"set the clipboard to (read (POSIX file \"{file}\") as «class PNGf»)"]);
             else Proc.Run("xclip", ["-selection", "clipboard", "-t", "image/png", "-i"], png, captureOutput: false);
+            return new(null, null);
+        }
+
+        internal sealed class ClipboardProducer(Process? process, string? payload) : IAsyncDisposable
+        {
+            internal static async Task<ClipboardProducer> StartAsync(string mode, byte[] data)
+            {
+                var file = Path.Combine(Path.GetTempPath(), "typlo-copy-" + Guid.NewGuid().ToString("N"));
+                await File.WriteAllBytesAsync(file, data);
+                Process? child;
+                try { child = Process.Start(SelfStart(mode, file)) ?? throw new IOException("Cannot start clipboard producer"); }
+                catch { File.Delete(file); throw; }
+                var lease = new ClipboardProducer(child, file);
+                var errors = child.StandardError.ReadToEndAsync();
+                try
+                {
+                    await child.StandardInput.WriteLineAsync("copy"); await child.StandardInput.FlushAsync();
+                    if (await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)) != "COPIED")
+                        throw new IOException("Clipboard producer failed: " + await errors);
+                    return lease;
+                }
+                catch { await lease.DisposeAsync(); throw; }
+            }
+            public async ValueTask DisposeAsync()
+            {
+                if (process is null) return;
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        await process.StandardInput.WriteLineAsync("exit"); await process.StandardInput.FlushAsync();
+                        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                    }
+                }
+                finally
+                {
+                    try { if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(); } }
+                    finally { process.Dispose(); if (payload is not null) File.Delete(payload); }
+                }
+            }
         }
 
         public static async Task SetHtmlWindowsAsync(string fragment, string plain)
