@@ -3,7 +3,7 @@ using Typlo.Core.Layouts;
 namespace Typlo.Core.Languages;
 
 /// <summary>Conservative keyboard correction from exact disk vocabulary evidence, not translation.</summary>
-public sealed class LayoutLanguageDetector(LanguageLexicon lexicon)
+public sealed class LayoutLanguageDetector(LanguageLexicon lexicon, PersonalLexicon? personal = null)
 {
     private const int Reliable = 120, Margin = 32, AmbiguityMargin = 24;
     private sealed record Candidate(KeyboardLayout Layout, string Text, int Score);
@@ -12,13 +12,18 @@ public sealed class LayoutLanguageDetector(LanguageLexicon lexicon)
     {
         if (physicalKeys.Length is < 2 or > 128 || physicalKeys.Any(char.IsWhiteSpace) || !source.SupportsConversion) return null;
         if (!lexicon.Languages.Contains(source.LanguageCode.Split('-', '_')[0].ToLowerInvariant())) return null;
-        var cache = new Dictionary<string, WordEvidence?>();
+        var cache = new Dictionary<string, (WordEvidence? Corpus, byte Personal)>();
         var current = Read(source, physicalKeys, cache);
         // Avoid identifiers, addresses, paths and numbers. A punctuation key can still be a letter
         // in the intended layout (e.g. htdm.dftim), so punctuation alone is not a rejection.
         if (current.Text.Any(c => char.IsDigit(c) || c is '@' or '_' or '\\' or ':' or '=')) return null;
+        bool ReliableCandidate(Candidate candidate) => candidate.Score >= Reliable ||
+            // Exact Cyrillic words such as «напиши» fall just below the subtitle-frequency
+            // cutoff. Accept that weaker evidence only for an unknown all-Latin source word.
+            (candidate.Score >= 110 && current.Score == 0 && current.Text.Length >= 4 &&
+             current.Text.All(char.IsAsciiLetter) && candidate.Text.All(c => c is >= '\u0400' and <= '\u04ff'));
         var candidates = allowed.Where(l => l.SupportsConversion).DistinctBy(l => l.Id)
-            .Select(l => Read(l, physicalKeys, cache)).Where(c => c.Score >= Reliable).ToArray();
+            .Select(l => Read(l, physicalKeys, cache)).Where(ReliableCandidate).ToArray();
         var best = candidates.OrderByDescending(c => c.Score).FirstOrDefault();
         if (best is null || best.Layout.Id == source.Id) return null;
         if (current.Score >= Reliable && best.Text != current.Text) return null;
@@ -29,7 +34,7 @@ public sealed class LayoutLanguageDetector(LanguageLexicon lexicon)
         return best.Layout;
     }
 
-    private Candidate Read(KeyboardLayout layout, string keys, Dictionary<string, WordEvidence?> cache)
+    private Candidate Read(KeyboardLayout layout, string keys, Dictionary<string, (WordEvidence? Corpus, byte Personal)> cache)
     {
         var rendered = LayoutConverter.Convert(keys, KeyboardLayouts.English, layout, forceSource: true);
         var text = LanguageLexicon.Normalize(rendered);
@@ -40,8 +45,9 @@ public sealed class LayoutLanguageDetector(LanguageLexicon lexicon)
         var index = -1;
         for (var i = 0; i < languages.Count; i++) if (languages[i] == code) { index = i; break; }
         if (index < 0) return new(layout, text, 0);
-        if (!cache.TryGetValue(token, out var found)) cache[token] = found = lexicon.Lookup(token);
-        if (found is not { } evidence) return new(layout, text, 0);
+        if (!cache.TryGetValue(token, out var found)) cache[token] = found = (lexicon.Lookup(token), personal?.Lookup(token) ?? 0);
+        if ((found.Personal & (1 << index)) != 0) return new(layout, text, 250);
+        if (found.Corpus is not { } evidence) return new(layout, text, 0);
         var manual = (evidence.SupplementMask & (1 << index)) != 0;
         return new(layout, text, Math.Max(evidence.CorpusWeights[index], manual ? 160 : 0));
     }

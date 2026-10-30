@@ -83,6 +83,7 @@ public partial class App : Application
         _updates.Start();
 
         _controller.ShowHistoryRequested += prev => Dispatcher.UIThread.Post(() => ShowHistory(prev));
+        _controller.PersonalWordRequested += (word, language) => Dispatcher.UIThread.Post(() => ShowPersonalWord(word, language));
         _screenCapture = new ScreenCaptureService(_controller);
         _controller.ScreenshotRequested += destination => Dispatcher.UIThread.Post(() => _ = _screenCapture.StartAsync(_controller.Settings.ScreenshotShape, destination));
         CreateTray();
@@ -173,11 +174,11 @@ public partial class App : Application
     {
         if (Program.IsRemoteUi)
         {
-            IpcServer.Send(["--install-update"]);
-            (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown(); return;
+            if (_updates is not null && _remoteRuntime is not null) await _updates.InstallRemoteAsync(_remoteRuntime);
+            return;
         }
         if (_updates is null) return;
-        if (await _updates.InstallAsync())
+        if (await _updates.InstallAsync(replace => _controller!.ReplaceUpdateFilesAsync(replace)))
             Dispatcher.UIThread.Post(() => (ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown());
     }
 
@@ -281,17 +282,31 @@ public partial class App : Application
     }
 
     private UpdateDialog? _updateDialog;
+    private PersonalWordDialog? _personalWordDialog;
+
+    private void ShowPersonalWord(string word, string? language)
+    {
+        if (_controller is null) return;
+        _personalWordDialog?.Close();
+        _personalWordDialog = new(_controller, word, language);
+        _personalWordDialog.Closed += (_, _) => _personalWordDialog = null;
+        _personalWordDialog.Show(); _personalWordDialog.Activate();
+    }
 
     /// <summary>Opens the "Check for updates" window (one at a time).</summary>
     public void ShowUpdateDialog()
+        => ShowUpdateDialog(null);
+
+    private void ShowUpdateDialog(string? error)
     {
         if (_updates is null) return;
         if (_updateDialog is { IsVisible: true })
         {
+            if (error is not null) _updateDialog.ShowInstallError(error);
             _updateDialog.Activate();
             return;
         }
-        _updateDialog = new UpdateDialog(_updates, InstallUpdateAsync);
+        _updateDialog = new UpdateDialog(_updates, InstallUpdateAsync, error);
         _updateDialog.Closed += (_, _) => _updateDialog = null;
         _updateDialog.Show();
         _updateDialog.Activate();

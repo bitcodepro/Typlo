@@ -66,6 +66,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Background Native AOT build failed' }
     $runtimeResults = Join-Path $results 'runtime'
     $runtimeExe = Join-Path $runtimeApp 'Typlo.exe'
+    $updateResults = Join-Path $runtimeResults 'update'
+    $updateCheck = Start-Process -FilePath $executable -ArgumentList ('--update-install-check "' + $runtimeExe + '" "' + $updateResults + '"') -WindowStyle Hidden -PassThru
+    if (!$updateCheck.WaitForExit(120000)) { $updateCheck.Kill($true); throw 'Update installation checks timed out' }
+    Get-Content -LiteralPath (Join-Path $updateResults 'update.txt')
+    if ($updateCheck.ExitCode -ne 0) { throw 'Update installation checks failed' }
     $arguments = '--background-runtime-check "' + $runtimeExe + '" "' + $runtimeResults + '"'
     $runtimeProcess = Start-Process -FilePath $executable -ArgumentList $arguments -WindowStyle Hidden -PassThru
     if (!$runtimeProcess.WaitForExit(120000)) { $runtimeProcess.Kill(); throw 'Background runtime checks timed out' }

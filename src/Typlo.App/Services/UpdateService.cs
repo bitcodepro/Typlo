@@ -37,6 +37,41 @@ public sealed class UpdateService : IDisposable
     public int? Progress { get; private set; }
 
     public string? LastError { get; private set; }
+    internal string[] RestartArguments { get; set; } = ["--updated", "--tray"];
+
+    internal void ReportInstallError(string? error)
+    {
+        LastError = error;
+        Changed?.Invoke();
+    }
+
+    // The resident owns installation; the UI stays alive to display download progress/errors.
+    // Never resend the start command if an acknowledgement or status request fails.
+    internal async Task InstallRemoteAsync(RuntimeClient client)
+    {
+        try
+        {
+            ReportInstallError(null);
+            var state = await client.CallAsync(new("update-start"));
+            if (!state.Ok) throw new IOException(state.Error);
+            while (true)
+            {
+                Progress = state.UpdateProgress;
+                LastError = state.UpdateError;
+                Changed?.Invoke();
+                if (!state.UpdateInstalling) break;
+                await Task.Delay(200);
+                state = await client.CallAsync(new("update-state"));
+                if (!state.Ok) throw new IOException(state.Error);
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Error("Update command/status failed", e);
+            ReportInstallError(e.Message);
+        }
+        finally { Progress = null; Changed?.Invoke(); }
+    }
 
     public UpdateService(string workDir)
     {
@@ -125,34 +160,39 @@ public sealed class UpdateService : IDisposable
     }
 
     /// <summary>Downloads, verifies and installs the update, then starts the new version. True if the app should exit.</summary>
-    public async Task<bool> InstallAsync()
+    public async Task<bool> InstallAsync(Func<Action, Task>? replaceFiles = null)
     {
         if (Available is not { } info || Interlocked.Exchange(ref _busy, 1) == 1) return false;
         var work = Path.Combine(_workDir, "update-" + info.Version);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         try
         {
             LastError = null;
+            Log.Info($"Update {info.Version}: downloading {info.ArchiveName}");
             SetProgress(0);
             if (Directory.Exists(work)) Directory.Delete(work, true);
             Directory.CreateDirectory(work);
 
             var archive = Path.Combine(work, info.ArchiveName);
-            await DownloadAsync(info.ArchiveUrl, archive);
-            var checksum = await _http.GetStringAsync(info.ChecksumUrl);
+            await DownloadAsync(info.ArchiveUrl, archive, timeout.Token);
+            var checksum = await _http.GetStringAsync(info.ChecksumUrl, timeout.Token);
             if (!UpdateInstaller.VerifyChecksum(archive, checksum, info.ArchiveName))
                 throw new InvalidDataException("Checksum mismatch: the download is damaged or was tampered with.");
 
             var staging = Path.Combine(work, "staging");
+            Log.Info($"Update {info.Version}: checksum verified; extracting");
             UpdateInstaller.Extract(archive, staging);
             var root = InstallRoot;
-            UpdateInstaller.Swap(staging, root);
+            Log.Info($"Update {info.Version}: replacing files in {root}");
+            void Replace() => UpdateInstaller.Swap(staging, root);
+            if (replaceFiles is null) Replace(); else await replaceFiles(Replace);
             Log.Info($"Installed {info.Version} into {root}");
 
             var exe = Environment.ProcessPath!; // the path now holds the new executable
             var psi = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(exe)! };
-            psi.ArgumentList.Add("--updated");
-            psi.ArgumentList.Add("--tray");
-            Process.Start(psi);
+            foreach (var argument in RestartArguments) psi.ArgumentList.Add(argument);
+            using var restarted = Process.Start(psi) ?? throw new IOException("Cannot restart the updated application.");
+            Log.Info($"Update {info.Version}: restart launched, PID {restarted.Id}");
             try { Directory.Delete(work, true); } catch (IOException) { }
             return true;
         }
@@ -170,19 +210,19 @@ public sealed class UpdateService : IDisposable
         }
     }
 
-    private async Task DownloadAsync(string url, string path)
+    private async Task DownloadAsync(string url, string path, CancellationToken token)
     {
-        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token);
         response.EnsureSuccessStatusCode();
         var total = response.Content.Headers.ContentLength ?? 0;
-        await using var source = await response.Content.ReadAsStreamAsync();
+        await using var source = await response.Content.ReadAsStreamAsync(token);
         await using var target = File.Create(path);
         var buffer = new byte[81920];
         long read = 0;
         int n;
-        while ((n = await source.ReadAsync(buffer)) > 0)
+        while ((n = await source.ReadAsync(buffer, token)) > 0)
         {
-            await target.WriteAsync(buffer.AsMemory(0, n));
+            await target.WriteAsync(buffer.AsMemory(0, n), token);
             read += n;
             if (total > 0) SetProgress((int)(read * 100 / total));
         }

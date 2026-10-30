@@ -27,6 +27,7 @@ public sealed partial class AppController
         AutomaticLayoutOperation? automatic;
         lock (_applicationFocusLock)
         {
+            if (Volatile.Read(ref _updating) != 0) return false;
             Interlocked.Increment(ref _applicationFocusGeneration); _pendingApplicationFocus = null;
             automatic = _automaticLayoutOperation; automatic?.Stop.Cancel();
         }

@@ -5,6 +5,44 @@ namespace Typlo.Tests;
 
 public sealed partial class AppControllerTests
 {
+    [Theory]
+    [InlineData("yfgbib", "yfgbib", "en", "напиши")]
+    [InlineData("sql", "ыйд", "ru", "sql")]
+    [InlineData("sql", "ійд", "uk", "sql")]
+    public async Task ReportedWordsAreCorrectedAfterSpace(string keys, string typed, string source, string expected)
+    {
+        EnableAutomaticCorrection(native: true);
+        _platform.ActiveLayoutId = source;
+        _platform.TypeAs(keys + " ", typed + " ");
+        await _controller.AutoCorrectionIdleAsync();
+        Assert.Equal(expected + " ", _platform.Document.Text);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UpdateReleasesDictionaryAndCorrectionRecoversAfterReplacementOrFailure(bool fail)
+    {
+        EnableAutomaticCorrection(native: true);
+        _platform.Type("ghb "); await _controller.AutoCorrectionIdleAsync();
+        Assert.True(_controller.DictionaryIsOpen);
+        void Replace()
+        {
+            Assert.False(_controller.DictionaryIsOpen);
+            _platform.ActiveLayoutId = "en";
+            _platform.Type("ghb ");
+            if (fail) throw new IOException("Update fixture: locked destination");
+        }
+        if (fail) await Assert.ThrowsAsync<IOException>(() => _controller.ReplaceUpdateFilesAsync(Replace));
+        else await _controller.ReplaceUpdateFilesAsync(Replace);
+        await _controller.AutoCorrectionIdleAsync();
+        Assert.False(_controller.DictionaryIsOpen);
+        _platform.Type("ghb "); await _controller.AutoCorrectionIdleAsync();
+        Assert.True(_controller.DictionaryIsOpen);
+        Assert.EndsWith("при ", _platform.Document.Text);
+    }
+
     private void EnableAutomaticCorrection(bool native = false)
     {
         _platform.SupportsAutomaticWordCorrection = true;

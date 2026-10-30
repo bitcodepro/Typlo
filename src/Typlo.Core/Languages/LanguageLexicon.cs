@@ -40,7 +40,7 @@ public sealed class LanguageLexicon(string path) : IDisposable
             command.CommandText = "PRAGMA application_id";
             if (Convert.ToInt32(command.ExecuteScalar()) != 0x54594C44) throw new InvalidDataException("Not a Typlo vocabulary");
             command.CommandText = "PRAGMA user_version";
-            if (Convert.ToInt32(command.ExecuteScalar()) != 2) throw new InvalidDataException("Unsupported vocabulary version");
+            if (Convert.ToInt32(command.ExecuteScalar()) is not (2 or 3)) throw new InvalidDataException("Unsupported vocabulary version");
             command.CommandText = "SELECT value FROM metadata WHERE key='languages'";
             using var languages = JsonDocument.Parse((string?)command.ExecuteScalar() ?? throw new InvalidDataException("Missing languages"));
             _languages = languages.RootElement.EnumerateArray().Select(x => x.GetString()!).ToArray();
@@ -69,7 +69,7 @@ public sealed class LanguageLexicon(string path) : IDisposable
             if (!row.Read()) return null;
             var weights = (byte[])row[0];
             var mask = row.GetInt32(1);
-            if (weights.Length != 8 || (mask & ~6) != 0 || (mask == 0 && weights.All(x => x == 0)))
+            if (weights.Length != 8 || (mask & ~7) != 0 || (mask == 0 && weights.All(x => x == 0)))
                 throw new InvalidDataException("Malformed vocabulary evidence");
             return new(weights, (byte)mask);
         }
@@ -78,9 +78,15 @@ public sealed class LanguageLexicon(string path) : IDisposable
     public static string Normalize(string token) => token.Replace('’', '\'').Replace('ʼ', '\'').Replace('‘', '\'')
         .Replace('‐', '-').Replace('‑', '-').ToLowerInvariant().Normalize(NormalizationForm.FormC);
 
+    /// <summary>Release the versioned pack before replacement; the next lookup reopens it.</summary>
+    public void Close()
+    {
+        lock (_gate) { _lookup?.Dispose(); _lookup = null; _connection?.Dispose(); _connection = null; }
+    }
+
     public void Dispose()
     {
-        lock (_gate) { if (_disposed) return; _disposed = true; _lookup?.Dispose(); _connection?.Dispose(); _connection = null; }
+        lock (_gate) { if (_disposed) return; _disposed = true; Close(); }
     }
 }
 

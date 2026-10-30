@@ -37,10 +37,13 @@ internal sealed class BackgroundHost : IDisposable
         _controller = new AppController(_platform, paths, PlatformFactory.CreateKeyProtector(diagnostic), diagnostic);
         _runtime = new RuntimeChannel("Typlo.Runtime." + Environment.ProcessId + "." + Guid.NewGuid().ToString("N"), DispatchAsync);
         _updates = new UpdateService(paths.DataDir); if (!diagnostic) UpdateService.CleanupAfterUpdate();
+        if (diagnostic && Program.Argument("--report") is { } updateReport)
+            _updates.RestartArguments = ["--background-probe", "--profile", paths.DataDir, "--report", updateReport, "--lifetime-seconds", "180", "--tray"];
         _tray = new BackgroundTray(Menu, () => ShowUi(["--settings"]), () => _platform.TrayTargetWindow);
         _updates.Changed += () => _tray.SetTip(_updates.Available is { } update ? Loc.T("update.tooltip", "v" + update.Version) : "Typlo");
         _updateProbe = diagnostic ? Task.CompletedTask : UpdateProbe.RunAsync(_updates, paths.DataDir, _stop.Token);
         _controller.ShowHistoryRequested += _ => ShowUi(["--history", "--target", ((long)_platform.TrayTargetWindow).ToString(CultureInfo.InvariantCulture)]);
+        _controller.PersonalWordRequested += (word, language) => ShowUi(["--add-word", word, "--word-language", language ?? ""]);
         _controller.ScreenshotRequested += destination => ShowUi(destination == Core.Imaging.CaptureDestination.File ? ["--capture", _controller.Settings.ScreenshotShape == Core.Imaging.CaptureShape.Freehand ? "freehand" : "rectangle", "--save"] : ["--capture", _controller.Settings.ScreenshotShape == Core.Imaging.CaptureShape.Freehand ? "freehand" : "rectangle"]);
         _commands = new IpcServer(Command, diagnostic ? _runtime.Name + ".commands" : null);
         Log.Info($"Background runtime v{UpdateService.CurrentVersion}, PID {Environment.ProcessId}");
@@ -135,7 +138,14 @@ internal sealed class BackgroundHost : IDisposable
             case "update-fixture" when _diagnostic:
                 await UpdateProbe.RunAsync(_updates, _paths.DataDir, _stop.Token, immediately: true);
                 return new(_updates.Available is not null);
+            case "dictionary-fixture" when _diagnostic:
+                _controller.OpenDictionaryForDiagnostic(); return new(_controller.DictionaryIsOpen);
             case "state": return State();
+            case "update-start": return BeginInstall();
+            case "update-state": return UpdateState();
+            case "personal-word":
+                if (command.Text is null || command.Args is not [var language]) return new(false, Loc.T("dictionary.invalid"));
+                await _controller.SetPersonalWordAsync(command.Text, language, command.Flag); return new(true);
             case "settings": if (command.Settings is null) return new(false, "Missing settings"); _controller.ApplySettings(command.Settings); return State();
             case "refresh-layouts": _controller.RefreshKeyboardLayouts(); return State();
             case "suspend-hotkeys":
@@ -183,7 +193,7 @@ internal sealed class BackgroundHost : IDisposable
     private void Command(string[] args)
     {
         if (args.Contains("--shutdown")) { _tray.Stop(); return; }
-        if (args.Contains("--install-update")) { _ = InstallUpdateAsync(); return; }
+        if (args.Contains("--install-update")) { BeginInstall(); return; }
         if (Array.IndexOf(args, "--convert") is var i and >= 0)
         {
             var target = i + 1 < args.Length ? args[i + 1] : "toggle"; var layout = _controller.FindLayout(target);
@@ -192,15 +202,41 @@ internal sealed class BackgroundHost : IDisposable
         if (args.Contains("--history") && !args.Contains("--target")) args = [.. args, "--target", ((long)_platform.TrayTargetWindow).ToString(CultureInfo.InvariantCulture)];
         ShowUi(args.Length == 0 ? ["--settings"] : args);
     }
+    private RuntimeReply UpdateState()
+    {
+        lock (_uiLock) return new(true, UpdateInstalling: _installing, UpdateProgress: _updates.Progress, UpdateError: _updates.LastError);
+    }
+    private RuntimeReply BeginInstall()
+    {
+        lock (_uiLock)
+        {
+            if (_stopping) return new(false, "Application is shutting down");
+            if (_installing) return UpdateState();
+            _updates.ReportInstallError(null);
+            _installing = true;
+            _ = Task.Run(InstallUpdateAsync);
+            return UpdateState();
+        }
+    }
     private async Task InstallUpdateAsync()
     {
-        lock (_uiLock) { if (_stopping || _installing) return; _installing = true; }
+        var succeeded = false;
         try
         {
-            if (await _updates.CheckAsync() is null) return;
-            CloseUi(); if (await _updates.InstallAsync()) _tray.Stop();
+            var available = await _updates.CheckAsync();
+            if (_updates.LastCheckError is { } checkError) { _updates.ReportInstallError(checkError); return; }
+            if (available is null) { _updates.ReportInstallError(Loc.T("update.upToDate")); return; }
+            succeeded = await _updates.InstallAsync(async replace => { CloseUi(); await _controller.ReplaceUpdateFilesAsync(replace); });
+            if (succeeded) _tray.Stop();
         }
-        finally { lock (_uiLock) _installing = false; }
+        catch (Exception e) { Log.Error("Background update failed", e); _updates.ReportInstallError(e.Message); }
+        finally
+        {
+            lock (_uiLock) _installing = false;
+            // Swap errors can occur after the UI has released its libraries. Recreate it
+            // with the resident's error instead of leaving a silent, apparently dead button.
+            if (!succeeded) ShowUi(["--update-failed"]);
+        }
     }
     private void ShowUi(string[] args) => _ = SendUiAsync(args);
     private async Task SendUiAsync(string[] args)

@@ -173,6 +173,18 @@ internal static class SystemShortcutCheck
             await captured.Task.WaitAsync(TimeSpan.FromSeconds(5)); await Task.Delay(300);
             if (captures != 1 || platform.ForegroundWindow != popup) throw new InvalidOperationException("Win+Shift+S repeated or opened Windows UI");
             report.Add("PASS Win+Shift+S opens only Typlo's capture command once and does not activate the Windows snipper or Start menu");
+            await Command(new { op = "set", text = "ревьюкать", start = 0, length = 9 });
+            platform.ActivateWindow(window); await Until(() => platform.ForegroundWindow == window, "Dictionary selection focus");
+            platform.SetText("personal dictionary clipboard fixture");
+            var selectionLayout = platform.GetCurrentLayoutId(window);
+            var selectedWord = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            controller.PersonalWordRequested += (word, _) => selectedWord.TrySetResult(word);
+            Keys((0xa2, false), (0xa0, false), (0x4b, false), (0x4b, true), (0xa0, true), (0xa2, true));
+            if (await selectedWord.Task.WaitAsync(TimeSpan.FromSeconds(5)) != "ревьюкать") throw new InvalidOperationException("Ctrl+Shift+K lost the selected word");
+            state = await Command(new { op = "read" });
+            if (state.GetProperty("text").GetString() != "ревьюкать" || platform.ReadText() != "personal dictionary clipboard fixture" || platform.GetCurrentLayoutId(window) != selectionLayout)
+                throw new InvalidOperationException("Ctrl+Shift+K changed the source text or clipboard");
+            report.Add("PASS Ctrl+Shift+K reads the explicit word without cycling the language, editing text or retaining its clipboard copy");
             controller.SuspendHotkeys();
             if (!platform.RegisterHotkey(9000, Hotkey.TryParse("Ctrl+Shift")!)) throw new InvalidOperationException("Suspension retained a conflicting binding");
             platform.UnregisterAllHotkeys();
@@ -190,7 +202,7 @@ internal static class SystemShortcutCheck
             await File.WriteAllLinesAsync(Path.Combine(work, "system-shortcuts.txt"), report);
             foreach (var line in report) Console.WriteLine(line);
         }
-        return report.Count == 9 && report.All(line => line.StartsWith("PASS ")) ? 0 : 1;
+        return report.Count == 10 && report.All(line => line.StartsWith("PASS ")) ? 0 : 1;
     }
     internal static unsafe void Keys(params (ushort Key, bool Up)[] keys)
     {

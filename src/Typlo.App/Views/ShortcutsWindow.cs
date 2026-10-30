@@ -30,6 +30,7 @@ public sealed class ShortcutsWindow : Window
                 Row(body, Key(lh.Hotkey), Loc.T("settings.convertTo", layout.Name));
         Row(body, Key(settings.CaseHotkey), Loc.T("shortcuts.case"));
         Row(body, Key(settings.TranslitHotkey), Loc.T("shortcuts.translit"));
+        Row(body, Key(settings.AddWordHotkey), Loc.T("dictionary.title"));
         Row(body, Key(settings.UndoHotkey), Loc.T("shortcuts.undo"));
         Row(body, Key(settings.ClipboardHotkey), Loc.T("shortcuts.history"));
         Row(body, Key(settings.ClipboardHotkey) + " ×2", Loc.T("shortcuts.previous"));

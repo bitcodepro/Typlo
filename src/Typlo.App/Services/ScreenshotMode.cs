@@ -168,6 +168,10 @@ internal static class ScreenshotMode
                     editor.Close();
                 }
 
+                var personalWord = new PersonalWordDialog(controller, "напиши", "ru");
+                personalWord.Show(); await Task.Delay(250);
+                Save(personalWord, Path.Combine(outDir, "personal_dictionary.png")); personalWord.Close();
+
                 // The update dialog checks the feed when it opens (TYPLO_UPDATE_FEED points it at a test server).
                 using var updates = new UpdateService(dataDir);
                 var dialog = new UpdateDialog(updates, () => Task.CompletedTask);

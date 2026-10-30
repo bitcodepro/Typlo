@@ -21,7 +21,10 @@ public sealed class UpdateDialog : Window
     private readonly Button _primary = new() { Classes = { "accent" }, IsVisible = false };
     private readonly Button _secondary = new();
 
-    public UpdateDialog(UpdateService updates, Func<Task> install)
+    private readonly Button _releasePage = new() { Content = Loc.T("update.openPage"), IsVisible = false };
+    internal string? DisplayedError { get; private set; }
+
+    public UpdateDialog(UpdateService updates, Func<Task> install, string? initialError = null)
     {
         _updates = updates;
         _install = install;
@@ -44,22 +47,26 @@ public sealed class UpdateDialog : Window
                 new StackPanel
                 {
                     Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right,
-                    Margin = new Thickness(0, 6, 0, 0), Children = { _secondary, _primary },
+                    Margin = new Thickness(0, 6, 0, 0), Children = { _releasePage, _secondary, _primary },
                 },
             },
         };
         _secondary.Click += (_, _) => Close();
+        _releasePage.Click += (_, _) => _updates.OpenReleasePage();
         _primary.Click += async (_, _) => await OnPrimaryAsync();
         _updates.Changed += OnUpdatesChanged;
         Closed += (_, _) => _updates.Changed -= OnUpdatesChanged;
-        Opened += async (_, _) => await CheckAsync();
+        Opened += async (_, _) => { if (initialError is not null) ShowInstallError(initialError); else await CheckAsync(); };
     }
 
     private async Task CheckAsync()
     {
+        DisplayedError = null;
+        _releasePage.IsVisible = false;
         _title.Text = Loc.T("update.checking");
         _details.Text = Loc.T("update.current", UpdateService.CurrentVersion);
         _progress.IsVisible = true;
+        _progress.IsIndeterminate = true;
         _primary.IsVisible = false;
         _secondary.Content = Loc.T("update.close");
         if (!_updates.CanCheck)
@@ -93,12 +100,15 @@ public sealed class UpdateDialog : Window
         _details.Text = details;
     }
 
-    private async Task OnPrimaryAsync()
+    internal async Task OnPrimaryAsync()
     {
+        var retryInstall = DisplayedError is not null;
+        DisplayedError = null;
+        _releasePage.IsVisible = false;
         if (_updates.Available is null || _updates.LastCheckError is not null)
         {
             await CheckAsync(); // "Try again"
-            return;
+            if (!retryInstall || _updates.Available is null || _updates.LastCheckError is not null) return;
         }
         _primary.IsEnabled = false;
         _secondary.IsEnabled = false;
@@ -112,14 +122,19 @@ public sealed class UpdateDialog : Window
         _progress.IsVisible = false;
         if (_updates.LastError is { } error)
         {
-            ShowResult(Loc.T("update.failed"), error);
-            _primary.Content = Loc.T("update.openPage");
-            _primary.Click -= async (_, _) => await OnPrimaryAsync();
-            _primary.IsVisible = false;
-            var open = new Button { Content = Loc.T("update.openPage") };
-            open.Click += (_, _) => _updates.OpenReleasePage();
-            ((StackPanel)((StackPanel)Content!).Children[^1]).Children.Insert(0, open);
+            ShowInstallError(error);
         }
+    }
+
+    internal void ShowInstallError(string error)
+    {
+        DisplayedError = error;
+        ShowResult(Loc.T("update.failed"), error);
+        _primary.Content = Loc.T("update.retry");
+        _primary.IsEnabled = _primary.IsVisible = true;
+        _secondary.Content = Loc.T("update.close");
+        _secondary.IsEnabled = true;
+        _releasePage.IsVisible = true;
     }
 
     private void OnUpdatesChanged() => Dispatcher.UIThread.Post(() =>

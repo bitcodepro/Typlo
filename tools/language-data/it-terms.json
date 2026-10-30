@@ -3,6 +3,7 @@
   "license": "MIT",
   "description": "Original finite IT slang supplement by Typlo contributors. Explicit colloquial forms and spelling variants, not a normative spelling dictionary or corpus frequency source. Shared forms intentionally retain both language labels.",
   "entries": [
+    {"language": "en", "family": "databases", "forms": ["sql", "nosql", "mysql", "postgresql", "sqlite"]},
     {"language": "ru", "family": "review", "forms": ["ревьюить", "ревьюишь", "ревьюит", "ревьюим", "ревьюите", "ревьюят", "ревьюил", "ревьюила", "ревьюило", "ревьюили", "ревьюю"]},
     {"language": "ru", "family": "review-за", "forms": ["заревьюить", "заревьюишь", "заревьюит", "заревьюим", "заревьюите", "заревьюят", "заревьюил", "заревьюила", "заревьюило", "заревьюили", "заревьюю"]},
     {"language": "ru", "family": "review-colloquial", "forms": ["ревьювать", "ревьюваю", "ревьюваешь", "ревьювает", "ревьюваем", "ревьюваете", "ревьювают", "ревьювал", "ревьювала", "ревьювало", "ревьювали", "ревьювай", "ревьювайте"]},

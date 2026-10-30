@@ -26,12 +26,12 @@ all eight lists with separate frequency weights; logarithmic quantization;
 storage in an indexed SQLite database. No words have been invented or translated.
 This is a frequency vocabulary, not an authoritative spelling dictionary.
 
-The pack also includes an original finite RU/UK IT slang supplement authored by
+The pack also includes an original finite EN/RU/UK IT supplement authored by
 Typlo contributors (Copyright (c) 2026 bitcodepro), from
 tools/language-data/it-terms.json under the repository's MIT license. Its explicit
 colloquial forms/spelling variants are membership evidence, not measured corpus
 frequencies. The MIT text, original forms and their source SHA-256 are embedded in
-metadata. Corpus weights are unchanged; supplement_mask records RU/UK membership
+metadata. Corpus weights are unchanged; supplement_mask records EN/RU/UK membership
 separately. The combined adapted database remains distributed under CC BY-SA 4.0.
 
 The build/reader code remains under the Typlo repository's MIT license. The

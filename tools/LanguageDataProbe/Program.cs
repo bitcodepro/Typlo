@@ -22,7 +22,7 @@ if (args[0] == "verify")
         while (rows.Read())
         {
             var word = rows.GetString(0); var weights = (byte[])rows[1]; var mask = rows.GetInt32(2);
-            if (word != DiskLexicon.Normalize(word) || weights.Length != 8 || (mask & ~6) != 0 || (mask == 0 && weights.All(x => x == 0))) throw new InvalidDataException("Invalid word/vector");
+            if (word != DiskLexicon.Normalize(word) || weights.Length != 8 || (mask & ~7) != 0 || (mask == 0 && weights.All(x => x == 0))) throw new InvalidDataException("Invalid word/vector");
             hash.AppendData(Encoding.UTF8.GetBytes(word)); hash.AppendData([0]); hash.AppendData(weights); hash.AppendData([(byte)mask]); count++;
         }
     var actual = Convert.ToHexStringLower(hash.GetHashAndReset());

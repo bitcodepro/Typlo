@@ -6,7 +6,7 @@ using Typlo.Core.Settings;
 namespace Typlo.App.Services;
 
 internal sealed record RuntimeRequest(string Command, long Id = 0, long Window = 0, bool Flag = false, string? Text = null, AppSettings? Settings = null, string[]? Args = null, int UiOwner = 0, long Trace = 0);
-internal sealed record RuntimeReply(bool Ok, string? Error = null, string[]? FailedHotkeys = null, DateTimeOffset? PausedUntil = null, int UiProcessId = 0, long StoredItems = 0, string? AvailableVersion = null, long Window = 0, string? UiChannel = null);
+internal sealed record RuntimeReply(bool Ok, string? Error = null, string[]? FailedHotkeys = null, DateTimeOffset? PausedUntil = null, int UiProcessId = 0, long StoredItems = 0, string? AvailableVersion = null, long Window = 0, string? UiChannel = null, bool UpdateInstalling = false, int? UpdateProgress = null, string? UpdateError = null);
 
 [JsonSerializable(typeof(RuntimeRequest))]
 [JsonSerializable(typeof(RuntimeReply))]

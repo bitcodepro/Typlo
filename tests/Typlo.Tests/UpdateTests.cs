@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using Typlo.Core.Updates;
+using Typlo.Core.Languages;
 
 namespace Typlo.Tests;
 
@@ -10,6 +11,26 @@ public sealed class UpdateTests : IDisposable
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "typlo-update-tests-" + Guid.NewGuid().ToString("N"));
 
     public UpdateTests() => Directory.CreateDirectory(_dir);
+
+    [Fact]
+    public void ReleasedDictionaryAllowsAnUpdateAndReopensTheNewPack()
+    {
+        var install = Path.Combine(_dir, "dictionary-install");
+        var staging = Path.Combine(_dir, "dictionary-staging");
+        Directory.CreateDirectory(Path.Combine(install, "language-data"));
+        Directory.CreateDirectory(Path.Combine(staging, "language-data"));
+        var source = Path.Combine(AppContext.BaseDirectory, "language-data", "words.sqlite3");
+        var dictionary = Path.Combine(install, "language-data", "words.sqlite3");
+        File.Copy(source, dictionary);
+        File.Copy(source, Path.Combine(staging, "language-data", "words.sqlite3"));
+        using var lexicon = new LanguageLexicon(dictionary);
+        Assert.NotNull(lexicon.Lookup("hello"));
+        lexicon.Close();
+        Assert.False(lexicon.IsOpen);
+        UpdateInstaller.Swap(staging, install);
+        Assert.NotNull(lexicon.Lookup("hello"));
+        Assert.True(lexicon.IsOpen);
+    }
 
     [Theory]
     [InlineData("0.1.1", "0.1.0", 1)]
