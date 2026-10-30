@@ -7,7 +7,7 @@ namespace Typlo.App.Platform.Windows;
 
 public sealed partial class WinPlatform
 {
-    private sealed record CopyGuard(int Id, nint Window, Func<bool> Valid)
+    private sealed record CopyGuard(int Id, nint Window, Func<bool> Valid, Func<bool> CanCloseSelection)
     {
         internal bool Armed, Closed, Draining;
         internal readonly List<INPUT> Pending = [];
@@ -22,12 +22,13 @@ public sealed partial class WinPlatform
     private const ulong CopyDrainTag = 0x5459504e00000000;
     private const ulong CopyReplayTag = 0x5459504f00000000;
     private volatile bool _observingCopyReplay;
+    private volatile bool _observingCopyInput;
     public bool SupportsProtectedCopy => SupportsUnicodeTextReplacement;
 
-    public IDisposable? ProtectCopySelection(nint window, Func<bool> valid)
+    public IDisposable? ProtectCopySelection(nint window, Func<bool> valid, Func<bool>? canCloseSelection = null)
     {
         if (!SupportsProtectedCopy) return null;
-        var guard = new CopyGuard(Interlocked.Increment(ref _copyGuardId), window, valid);
+        var guard = new CopyGuard(Interlocked.Increment(ref _copyGuardId), window, valid, canCloseSelection ?? valid);
         Invoke(() =>
         {
             if (_copyGuardHook == 0)
@@ -97,10 +98,10 @@ public sealed partial class WinPlatform
                 bool valid;
                 try { valid = selecting.Valid(); }
                 catch (Exception e) { Log.Error("Copy selection validation failed", e); valid = false; }
-                if (!valid) { selecting.Closed = true; selecting.Done.TrySetResult(); return 1; }
+                if (!valid) { CloseCopyGuard(selecting); return 1; }
                 selecting.Armed = true;
             }
-            return CallNextHookEx(_copyGuardHook, code, message, data);
+            return PassOwnCopyInput(code, message, data);
         }
         if (key.Extra == OwnInputTag)
         {
@@ -109,7 +110,7 @@ public sealed partial class WinPlatform
             if (down && _copyGuard is { Armed: true, Closed: false } owned &&
                 (key.Vk is 0xe7 or 0x27 || key.Vk == 0x56 && IsDown(VK_CONTROL)))
             { owned.Closed = true; owned.Done.TrySetResult(); }
-            return CallNextHookEx(_copyGuardHook, code, message, data);
+            return PassOwnCopyInput(code, message, data);
         }
         if (((key.Flags & 0x10) == 0 || AcceptSimulatedSystemShortcuts) && _copyGuard is { } guard)
         {
@@ -136,13 +137,19 @@ public sealed partial class WinPlatform
     {
         if (BeginCopyClose(guard) is { } collapse) SendCopyReplay(guard, collapse);
     }
+    private nint PassOwnCopyInput(int code, nint message, nint data)
+    {
+        _observingCopyInput = true;
+        try { return CallNextHookEx(_copyGuardHook, code, message, data); }
+        finally { _observingCopyInput = false; }
+    }
     private List<(ushort, bool)>? BeginCopyClose(CopyGuard guard)
     {
         if (!ReferenceEquals(_copyGuard, guard) || guard.Closed) return null;
         guard.Closed = true;
         try
         {
-            if (!guard.Armed || Volatile.Read(ref _disposed) || GetForegroundWindow() != guard.Window || !guard.Valid()) return null;
+            if (!guard.Armed || Volatile.Read(ref _disposed) || GetForegroundWindow() != guard.Window || !guard.CanCloseSelection()) return null;
             var held = Modifiers.Where(IsDown).ToArray();
             var keys = new List<(ushort, bool)>();
             if (held.Length > 0) keys.AddRange([(VK_CONTROL, false), (VK_CONTROL, true)]);

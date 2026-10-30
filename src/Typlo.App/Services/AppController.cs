@@ -697,7 +697,7 @@ public sealed partial class AppController : IDisposable
             using var _ = _platform.SuspendCapture();
             snapshot = CaptureClipboard();
             using var protectedSelection = NeedsPasteVerification(window) && _platform.SupportsProtectedCopy
-                ? _platform.ProtectCopySelection(window, StillValid) : null;
+                ? ProtectOwnedSelection(window, StillValid) : null;
             // Only replace what Typlo inserted: if the user typed or moved since, the selection is different.
             var selected = await SelectTransformResultAsync(last, StillValid);
             if (selected is null || !StillValid())
@@ -729,6 +729,7 @@ public sealed partial class AppController : IDisposable
     private readonly SnippetMatcher _snippets = new();
     private readonly RecentTyping _recentTyping = new();
     private long _typingVersion;
+    private long _caretVersion;
 
     private void ApplySnippets()
     {
@@ -752,6 +753,7 @@ public sealed partial class AppController : IDisposable
             if (own) return; // e.g. the Undo hotkey must not invalidate the conversion it is about to undo
         }
         Volatile.Read(ref _pendingCopyInput)?.Observe(key);
+        if (!key.LayoutGesture) Interlocked.Increment(ref _caretVersion);
         var version = Interlocked.Increment(ref _typingVersion);
         // Any user input (a key, Backspace, arrows, a click) may move the caret: an older conversion can no longer
         // be located reliably, so it cannot be undone.

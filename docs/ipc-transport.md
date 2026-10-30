@@ -85,3 +85,7 @@ Windows handle-retention mechanism. Each UI generation now receives a fresh pipe
 the resident publishes that name alongside the corresponding PID in its state reply. Production
 commands and the harness use that generation's name. The repeated UI test rejects name reuse
 across processes. No command is retried as a workaround for an uncertain write.
+
+The runtime harness binds its client from one current-state reply after every UI launch:
+Settings, screenshot capture and both OCR/history lifetimes. This keeps channel uniqueness
+checks while ensuring capture/OCR commands never use the previously closed Settings channel.

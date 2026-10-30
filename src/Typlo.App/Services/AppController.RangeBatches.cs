@@ -33,13 +33,26 @@ public sealed partial class AppController
     }
     private static int RangeSteps(string text) => StringInfo.ParseCombiningCharacters(text.Replace("\r\n", "\n")).Length;
 
+    private IDisposable? ProtectOwnedSelection(nint window, Func<bool> valid)
+    {
+        var caret = Interlocked.Read(ref _caretVersion);
+        var focus = _platform.ForegroundChangeVersion;
+        var element = _platform.FocusedInputElement;
+        // Cancellation and range ownership have different lifetimes. Alt+Shift must cancel
+        // conversion, while the still-owned selection must collapse before the next character.
+        // Real typing, navigation, mouse input and focus changes still revoke cleanup ownership.
+        return _platform.ProtectCopySelection(window, valid, () => Volatile.Read(ref _disposed) == 0 &&
+            Interlocked.Read(ref _caretVersion) == caret && !ForegroundChanged(focus) &&
+            IsTargetActive(window) && _platform.FocusedInputElement == element);
+    }
+
     private async Task<string?> CopyCollapsedRangeAsync(nint window, int count, Func<bool> valid, Func<string, bool>? expected = null,
         Func<bool>? canRestoreCancelledCopy = null)
     {
         if (NeedsPasteVerification(window) && _platform.SupportsProtectedCopy)
         {
             if (count is < 1 or > 2000) return null;
-            using var guard = _platform.ProtectCopySelection(window, () => valid() || canRestoreCancelledCopy?.Invoke() == true);
+            using var guard = ProtectOwnedSelection(window, valid);
             if (await _platform.SelectPreviousCharactersAsync(window, count, valid) != SelectionStatus.Completed)
                 return null;
             return await CopySelectionAsync(window, valid, allowRevalidation: false, expectedCopy: expected,

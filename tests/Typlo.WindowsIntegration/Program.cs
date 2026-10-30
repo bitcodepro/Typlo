@@ -324,23 +324,50 @@ internal sealed class EditorCheck : Form
             });
 
             foreach (var automatic in new[] { false, true })
-            foreach (var interruptCopy in new[] { false, true })
-                await Check(interruptCopy ? $"continuing input during delayed Teams {(automatic ? "automatic" : "manual")} copy preserves the word" :
+            foreach (var interruption in new[] { 0, 1, 2, 3 })
+            {
+                var interruptCopy = interruption != 0;
+                var gestureName = interruption == 2 ? " after physical Alt+Shift" : interruption == 3 ? " after disabled physical Ctrl+Shift" : "";
+                await Check(interruptCopy ? $"continuing input{gestureName} during delayed Teams {(automatic ? "automatic" : "manual")} copy preserves the word" :
                     automatic ? "dictionary correction in a Teams-like editor with delayed paragraph copy and blocked paste" :
                     "manual repeat and Undo in a Teams-like editor with delayed paragraph copy and blocked paste", async () =>
                 {
                     var active = true;
                     var continuedKeys = 0;
-                    void ObserveContinuation(TypedKey key) { if (key.Char is 'x' or 'y' or 'Z') continuedKeys++; }
+                    var modifierResets = 0;
+                    var gestureSent = false;
+                    Task gesture = Task.CompletedTask;
+                    void ObserveContinuation(TypedKey key)
+                    {
+                        if (key.Char is 'x' or 'y' or 'Z') Interlocked.Increment(ref continuedKeys);
+                        if (key.LayoutGesture) Interlocked.Increment(ref modifierResets);
+                    }
+                    async Task ModifierGestureAsync()
+                    {
+                        var first = interruption == 2 ? (ushort)0xa4 : (ushort)0xa2;
+                        SystemShortcutCheck.Keys((first, false), (0xa0, false), (0xa0, true), (first, true));
+                        await Until(() => Volatile.Read(ref modifierResets) == 1, "Physical modifier-release cancellation was not observed");
+                        // Windows applies its native layout gesture asynchronously. Let it finish
+                        // before restoring the fixture source; the test never changes OS preferences.
+                        await Task.Delay(100);
+                        if (english is null) throw new InvalidOperationException("English fixture layout unavailable");
+                        platform.SwitchKeyboardLayout(Handle, english);
+                        await Until(() => platform.GetCurrentLayoutId(Handle) == english.Id, "Fixture did not restore English after native layout gesture");
+                        SystemShortcutCheck.Keys((0x58, false), (0x58, true));
+                    }
                     platform.KeyTyped += ObserveContinuation;
                     void OnCopy(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
                     {
                         if (!active) return;
                         using var message = JsonDocument.Parse(e.WebMessageAsJson);
                         if (message.RootElement.TryGetProperty("fixtureCopy", out var value)) platform.SetText(value.GetString()!);
-                        if (interruptCopy && message.RootElement.TryGetProperty("fixtureCopyStarted", out _))
-                            SystemShortcutCheck.Keys((0x58, false), (0x58, true), (0x59, false), (0x59, true),
+                        if (interruptCopy && !gestureSent && message.RootElement.TryGetProperty("fixtureCopyStarted", out _))
+                        {
+                            gestureSent = true;
+                            if (interruption > 1) gesture = ModifierGestureAsync();
+                            else SystemShortcutCheck.Keys((0x58, false), (0x58, true), (0x59, false), (0x59, true),
                                 (0xa0, false), (0x5a, false), (0x5a, true), (0xa0, true));
+                        }
                     }
                     _browser.CoreWebView2.WebMessageReceived += OnCopy;
                     platform.ApplicationProcessProbe = target => target == Handle ? "ms-teams" : null;
@@ -350,8 +377,10 @@ internal sealed class EditorCheck : Form
                         var source = english ?? KeyboardLayouts.English;
                         controller.ConfigureDiagnosticLayouts([source, KeyboardLayouts.Russian, KeyboardLayouts.Ukrainian]);
                         var settings = controller.Settings.Clone(); settings.Layouts = [source.Id, "ru", "uk"]; settings.AutoCorrectEnabled = automatic;
+                        settings.LayoutSwitchHotkey = "";
                         controller.ApplySettings(settings); TypingEvents.AcceptSimulated = true;
                         platform.AcceptSimulatedSystemShortcuts = interruptCopy;
+                        platform.AcceptSimulatedPhysicalInput = interruption > 1;
                         await platform.WaitForTypingWatchAsync();
                         if (english is not null) platform.SwitchKeyboardLayout(Handle, english);
                         await Prepare("готовое ", select: false, formatted: true);
@@ -359,13 +388,20 @@ internal sealed class EditorCheck : Form
                             (() => {const e=document.getElementById('editor');window.blockedPastes=0;
                             window.fixtureCopy=e => {e.preventDefault();chrome.webview.postMessage({fixtureCopyStarted:true});
                               setTimeout(()=>{const text=getSelection().toString();
-                              chrome.webview.postMessage({fixtureCopy:text ? text+'\r\n' : ''});},60);};
+                              chrome.webview.postMessage({fixtureCopy:text ? text+'\r\n' : ''});},window.fixtureCopyDelay);};
                             window.fixturePaste=e => {window.blockedPastes++;e.preventDefault();};
                             e.addEventListener('copy',window.fixtureCopy);e.addEventListener('paste',window.fixturePaste);})()
                             """);
+                        await _browser.ExecuteScriptAsync($"window.fixtureCopyDelay={(interruption > 1 ? 350 : 60)}");
                         const string marker = "teams-copy-clipboard-fixture";
                         platform.SetText(marker);
                         await TypeFixture(platform);
+                        if (interruption > 1)
+                            await _browser.ExecuteScriptAsync("""
+                                (()=>{const selection=getSelection(),range=selection.getRangeAt(0),tail=document.createTextNode('TAIL');
+                                range.insertNode(tail);range.setStartBefore(tail);range.collapse(true);
+                                selection.removeAllRanges();selection.addRange(range);})()
+                                """);
                         if (platform.CanRetainDirectInputTarget(Handle, platform.FocusedInputElement))
                             throw new InvalidOperationException("Teams fixture unexpectedly used native Edit replacement");
                         if (automatic) platform.SendChord(KeyModifiers.None, "Space");
@@ -373,11 +409,14 @@ internal sealed class EditorCheck : Form
                         var suffix = automatic ? " " : "";
                         if (interruptCopy)
                         {
-                            await ExpectNormalizedText("готовое ghb" + suffix + "xyZ");
+                            var typed = interruption > 1 ? "x" : "xyZ";
+                            var tail = interruption > 1 ? "TAIL" : "";
+                            await ExpectNormalizedText("готовое ghb" + suffix + typed + tail);
                             await controller.AutoCorrectionIdleAsync();
-                            await ExpectNormalizedText("готовое ghb" + suffix + "xyZ");
-                            if (continuedKeys != 3) throw new InvalidOperationException("Continuing input was observed more than once or lost");
-                            if (new[] { 0x58, 0x59, 0x5a, 0xa0 }.Any(key => (Native.GetAsyncKeyState(key) & 0x8000) != 0))
+                            await gesture;
+                            await ExpectNormalizedText("готовое ghb" + suffix + typed + tail);
+                            if (continuedKeys != typed.Length) throw new InvalidOperationException("Continuing input was observed more than once or lost");
+                            if (new[] { 0x58, 0x59, 0x5a, 0xa0, 0xa2, 0xa4 }.Any(key => (Native.GetAsyncKeyState(key) & 0x8000) != 0))
                                 throw new InvalidOperationException("Continuing input left a key or modifier held");
                             return;
                         }
@@ -392,7 +431,15 @@ internal sealed class EditorCheck : Form
                     }
                     finally
                     {
-                        active = false; platform.ApplicationProcessProbe = null; platform.AcceptSimulatedSystemShortcuts = false;
+                        active = false;
+                        try { await gesture; } catch { /* The scenario reports its input/expectation failure. */ }
+                        platform.ApplicationProcessProbe = null; platform.AcceptSimulatedSystemShortcuts = false;
+                        platform.AcceptSimulatedPhysicalInput = false;
+                        if (english is not null)
+                        {
+                            platform.SwitchKeyboardLayout(Handle, english);
+                            await Until(() => platform.GetCurrentLayoutId(Handle) == english.Id, "Fixture did not restore English during cleanup");
+                        }
                         platform.KeyTyped -= ObserveContinuation;
                         _browser.CoreWebView2.WebMessageReceived -= OnCopy;
                         await _browser.ExecuteScriptAsync("""
@@ -401,6 +448,7 @@ internal sealed class EditorCheck : Form
                             """);
                     }
                 });
+            }
 
             await Check("protected selection drops stale batches and closes exactly once before continuing input", async () =>
             {
@@ -427,6 +475,33 @@ internal sealed class EditorCheck : Form
                     }
                     SystemShortcutCheck.Keys((0x5a, false), (0x5a, true));
                     await ExpectTextEventually("ghbxyzTAIL");
+                }
+                finally { platform.AcceptSimulatedSystemShortcuts = false; }
+            });
+
+            await Check("canceled protected selection still collapses an owned range before dropping a late batch", async () =>
+            {
+                using var controller = Controller(platform, "canceled-protected-selection", recent: true);
+                platform.AcceptSimulatedSystemShortcuts = true;
+                try
+                {
+                    await platform.WaitForTypingWatchAsync();
+                    await Prepare("ghbTAIL", select: false);
+                    await _browser.ExecuteScriptAsync("""
+                        (()=>{const e=document.getElementById('editor'),r=document.createRange();
+                        r.setStart(e.firstChild,3);r.collapse(true);getSelection().removeAllRanges();getSelection().addRange(r);})()
+                        """);
+                    var valid = true;
+                    using (platform.ProtectCopySelection(Handle, () => valid, () => true))
+                    {
+                        await platform.SelectPreviousCharactersAsync(Handle, 3, () => true);
+                        valid = false; // Cancellation did not move the caret or change our range.
+                        await platform.SelectPreviousCharactersAsync(Handle, 1, () => true);
+                        SystemShortcutCheck.Keys((0x58, false), (0x58, true));
+                        await ExpectTextEventually("ghbxTAIL");
+                    }
+                    SystemShortcutCheck.Keys((0x59, false), (0x59, true));
+                    await ExpectTextEventually("ghbxyTAIL");
                 }
                 finally { platform.AcceptSimulatedSystemShortcuts = false; }
             });
@@ -616,8 +691,11 @@ internal sealed class EditorCheck : Form
 
     private async Task Check(string name, Func<Task> check)
     {
+        var filter = Environment.GetEnvironmentVariable("TYPLO_WEBVIEW_FILTER");
+        if (!string.IsNullOrEmpty(filter) && !name.Contains(filter, StringComparison.OrdinalIgnoreCase)) return;
         try { await check(); _report.Add("PASS " + name); }
         catch (Exception e) { _report.Add("FAIL " + name + ": " + e); }
+        finally { await File.WriteAllLinesAsync(Path.Combine(_work, "webview2.txt"), _report); }
     }
 
     private async Task Prepare(string text, bool select, bool formatted = false)

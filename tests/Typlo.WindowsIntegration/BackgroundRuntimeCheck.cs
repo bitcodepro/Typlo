@@ -151,9 +151,10 @@ internal static class BackgroundRuntimeCheck
             child.Dispose(); child = null;
 
             Check(IpcServer.Send(["--capture", "rectangle"], info["commands"]), "Capture command accepted");
-            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId > 0, "capture UI launched");
+            await BindUiAsync("capture UI launched");
             await ui.CallAsync(new("ui", Args: ["--dismiss"]));
             await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId == 0, "canceled capture UI exits");
+            child!.Dispose(); child = null;
             Check(platform.ClipboardSequence == originalSequence, "Canceled capture preserves clipboard");
 
             var pixels = new byte[2048 * 1024 * 4]; new Random(42).NextBytes(pixels);
@@ -172,13 +173,12 @@ internal static class BackgroundRuntimeCheck
 
             // History hides on Escape/deactivation. Delayed local OCR must outlive the idle timeout.
             Check(IpcServer.Send(["--history"], info["commands"]), "History command accepted");
-            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId > 0, "history UI launched");
-            child = Process.GetProcessById((await runtime.CallAsync(new("state"))).UiProcessId);
+            await BindUiAsync("history UI launched");
             await ui.CallAsync(new("ui", Args: ["--ocr-fixture"]));
             await Until(() => File.Exists(Path.Combine(paths.DataDir, "ocr-started")), "delayed OCR starts");
             await ui.CallAsync(new("ui", Args: ["--dismiss"]));
             await Task.Delay(1500);
-            Check(!child.HasExited, "Hidden history keeps UI alive during delayed OCR");
+            Check(!child!.HasExited, "Hidden history keeps UI alive during delayed OCR");
             await Until(() => File.Exists(Path.Combine(paths.DataDir, "ocr-completed")), "hidden OCR completes");
             await Until(() => child.HasExited, "UI exits after OCR cleanup");
             child.Dispose(); child = null;
@@ -186,15 +186,14 @@ internal static class BackgroundRuntimeCheck
             File.Delete(Path.Combine(paths.DataDir, "ocr-started"));
             File.Delete(Path.Combine(paths.DataDir, "ocr-completed"));
             Check(IpcServer.Send(["--history"], info["commands"]), "Cancellation history command accepted");
-            await UntilAsync(async () => (await runtime.CallAsync(new("state"))).UiProcessId > 0, "cancellation UI launched");
-            child = Process.GetProcessById((await runtime.CallAsync(new("state"))).UiProcessId);
+            await BindUiAsync("cancellation UI launched");
             await ui.CallAsync(new("ui", Args: ["--ocr-fixture"]));
             await Until(() => File.Exists(Path.Combine(paths.DataDir, "ocr-started")), "cancelable OCR starts");
             await ui.CallAsync(new("ui", Args: ["--shutdown"]));
-            await Until(() => child.HasExited, "shutdown awaits OCR cancellation and cleanup");
+            await Until(() => child!.HasExited, "shutdown awaits OCR cancellation and cleanup");
             Check(File.Exists(Path.Combine(paths.DataDir, "ocr-canceled")) && File.Exists(Path.Combine(paths.DataDir, "ocr-completed")), "Explicit UI shutdown cancels and drains OCR before exit");
             Check(!Directory.EnumerateFiles(ocrTemp, "typlo-ocr-*.png").Any(), "Canceled OCR leaves no plaintext temporary image");
-            child.Dispose(); child = null;
+            child!.Dispose(); child = null;
 
             await CheckHistoryTarget();
 
@@ -214,10 +213,9 @@ internal static class BackgroundRuntimeCheck
             Check(true, "No orphan UI after resident exit");
             File.WriteAllLines(Path.Combine(output, "runtime.txt"), lines); return 0;
 
-            async Task OpenSettings(bool userInitiated = false)
+            async Task BindUiAsync(string launched)
             {
-                Check(IpcServer.Send(["--settings"], info["commands"]), "Settings command accepted");
-                await UntilAsync(async () => (state = await runtime.CallAsync(new("state"))).UiProcessId > 0, "settings UI launched");
+                await UntilAsync(async () => (state = await runtime.CallAsync(new("state"))).UiProcessId > 0, launched);
                 child = Process.GetProcessById(state.UiProcessId);
                 var channel = state.UiChannel ?? throw new InvalidOperationException("Resident did not publish the UI generation channel");
                 if (state.UiProcessId != Volatile.Read(ref expectedUiPid) && !uiChannels.Add(channel))
@@ -225,6 +223,11 @@ internal static class BackgroundRuntimeCheck
                 Volatile.Write(ref expectedUiPid, state.UiProcessId);
                 ui = new RuntimeClient(channel, diagnostic: entry =>
                     uiTrace.Enqueue($"{DateTime.UtcNow:O} expected_pid={Volatile.Read(ref expectedUiPid)} {entry.Summary}"));
+            }
+            async Task OpenSettings(bool userInitiated = false)
+            {
+                Check(IpcServer.Send(["--settings"], info["commands"]), "Settings command accepted");
+                await BindUiAsync("settings UI launched");
                 // The editor fixture is the foreground process. Model the user granting focus to
                 // the newly spawned UI, rather than relying on Windows' foreground-lock timing.
                 if (userInitiated) Native.AllowSetForegroundWindow((uint)state.UiProcessId);

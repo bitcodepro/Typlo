@@ -34,6 +34,8 @@ public sealed partial class WinPlatform : IPlatform
     private static readonly nint OwnInputTag = 0x5459504c;
     private readonly WindowsShortcutInterceptor _systemShortcuts = new();
     internal bool AcceptSimulatedSystemShortcuts { get; set; }
+    // Integration fixtures only: exercise physical modifier-release cancellation with SendInput.
+    internal bool AcceptSimulatedPhysicalInput { get; set; }
     internal Action<SharpHook.Data.KeyCode, bool, WindowsShortcutInterceptor.Decision>? SystemShortcutDiagnostic { get; set; }
     private readonly HashSet<uint> _ownSequences = [];
     private readonly uint _fmtPng, _fmtExclude, _fmtCanInclude, _fmtViewerIgnore, _fmtHtml, _fmtRtf, _fmtDropEffect;
@@ -95,10 +97,11 @@ public sealed partial class WinPlatform : IPlatform
                 Shared.TypingEvents.Attach(hook, key => { if (_typingWatchEnabled) KeyTyped?.Invoke(key); },
                     isOwnPress: (_, _) => _observingCopyReplay,
                     physicalCharacter: WindowsKeyboardLayouts.PhysicalCharacter,
-                    ownsModifierShortcut: key => key.IsModifierOnly && _systemShortcuts.OwnsModifierGesture(GetForegroundWindow()));
+                    ownsModifierShortcut: key => key.IsModifierOnly && _systemShortcuts.OwnsModifierGesture(GetForegroundWindow()),
+                    isPhysicalEvent: e => !e.IsEventSimulated || AcceptSimulatedPhysicalInput && !_observingCopyInput && !_observingCopyReplay);
                 void Intercept(SharpHook.KeyboardHookEventArgs e, bool up)
                 {
-                    if (_observingCopyReplay) return;
+                    if (_observingCopyReplay || _observingCopyInput) return;
                     if (e.IsEventSimulated && !AcceptSimulatedSystemShortcuts) return;
                     var decision = _systemShortcuts.Handle(e.Data.KeyCode, up, GetForegroundWindow());
                     SystemShortcutDiagnostic?.Invoke(e.Data.KeyCode, up, decision);

@@ -79,6 +79,14 @@ these markers never reach an editor. Other editors keep the existing copy/collap
 Reading and switching an input source resolves the focused GUI thread within the original
 window: a WebView2 renderer can have a different HKL from its host.
 
+Modifier-only layout gestures invalidate a conversion without moving its caret. They advance
+the editing/input version but not the separate caret-ownership version. Protected Copy therefore
+uses two predicates: whether selection/editing may continue, and whether the already selected
+range is still ours to collapse. Cleanup still requires the original window, focused input and
+foreground version; typing, navigation and mouse input revoke caret ownership. Delayed-Copy
+tests exercise the physical-release translator for Alt+Shift and unbound Ctrl+Shift, for both
+manual and automatic conversion, with adjacent text to detect extra caret movement.
+
 ## Verification
 
 Regression tests reproduce loss of an entire recent word, or conversion of only its final letter,

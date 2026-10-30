@@ -27,7 +27,7 @@ public sealed partial class AppController
         {
             if (Settings.ConvertLastWord && (run is not null || last is not null) &&
                 NeedsPasteVerification(window) && _platform.SupportsProtectedCopy)
-                protectedSelection = _platform.ProtectCopySelection(window, StillValid);
+                protectedSelection = ProtectOwnedSelection(window, StillValid);
             timing.Mark("clipboard snapshot");
             string? text;
             KeyboardLayout? activeLayout = FindLayout(_platform.GetCurrentLayoutId(window));
