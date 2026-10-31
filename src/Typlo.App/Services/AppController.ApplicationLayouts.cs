@@ -1,3 +1,4 @@
+using Typlo.Core.Languages;
 using Typlo.Core.Layouts;
 using Typlo.Core.Settings;
 
@@ -6,6 +7,9 @@ namespace Typlo.App.Services;
 public sealed partial class AppController
 {
     private sealed record ApplicationCycle(KeyboardLayout[] Layouts, LayoutConverter Converter);
+    private sealed record FeaturePolicy(bool? Auto, bool? Snippets);
+    private Dictionary<string, FeaturePolicy> _featureProfiles = new(StringComparer.OrdinalIgnoreCase);
+    private int _hasAutoOverrides;
     private Dictionary<string, ApplicationCycle> _applicationCycles = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _applicationFocusLock = new();
     private (nint Window, long Input, long Generation)? _pendingApplicationFocus;
@@ -55,6 +59,11 @@ public sealed partial class AppController
 
     private void BuildApplicationCycles()
     {
+        var features = Settings.ApplicationLayouts.Where(r => r.Enabled && r.ProcessName.Length > 0)
+            .GroupBy(r => ApplicationLayoutRule.ProcessKey(r.ProcessName), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => new FeaturePolicy(g.First().AutoCorrection, g.First().SnippetExpansion), StringComparer.OrdinalIgnoreCase);
+        Volatile.Write(ref _featureProfiles, features);
+        Volatile.Write(ref _hasAutoOverrides, features.Values.Any(p => p.Auto == true) ? 1 : 0);
         var cycles = new Dictionary<string, ApplicationCycle>(StringComparer.OrdinalIgnoreCase);
         foreach (var rule in Settings.ApplicationLayouts.Where(r => r.Enabled))
         {
@@ -75,6 +84,13 @@ public sealed partial class AppController
         var process = ApplicationLayoutRule.ProcessKey(_platform.GetApplicationProcessName(window));
         return cycles.GetValueOrDefault(process);
     }
+
+    private bool IsShellProtected(string process) => Settings.ProtectTechnicalInput && TechnicalToken.IsShellProcess(process) &&
+        Volatile.Read(ref _featureProfiles).GetValueOrDefault(ApplicationLayoutRule.ProcessKey(process))?.Auto is null;
+    private bool AutomaticCorrectionForProcess(string process) =>
+        Volatile.Read(ref _featureProfiles).GetValueOrDefault(ApplicationLayoutRule.ProcessKey(process))?.Auto ?? (Settings.AutoCorrectEnabled && (!Settings.ProtectTechnicalInput || !TechnicalToken.IsShellProcess(process)));
+    private bool SnippetsForProcess(string process) =>
+        Volatile.Read(ref _featureProfiles).GetValueOrDefault(ApplicationLayoutRule.ProcessKey(process))?.Snippets ?? Settings.SnippetsEnabled;
 
     private void ConfigureApplicationLayouts()
     {

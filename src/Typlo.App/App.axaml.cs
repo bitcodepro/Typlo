@@ -83,13 +83,14 @@ public partial class App : Application
         _updates.Start();
 
         _controller.ShowHistoryRequested += prev => Dispatcher.UIThread.Post(() => ShowHistory(prev));
+        _controller.ToolsRequested += choices => Dispatcher.UIThread.Post(() => ShowTools(choices));
         _controller.PersonalWordRequested += (word, language) => Dispatcher.UIThread.Post(() => ShowPersonalWord(word, language));
         _screenCapture = new ScreenCaptureService(_controller);
         _controller.ScreenshotRequested += destination => Dispatcher.UIThread.Post(() => _ = _screenCapture.StartAsync(_controller.Settings.ScreenshotShape, destination));
         CreateTray();
         desktop.Exit += (_, _) => Cleanup();
 
-        if (Program.Args.Contains("--capture") || Program.Args.Contains("--dictionary")) OnCommand(Program.Args);
+        if (Program.Args.Contains("--capture") || Program.Args.Contains("--dictionary") || Program.Args.Contains("--tools") || Program.Args.Contains("--choices")) OnCommand(Program.Args);
         else if (_controller.FailedHotkeys.Count > 0 || !Program.Args.Contains("--tray") && !File.Exists(paths.SettingsFile + ".seen"))
         {
             File.WriteAllText(paths.SettingsFile + ".seen", "");
@@ -120,6 +121,7 @@ public partial class App : Application
             });
         else if (args.Contains("--settings"))
             Dispatcher.UIThread.Post(ShowSettings);
+        else if (args.Contains("--tools") || args.Contains("--choices")) Dispatcher.UIThread.Post(() => ShowTools(args.Contains("--choices")));
         else if (args.Contains("--dictionary"))
             Dispatcher.UIThread.Post(ShowDictionary);
         else if (Array.IndexOf(args, "--convert") is var i and >= 0)
@@ -254,6 +256,7 @@ public partial class App : Application
         menu.Items.Add(history);
         menu.Items.Add(settings);
         menu.Items.Add(shortcuts);
+        var tools = new NativeMenuItem(Loc.T("tools.title")); tools.Click += (_, _) => ShowTools(); menu.Items.Add(tools);
         var dictionary = new NativeMenuItem(Loc.T("manage.title"));
         dictionary.Click += (_, _) => ShowDictionary(); menu.Items.Add(dictionary);
         menu.Items.Add(new NativeMenuItemSeparator());
@@ -340,7 +343,7 @@ public partial class App : Application
             Reopen = () => Dispatcher.UIThread.Post(ShowSettings),
             CheckForUpdates = ShowUpdateDialog,
             ShowShortcuts = ShowShortcuts,
-            ShowDictionary = ShowDictionary,
+            ShowDictionary = ShowDictionary, ShowTools = () => ShowTools(),
             CaptureScreenshot = (mode, destination) => _ = _screenCapture!.StartAsync(mode, destination),
         };
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;

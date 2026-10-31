@@ -287,7 +287,7 @@ internal sealed class EditorCheck : Form
                 settings.LayoutHotkeys = [new() { LayoutId = "ru", Hotkey = "F13" },
                     new() { LayoutId = "uk", Hotkey = "F14" }, new() { LayoutId = "en", Hotkey = "F15" }];
                 controller.ApplySettings(settings);
-                if (controller.FailedHotkeys.Count != 0) throw new InvalidOperationException("Could not register layout fixture hotkeys");
+                if (controller.FailedHotkeys.Count != 0) throw new InvalidOperationException("Could not register layout fixture hotkeys: " + string.Join("; ", controller.FailedHotkeys));
                 TypingEvents.AcceptSimulated = true;
                 await platform.WaitForTypingWatchAsync();
                 await Prepare("готовое ", select: false, formatted: true);
@@ -707,6 +707,7 @@ internal sealed class EditorCheck : Form
         var paths = new AppPaths(Path.Combine(_work, name));
         new SettingsStore(paths.SettingsFile).Save(new AppSettings
         {
+            ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
             LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "", ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "",
             SwitchSystemLayout = false, ConvertLastWord = recent, HistoryEnabled = false, AutoCorrectEnabled = false,
         });

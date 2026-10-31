@@ -74,6 +74,8 @@ public sealed class HotkeyBox : TextBox
         >= Key.A and <= Key.Z => ((char)('A' + (key - Key.A))).ToString(),
         >= Key.D0 and <= Key.D9 => ((char)('0' + (key - Key.D0))).ToString(),
         >= Key.F1 and <= Key.F24 => "F" + (key - Key.F1 + 1),
+        Key.Enter => "Enter",
+        Key.Escape => "Escape",
         Key.Space => "Space",
         Key.Insert => "Insert",
         Key.Delete => "Delete",

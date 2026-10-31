@@ -382,7 +382,7 @@ internal static class KeyCodes
 {
     private static readonly Dictionary<string, KeyCode> Named = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["Space"] = KeyCode.VcSpace, ["Insert"] = KeyCode.VcInsert, ["Delete"] = KeyCode.VcDelete,
+        ["Enter"] = KeyCode.VcEnter, ["Escape"] = KeyCode.VcEscape, ["Space"] = KeyCode.VcSpace, ["Insert"] = KeyCode.VcInsert, ["Delete"] = KeyCode.VcDelete,
         ["Home"] = KeyCode.VcHome, ["End"] = KeyCode.VcEnd, ["PageUp"] = KeyCode.VcPageUp,
         ["PageDown"] = KeyCode.VcPageDown, ["Up"] = KeyCode.VcUp, ["Down"] = KeyCode.VcDown,
         ["Left"] = KeyCode.VcLeft, ["Right"] = KeyCode.VcRight, ["Pause"] = KeyCode.VcPause,

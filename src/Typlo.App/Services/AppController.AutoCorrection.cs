@@ -10,7 +10,7 @@ public sealed partial class AppController
     private sealed record AutomaticWord(RecentTyping.Run Run, long Version, long Generation, long Started)
     {
         internal AutoCorrectionReason Outcome = AutoCorrectionReason.Canceled;
-        internal string? SourceLanguage, TargetLanguage;
+        internal string? SourceLanguage, TargetLanguage, Process;
     }
     private AutomaticWord? _pendingAutomaticWord;
     private bool _automaticWordWorker;
@@ -48,7 +48,7 @@ public sealed partial class AppController
         if (_remote is not null || Volatile.Read(ref _disposed) != 0) return;
         var run = _recentTyping.Capture(window);
         if (run is null || run.Keys.Length < 3 || run.Keys[^1] != ' ' || char.IsWhiteSpace(run.Keys[^2])) return;
-        AutoCorrectionReason? skip = run.SuppressAutomatic ? AutoCorrectionReason.UndoSuppressed : !Settings.AutoCorrectEnabled ? AutoCorrectionReason.Disabled :
+        AutoCorrectionReason? skip = run.SuppressAutomatic ? AutoCorrectionReason.UndoSuppressed : (!Settings.AutoCorrectEnabled && Volatile.Read(ref _hasAutoOverrides) == 0) ? AutoCorrectionReason.Disabled :
             !_platform.SupportsAutomaticWordCorrection ? AutoCorrectionReason.Unsupported :
             _dictionaryFailed ? AutoCorrectionReason.DictionaryUnavailable :
             AutomaticPauseReason();
@@ -81,7 +81,7 @@ public sealed partial class AppController
         word.Generation == Interlocked.Read(ref _automaticWordGeneration) && AutomaticWordContextIsCurrent(word);
 
     private bool AutomaticWordContextIsCurrent(AutomaticWord word) => Volatile.Read(ref _disposed) == 0 &&
-        Settings.AutoCorrectEnabled && !_editingSettings && Volatile.Read(ref _updating) == 0 && Volatile.Read(ref _checkingDictionary) == 0 && !_capturingScreen &&
+        (word.Process is null ? Settings.AutoCorrectEnabled || Volatile.Read(ref _hasAutoOverrides) != 0 : AutomaticCorrectionForProcess(word.Process)) && !_editingSettings && Volatile.Read(ref _updating) == 0 && Volatile.Read(ref _checkingDictionary) == 0 && !_capturingScreen &&
         Interlocked.Read(ref _typingVersion) == word.Version && _platform.ForegroundWindow == word.Run.Window &&
         (word.Run.Element == 0 || _platform.FocusedInputElement == word.Run.Element);
 
@@ -105,12 +105,16 @@ public sealed partial class AppController
                 if (string.IsNullOrEmpty(process)) { word.Outcome = AutoCorrectionReason.UnknownApplication; continue; }
                 if (Settings.ExcludedApps.Any(p => string.Equals(p, process, StringComparison.OrdinalIgnoreCase)))
                 { word.Outcome = AutoCorrectionReason.ExcludedApplication; continue; }
+                word.Process = process;
+                if (!AutomaticCorrectionForProcess(process)) { word.Outcome = Settings.AutoCorrectEnabled && IsShellProtected(process) ? AutoCorrectionReason.ProtectedToken : AutoCorrectionReason.Disabled; continue; }
                 var source = FindLayout(_platform.GetCurrentLayoutId(word.Run.Window));
                 if (source is null || !source.SupportsConversion) { word.Outcome = AutoCorrectionReason.UnsupportedLanguage; continue; }
                 var sourceCode = source.LanguageCode.Split('-', '_')[0];
                 word.SourceLanguage = PersonalLexicon.LanguageCodes.Contains(sourceCode) ? sourceCode : null;
                 var allowed = ApplicationCycleFor(word.Run.Window)?.Layouts ?? LayoutCatalog.Cycle(Settings).ToArray();
-                var decision = new LayoutLanguageDetector(_lexicon, _personal).Analyze(word.Run.Keys[..^1], source, allowed, _converter.Layouts);
+                var lookupStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                var decision = new LayoutLanguageDetector(_lexicon, _personal).Analyze(word.Run.Keys[..^1], source, allowed, _converter.Layouts, Settings.ProtectTechnicalInput);
+                RecordPerformance(new(DateTimeOffset.UtcNow, "dictionary", (long)System.Diagnostics.Stopwatch.GetElapsedTime(lookupStart).TotalMilliseconds, []));
                 if (_lexicon.IsOpen) lock (_diagnosticsLock) _dictionaryHealth = DictionaryHealth.Ready;
                 word.Outcome = decision.Reason switch
                 {

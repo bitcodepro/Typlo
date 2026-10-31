@@ -5,6 +5,8 @@ public sealed class ApplicationLayoutRule
 {
     public string ProcessName { get; set; } = "";
     public List<string> Layouts { get; set; } = [];
+    public bool? AutoCorrection { get; set; }
+    public bool? SnippetExpansion { get; set; }
     public bool Enabled { get; set; } = true;
 
     public static string ProcessKey(string? value)

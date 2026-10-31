@@ -23,6 +23,8 @@ public partial class SettingsWindow : Window
     private HotkeyBox _caseBox = null!;
     private HotkeyBox _translitBox = null!;
     private HotkeyBox _undoBox = null!;
+    private readonly Dictionary<string, HotkeyBox> _toolHotkeys = [];
+    public Action? ShowTools { get; set; }
     private HotkeyBox _addWordBox = null!;
     private readonly List<(TextBox Trigger, TextBox Text, Control Row)> _snippetRows = [];
     private readonly List<KeyboardLayout> _cycleOrder = [];
@@ -91,11 +93,14 @@ public partial class SettingsWindow : Window
 
         SwitchLayoutBox.IsChecked = _draft.SwitchSystemLayout;
         LastWordBox.IsChecked = _draft.ConvertLastWord;
+        ProtectTechnicalBox.IsChecked = _draft.ProtectTechnicalInput;
+        SnippetsEnabledBox.IsChecked = _draft.SnippetsEnabled;
         AutoCorrectBox.IsChecked = _draft.AutoCorrectEnabled;
         // The passive Windows UI delegates input to the resident process. Other platforms report
         // session capabilities directly (e.g. no global typing watch under Wayland).
         AutoCorrectBox.IsEnabled = OperatingSystem.IsWindows() || controller.Platform.SupportsAutomaticWordCorrection;
         DictionaryStatus.Text = Loc.T("health.NotChecked");
+        ToolsButton.Click += (_, _) => ShowTools?.Invoke();
         ManageDictionaryButton.Click += (_, _) => ShowDictionary?.Invoke();
         Opened += async (_, _) =>
         {
@@ -164,6 +169,10 @@ public partial class SettingsWindow : Window
         AddRow(Loc.T("hk.translit"), _translitBox);
         _undoBox = new HotkeyBox { HotkeyText = _draft.UndoHotkey };
         AddRow(Loc.T("hk.undo"), _undoBox);
+        _toolHotkeys.Clear();
+        foreach (var (key, label, value) in new[] { ("probe", "tools.title", _draft.ToolsHotkey), ("choices", "tools.choices", _draft.ChoicesHotkey),
+            ("accept", "tools.accept", _draft.AcceptChoiceHotkey), ("cancel", "tools.cancel", _draft.CancelChoiceHotkey) })
+        { var box = new HotkeyBox { HotkeyText = value }; _toolHotkeys[key] = box; AddRow(Loc.T(label), box); }
         _addWordBox = new HotkeyBox { HotkeyText = _draft.AddWordHotkey };
         AddRow(Loc.T("dictionary.title"), _addWordBox);
     }
@@ -456,6 +465,8 @@ public partial class SettingsWindow : Window
         _draft.CaseHotkey = _caseBox.HotkeyText;
         _draft.TranslitHotkey = _translitBox.HotkeyText;
         _draft.UndoHotkey = _undoBox.HotkeyText;
+        _draft.ToolsHotkey = _toolHotkeys["probe"].HotkeyText; _draft.ChoicesHotkey = _toolHotkeys["choices"].HotkeyText;
+        _draft.AcceptChoiceHotkey = _toolHotkeys["accept"].HotkeyText; _draft.CancelChoiceHotkey = _toolHotkeys["cancel"].HotkeyText;
         _draft.AddWordHotkey = _addWordBox.HotkeyText;
         _draft.ScreenshotShape = (CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex);
         _draft.ScreenshotEditorAfterCopy = CaptureEditorBox.IsChecked == true;
@@ -473,6 +484,8 @@ public partial class SettingsWindow : Window
             .Concat(_draft.Layouts.Where(id => _controller.FindLayout(id) is null)).ToList();
         _draft.SwitchSystemLayout = SwitchLayoutBox.IsChecked == true;
         _draft.ConvertLastWord = LastWordBox.IsChecked == true;
+        _draft.ProtectTechnicalInput = ProtectTechnicalBox.IsChecked == true;
+        _draft.SnippetsEnabled = SnippetsEnabledBox.IsChecked == true;
         _draft.AutoCorrectEnabled = AutoCorrectBox.IsChecked == true;
         _draft.HistoryEnabled = HistoryEnabledBox.IsChecked == true;
         _draft.MaxItems = (int)(MaxItemsBox.Value ?? 500);

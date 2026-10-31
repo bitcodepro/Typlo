@@ -19,7 +19,7 @@ public sealed record Hotkey(KeyModifiers Modifiers, string Key)
     public bool IsModifierOnly => Key.Length == 0 && Modifiers == (KeyModifiers.Ctrl | KeyModifiers.Shift);
     public static readonly IReadOnlyList<string> NamedKeys =
     [
-        "Space", "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "Up", "Down", "Left", "Right",
+        "Enter", "Escape", "Space", "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "Up", "Down", "Left", "Right",
         "Pause", "Tilde", "Minus", "Plus", "Comma", "Period", "Slash", "Backslash", "Semicolon", "Quote",
         "OpenBracket", "CloseBracket",
     ];

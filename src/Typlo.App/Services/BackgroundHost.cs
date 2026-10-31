@@ -43,6 +43,7 @@ internal sealed class BackgroundHost : IDisposable
         _updates.Changed += () => _tray.SetTip(_updates.Available is { } update ? Loc.T("update.tooltip", "v" + update.Version) : "Typlo");
         _updateProbe = diagnostic ? Task.CompletedTask : UpdateProbe.RunAsync(_updates, paths.DataDir, _stop.Token);
         _controller.ShowHistoryRequested += _ => ShowUi(["--history", "--target", ((long)_platform.TrayTargetWindow).ToString(CultureInfo.InvariantCulture)]);
+        _controller.ToolsRequested += choices => ShowUi(choices ? ["--choices"] : ["--tools"]);
         _controller.PersonalWordRequested += (word, language) => ShowUi(["--add-word", word, "--word-language", language ?? ""]);
         _controller.ScreenshotRequested += destination => ShowUi(destination == Core.Imaging.CaptureDestination.File ? ["--capture", _controller.Settings.ScreenshotShape == Core.Imaging.CaptureShape.Freehand ? "freehand" : "rectangle", "--save"] : ["--capture", _controller.Settings.ScreenshotShape == Core.Imaging.CaptureShape.Freehand ? "freehand" : "rectangle"]);
         _commands = new IpcServer(Command, diagnostic ? _runtime.Name + ".commands" : null);
@@ -60,7 +61,7 @@ internal sealed class BackgroundHost : IDisposable
                 if (int.TryParse(Program.Argument("--lifetime-seconds"), out var seconds) && seconds > 0)
                     _ = Task.Delay(TimeSpan.FromSeconds(seconds)).ContinueWith(_ => host._tray.Stop());
             }
-            if (args.Contains("--history") || args.Contains("--settings") || args.Contains("--capture") || args.Contains("--shortcuts") || args.Contains("--dictionary")) host.Command(args);
+            if (args.Contains("--history") || args.Contains("--settings") || args.Contains("--capture") || args.Contains("--shortcuts") || args.Contains("--dictionary") || args.Contains("--tools") || args.Contains("--choices")) host.Command(args);
             else if (!diagnostic && (!File.Exists(paths.SettingsFile + ".seen") && !args.Contains("--tray") || host._controller.FailedHotkeys.Count > 0))
             { File.WriteAllText(paths.SettingsFile + ".seen", ""); host.ShowUi(["--settings"]); }
             host._tray.Run(); return 0;
@@ -83,7 +84,7 @@ internal sealed class BackgroundHost : IDisposable
     }
     private Task<RuntimeReply> DispatchAsync(RuntimeRequest command)
     {
-        if (command.Command is "auto-status" or "dictionary-check" or "personal-query" or "personal-edit" or "personal-add" or "personal-import" or "personal-export" or "personal-word" or "excluded-word")
+        if (command.Command is "auto-status" or "dictionary-check" or "personal-query" or "personal-edit" or "personal-add" or "personal-import" or "personal-export" or "personal-word" or "excluded-word" or "backup-export" or "backup-preview" or "backup-restore" or "tools-state")
             return DispatchDictionaryAsync(command);
         if (_diagnostic && command.Command == "register-hotkeys" && File.Exists(Path.Combine(_paths.DataDir, "hold-hotkey-restore")))
             return HoldHotkeyRestoreAsync(command);
@@ -157,6 +158,10 @@ internal sealed class BackgroundHost : IDisposable
             case "state": return State();
             case "update-start": return BeginInstall();
             case "update-state": return UpdateState();
+            case "tools-state": return new(true, Tools: await _controller.GetToolsStatusAsync());
+            case "backup-export": await _controller.ExportBackupAsync(command.Text ?? ""); return new(true);
+            case "backup-preview": return new(true, Backup: await _controller.PreviewBackupAsync(command.Text ?? ""));
+            case "backup-restore": await _controller.RestoreBackupAsync(command.Text ?? "", command.Args?.FirstOrDefault() ?? ""); return State();
             case "auto-status": return new(true, AutoCorrection: await _controller.GetAutomaticStatusAsync());
             case "dictionary-check": return new(true, AutoCorrection: await _controller.CheckDictionaryAsync());
             case "personal-query":
@@ -209,6 +214,7 @@ internal sealed class BackgroundHost : IDisposable
         {
             new(Loc.T("tray.history"),window=>ShowUi(["--history","--target",((long)window).ToString(CultureInfo.InvariantCulture)])),
             new(Loc.T("tray.settings"),_=>ShowUi(["--settings"])),new(Loc.T("shortcuts.menu"),_=>ShowUi(["--shortcuts"])),new(""),
+            new(Loc.T("tools.title"), _ => ShowUi(["--tools"])),
             new(Loc.T("manage.title"), _ => ShowUi(["--dictionary"])),
             new(Loc.T("capture.copy"),_=>ShowUi(["--capture",_controller.Settings.ScreenshotShape==Core.Imaging.CaptureShape.Freehand?"freehand":"rectangle"])),
             new(Loc.T("capture.save"),_=>ShowUi(["--capture",_controller.Settings.ScreenshotShape==Core.Imaging.CaptureShape.Freehand?"freehand":"rectangle","--save"])),new(""),

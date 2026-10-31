@@ -4,6 +4,7 @@ namespace Typlo.Core.Languages;
 
 public enum LanguageDetectionReason { Suggested, InvalidInput, UnsupportedLanguage, ProtectedToken, UnknownWord, AlreadyCorrect, LanguageRestricted, Ambiguous, LowConfidence, ExcludedWord }
 public sealed record LanguageDetection(KeyboardLayout? Layout, LanguageDetectionReason Reason);
+public sealed record LayoutOption(string LayoutId, string Text, int Evidence);
 
 /// <summary>Conservative keyboard correction from exact disk vocabulary evidence, not translation.</summary>
 public sealed class LayoutLanguageDetector(LanguageLexicon lexicon, PersonalLexicon? personal = null)
@@ -11,13 +12,23 @@ public sealed class LayoutLanguageDetector(LanguageLexicon lexicon, PersonalLexi
     private const int Reliable = 120, Margin = 32, AmbiguityMargin = 24;
     private sealed record Candidate(KeyboardLayout Layout, string Text, int Score);
 
+    public LayoutOption[] Options(string keys, IReadOnlyList<KeyboardLayout> allowed)
+    {
+        if (keys.Length is < 2 or > 128 || keys.Any(char.IsWhiteSpace)) return [];
+        var cache = new Dictionary<string, (WordEvidence? Corpus, byte Personal)>();
+        return allowed.Where(l => l.SupportsConversion).DistinctBy(l => l.Id).Select(l => Read(l, keys, cache))
+            .Where(c => c.Score > 0).OrderByDescending(c => c.Score).Take(16)
+            .Select(c => new LayoutOption(c.Layout.Id, LayoutConverter.Convert(keys, KeyboardLayouts.English, c.Layout, forceSource: true), c.Score)).ToArray();
+    }
+
     public KeyboardLayout? Suggest(string physicalKeys, KeyboardLayout source, IReadOnlyList<KeyboardLayout> allowed)
         => Analyze(physicalKeys, source, allowed).Layout;
 
-    public LanguageDetection Analyze(string physicalKeys, KeyboardLayout source, IReadOnlyList<KeyboardLayout> allowed, IReadOnlyList<KeyboardLayout>? installed = null)
+    public LanguageDetection Analyze(string physicalKeys, KeyboardLayout source, IReadOnlyList<KeyboardLayout> allowed, IReadOnlyList<KeyboardLayout>? installed = null, bool protectTechnicalInput = true)
     {
         if (physicalKeys.Length is < 2 or > 128 || physicalKeys.Any(char.IsWhiteSpace) || !source.SupportsConversion) return new(null, LanguageDetectionReason.InvalidInput);
         var typed = LayoutConverter.Convert(physicalKeys, KeyboardLayouts.English, source, forceSource: true);
+        if (protectTechnicalInput && (TechnicalToken.IsProtected(typed) || TechnicalToken.IsProtected(physicalKeys))) return new(null, LanguageDetectionReason.ProtectedToken);
         if (personal?.IsExcluded(typed) == true) return new(null, LanguageDetectionReason.ExcludedWord);
         if (!lexicon.Languages.Contains(source.LanguageCode.Split('-', '_')[0].ToLowerInvariant())) return new(null, LanguageDetectionReason.UnsupportedLanguage);
         var cache = new Dictionary<string, (WordEvidence? Corpus, byte Personal)>();

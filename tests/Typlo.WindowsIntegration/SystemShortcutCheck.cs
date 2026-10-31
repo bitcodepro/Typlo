@@ -72,8 +72,12 @@ internal static class SystemShortcutCheck
             var popupProcess = "browser";
             platform.ApplicationProcessProbe = target => target == window ? "ms-teams" : target == popup ? popupProcess : null;
             var paths = new AppPaths(Path.Combine(work, "controller"));
+            var alternateDictionaryKey = Environment.GetEnvironmentVariable("TYPLO_TEST_ALTERNATE_DICTIONARY_KEY") == "1";
+            var dictionaryShortcut = alternateDictionaryKey ? "Ctrl+Shift+F17" : "Ctrl+Shift+K";
+            var dictionaryVk = alternateDictionaryKey ? (ushort)0x80 : (ushort)0x4b;
             new SettingsStore(paths.SettingsFile).Save(new AppSettings
             {
+                ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = dictionaryShortcut,
                 LayoutsInitialized = true, Layouts = [uk.Id, ru.Id, en.Id], WindowsShortcutsInitialized = true,
                 ToggleHotkey = "", LayoutSwitchHotkey = "Ctrl+Shift", ScreenshotCopyHotkey = "Win+Shift+S", ScreenshotSaveHotkey = "",
                 ClipboardHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "", AutoCorrectEnabled = false, HistoryEnabled = false,
@@ -182,7 +186,7 @@ internal static class SystemShortcutCheck
                 var selectionLayout = platform.GetCurrentLayoutId(window);
                 var selectedWord = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
                 controller.PersonalWordRequested += (word, _) => selectedWord.TrySetResult(word);
-                Keys((0xa2, false), (0xa0, false), (0x4b, false), (0x4b, true), (0xa0, true), (0xa2, true));
+                Keys((0xa2, false), (0xa0, false), (dictionaryVk, false), (dictionaryVk, true), (0xa0, true), (0xa2, true));
                 if (await selectedWord.Task.WaitAsync(TimeSpan.FromSeconds(5)) != "ревьюкать") throw new InvalidOperationException("Ctrl+Shift+K lost the selected word");
                 state = await Command(new { op = "read" });
                 if (state.GetProperty("text").GetString() != "ревьюкать" || platform.ReadText() != "personal dictionary clipboard fixture" || platform.GetCurrentLayoutId(window) != selectionLayout)
@@ -192,11 +196,25 @@ internal static class SystemShortcutCheck
             {
                 if (platform.ReadText() == "personal dictionary clipboard fixture") platform.Restore(savedClipboard);
             }
-            report.Add("PASS Ctrl+Shift+K reads the explicit word without cycling the language, editing text or retaining its clipboard copy");
+            report.Add("PASS " + dictionaryShortcut + " reads the explicit word without cycling the language, editing text or retaining its clipboard copy");
             controller.SuspendHotkeys();
             if (!platform.RegisterHotkey(9000, Hotkey.TryParse("Ctrl+Shift")!)) throw new InvalidOperationException("Suspension retained a conflicting binding");
             platform.UnregisterAllHotkeys();
             report.Add("PASS shortcut interception can be suspended for editing settings");
+            foreach (var (key, vk) in new[] { ("Enter", (ushort)0x0d), ("Escape", (ushort)0x1b) })
+            {
+                var pressed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                void Observe(int id) { if (id == 9100) pressed.TrySetResult(); }
+                platform.HotkeyPressed += Observe;
+                try
+                {
+                    if (!platform.RegisterHotkey(9100, Hotkey.TryParse("Ctrl+Alt+Shift+" + key)!)) throw new InvalidOperationException("Cannot register spelling shortcut " + key);
+                    Keys((0xa2, false), (0xa4, false), (0xa0, false), (vk, false), (vk, true), (0xa0, true), (0xa4, true), (0xa2, true));
+                    await pressed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                    report.Add("PASS Ctrl+Alt+Shift+" + key + " is a usable native spelling-command shortcut");
+                }
+                finally { platform.HotkeyPressed -= Observe; platform.UnregisterAllHotkeys(); }
+            }
             await child.StandardInput.WriteLineAsync("{\"op\":\"exit\"}"); await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
         }
         catch (Exception e) { report.Add("FAIL " + e); foreach (var line in trace) Console.WriteLine(line); }
@@ -210,7 +228,7 @@ internal static class SystemShortcutCheck
             await File.WriteAllLinesAsync(Path.Combine(work, "system-shortcuts.txt"), report);
             foreach (var line in report) Console.WriteLine(line);
         }
-        return report.Count == 10 && report.All(line => line.StartsWith("PASS ")) ? 0 : 1;
+        return report.Count == 12 && report.All(line => line.StartsWith("PASS ")) ? 0 : 1;
     }
     internal static unsafe void Keys(params (ushort Key, bool Up)[] keys)
     {

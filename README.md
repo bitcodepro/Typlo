@@ -22,6 +22,8 @@ These are the defaults. **Settings** lets you change them; **Keyboard shortcuts*
 | **Ctrl+Alt+Shift+C** | Cycle text case: lower → Title → UPPER. |
 | **Ctrl+Alt+Shift+T** | Transliterate: `Привет` ↔ `Privet`. |
 | **Ctrl+Alt+Shift+Z** | Undo the last Typlo text change. |
+| **Ctrl+Alt+Shift+D** | Check the current field and open timings/memory tools. |
+| **Ctrl+Alt+Shift+L** | Show/cycle dictionary spellings; Ctrl+Alt+Shift+Enter applies, Ctrl+Alt+Shift+Escape cancels. |
 | **Ctrl+Shift+K** | Add the selected, correctly spelled word to your personal dictionary; confirm its language. |
 | **Ctrl+Shift+V** | Open clipboard history. Enter pastes; Shift+Enter pastes plain text. |
 | **Win+Shift+S** | Capture a rectangle or freehand area to the clipboard; open the drawing editor. |
@@ -43,6 +45,7 @@ For PowerShell inside Windows Terminal, choose the **WindowsTerminal** process.
 ## Also available
 
 - **Automatic correction after Space**, using offline dictionaries; switch it on or off in Settings.
+- **Full backup** in Tools: settings, shortcuts, profiles, snippets, personal words and exceptions in one `.typlo` file.
 - **Personal words** survive updates. Add each form you use (`писать`, `напиши`, `написал`) separately.
 - **Dictionaries and diagnostics** in Settings: search/edit personal words, import/export JSON, check dictionary health and see why auto-correction skipped a word.
 - **Multiline snippets** with a `{cursor}` marker for the insertion point.

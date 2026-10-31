@@ -76,5 +76,6 @@ public static partial class Loc
         AddAutoCorrectionStrings();
         AddPersonalWordStrings();
         AddDictionaryManagementStrings();
+        AddToolsStrings();
     }
 }

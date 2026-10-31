@@ -69,9 +69,12 @@
         <Grid x:Name="HotkeyGrid" ColumnDefinitions="190,*,Auto" RowDefinitions="Auto" />
         <CheckBox x:Name="LastWordBox" Margin="0,8,0,0"
                   Content="{l:Tr settings.lastWord}" />
+        <CheckBox x:Name="ProtectTechnicalBox" Content="{l:Tr tools.protect}" Margin="0,6,0,0" />
+        <CheckBox x:Name="SnippetsEnabledBox" Content="{l:Tr tools.snippets}" Margin="0,6,0,0" />
         <CheckBox x:Name="AutoCorrectBox" Margin="0,6,0,0" Content="{l:Tr auto.enabled}" />
         <TextBlock Classes="hint" Text="{l:Tr auto.hint}" Margin="28,0,0,4" TextWrapping="Wrap" />
         <TextBlock x:Name="DictionaryStatus" Classes="hint" Margin="28,0,0,4" TextWrapping="Wrap" />
+        <Button x:Name="ToolsButton" Content="{l:Tr tools.title}" Margin="28,4,0,8" />
         <Button x:Name="ManageDictionaryButton" Content="{l:Tr manage.title}" Margin="28,4,0,8" />
         <CheckBox x:Name="SwitchLayoutBox" Margin="0,4,0,0"
                   Content="{l:Tr settings.switchLayout}" />
