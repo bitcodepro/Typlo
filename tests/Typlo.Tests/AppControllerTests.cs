@@ -1931,7 +1931,8 @@ public sealed partial class AppControllerTests : IDisposable
                 if (changed) ForegroundChanged?.Invoke(value);
             }
         }
-        public long? ForegroundChangeVersion { get { lock (_focusGate) return TrackFocusTransitions ? _foregroundVersion : null; } }
+        public Action? OnForegroundVersionRead;
+        public long? ForegroundChangeVersion { get { OnForegroundVersionRead?.Invoke(); lock (_focusGate) return TrackFocusTransitions ? _foregroundVersion : null; } }
         public Document Document => DocumentFor(Window);
         public Document DocumentFor(nint window)
         {
