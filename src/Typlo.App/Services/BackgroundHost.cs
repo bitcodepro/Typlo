@@ -93,6 +93,10 @@ internal sealed class BackgroundHost : IDisposable
     private async Task<RuntimeReply> DispatchDictionaryAsync(RuntimeRequest command)
     {
         try { return await DispatchCore(command); }
+        catch (Exception e) when (command.Command.StartsWith("backup-", StringComparison.Ordinal) &&
+            (e is System.Text.Json.JsonException or InvalidDataException or Typlo.Core.Settings.SettingsImportException or ArgumentException ||
+             e is Microsoft.Data.Sqlite.SqliteException { SqliteErrorCode: 11 or 26 }))
+        { return new(false, Loc.T("tools.backupInvalid")); }
         catch (Microsoft.Data.Sqlite.SqliteException e) when (e.SqliteErrorCode == 19 && command.Command == "personal-edit") { return new(false, Loc.T("manage.duplicate")); }
         catch (Exception e) when (e is System.Text.Json.JsonException or InvalidDataException || (e is ArgumentException && command.Command == "personal-import"))
         { return new(false, Loc.T("manage.invalidFile")); }

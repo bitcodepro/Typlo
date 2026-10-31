@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Controls.Templates;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
@@ -18,12 +19,13 @@ internal sealed class ToolsWindow : Window
     private readonly TextBlock _choices = new() { TextWrapping = TextWrapping.Wrap };
     private readonly ListBox _timings = new() { Height = 190 };
     private readonly TabControl _tabs = new();
-    private readonly StackPanel _actions = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
+    private readonly WrapPanel _actions = new() { Orientation = Orientation.Horizontal, ItemSpacing = 8, LineSpacing = 8 };
     private bool _closed, _refreshing, _busy;
     public event Action? Restored;
     internal ToolsWindow(AppController controller, bool choicesOnly)
     {
         _controller = controller; _choicesOnly = choicesOnly;
+        _timings.ItemTemplate = new FuncDataTemplate<string>((text, _) => new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Avalonia.Thickness(8, 4) });
         _timer.Interval = TimeSpan.FromMilliseconds(choicesOnly ? 300 : 1000);
         Title = Loc.T(choicesOnly ? "tools.choices" : "tools.title"); Icon = AppIcon.Create();
         Width = choicesOnly ? 510 : 850; Height = choicesOnly ? 330 : 670; MinWidth = 450; MinHeight = 280;

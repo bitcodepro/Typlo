@@ -49,7 +49,7 @@ public sealed partial class AppController
         await StopPendingAutomaticWords();
         var window = _platform.ForegroundWindow; var version = Interlocked.Read(ref _typingVersion);
         var focus = _platform.ForegroundChangeVersion; var element = _platform.FocusedInputElement;
-        bool Valid() => window != 0 && IsTargetActive(window) && version == Interlocked.Read(ref _typingVersion) && !ForegroundChanged(focus);
+        bool Valid() => window != 0 && IsTargetActive(window) && version == Interlocked.Read(ref _typingVersion) && !ForegroundChanged(focus) && _platform.FocusedInputElement == element;
         if (!await EnterManualTextOperationAsync(window)) return;
         var timer = Stopwatch.StartNew();
         try

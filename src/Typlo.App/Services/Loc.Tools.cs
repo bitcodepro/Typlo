@@ -7,6 +7,7 @@ public static partial class Loc
         var labels = new Dictionary<string, (string En, string Ru, string Uk)>
         {
             ["tools.measurements"] = ("Field and measurements", "Поле и замеры", "Поле й виміри"),
+            ["tools.backupInvalid"] = ("The backup is invalid, unsupported or changed after preview. Select a valid .typlo file and inspect it again.", "Резервная копия повреждена, не поддерживается или изменилась после просмотра. Выбери корректный файл .typlo и проверь его заново.", "Резервна копія пошкоджена, не підтримується або змінилася після перегляду. Вибери коректний файл .typlo й перевір його знову."),
             ["tools.backupGroup"] = ("Backup and reports", "Резервная копия и отчёты", "Резервна копія та звіти"),
             ["tools.protect"] = ("Protect code, paths and commands (shell auto-correction off unless enabled by profile)", "Защищать код, пути и команды (в терминалах автозамена выключена, если не включена профилем)", "Захищати код, шляхи й команди (у терміналах автозаміну вимкнено, якщо не увімкнено профілем)"),
             ["tools.snippets"] = ("Enable snippets", "Включить сниппеты", "Увімкнути сніпети"),

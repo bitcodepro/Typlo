@@ -16,7 +16,16 @@ public partial class App
         }
         if (_toolsWindow is { IsVisible: true }) { _toolsWindow.Activate(); return; }
         _toolsWindow = new(_controller, false);
-        _toolsWindow.Restored += () => { _settingsWindow?.Close(); ShowSettings(); };
+        _toolsWindow.Restored += () =>
+        {
+            _dictionaryWindow?.Close(); _choiceWindow?.Close(); _toolsWindow?.Close();
+            if (_settingsWindow is { } settings)
+            {
+                void Reopen(object? sender, EventArgs e) { settings.Closed -= Reopen; ShowSettings(); }
+                settings.Closed += Reopen; settings.Close();
+            }
+            else ShowSettings();
+        };
         _toolsWindow.Closed += (_, _) => _toolsWindow = null; _toolsWindow.Show(); _toolsWindow.Activate();
     }
 }
