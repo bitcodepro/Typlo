@@ -810,7 +810,10 @@ public sealed partial class AppController : IDisposable
         try
         {
             var now = Environment.TickCount64;
-            if (_recentTyping.HasUndoSuppression)
+            // A click/navigation reset discards suppression unconditionally. Querying context first
+            // can wait for the Windows message thread from inside the synchronous global input hook.
+            // Layout-only gestures still validate context so same-caret Undo protection survives.
+            if ((!key.Reset || key.LayoutGesture) && _recentTyping.HasUndoSuppression)
                 _recentTyping.ValidateUndoContext(_platform.ForegroundWindow, _platform.FocusedInputElement, _platform.ForegroundChangeVersion);
             if (key.Reset)
             {
