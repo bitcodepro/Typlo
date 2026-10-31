@@ -68,12 +68,14 @@ public sealed partial class AppController
                             {
                                 try
                                 {
-                                    _personal.ReplaceSnapshot(staged.Database, () => ApplySettingsCore(staged.Settings, updateHistoryLimits: false), Path.Combine(preparation, "personal.sqlite3"), () =>
+                                    _personal.ReplaceSnapshot(staged.Database, () => ApplySettingsCore(staged.Settings, updateHistoryLimits: false, publish: false), Path.Combine(preparation, "personal.sqlite3"), () =>
                                     {
                                         new SettingsStore(Path.Combine(preparation, "settings.json")).Export(previous, Path.Combine(preparation, "settings.json"));
                                         Directory.Move(preparation, journal);
                                     });
+                                    var published = Settings.Clone();
                                     BackupArchive.CompleteRecovery(journal);
+                                    Volatile.Write(ref _publishedSettings, published);
                                 }
                                 catch (Exception restoreError)
                                 {
@@ -81,7 +83,7 @@ public sealed partial class AppController
                                     {
                                         try
                                         {
-                                            _personal.ReplaceSnapshot(Path.Combine(journal, "personal.sqlite3"), () => ApplySettingsCore(previous, updateHistoryLimits: false));
+                                            _personal.ReplaceSnapshot(Path.Combine(journal, "personal.sqlite3"), () => ApplySettingsCore(previous, updateHistoryLimits: false, publish: false));
                                             BackupArchive.CompleteRecovery(journal);
                                             CleanupRecovery(journal);
                                             _dictionaryFailed = false;

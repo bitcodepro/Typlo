@@ -308,6 +308,8 @@ and diagnostics are not included. The existing settings-only JSON export/import 
 Restore shows entry/profile/snippet counts and requires confirmation. It replaces the
 configuration and both personal collections. After successful commit, restored retention
 limits may evict old unpinned clipboard history; failed restores do not apply these limits.
+UI processes receive a committed settings snapshot over IPC, so a concurrent OCR/history
+write cannot adopt provisional retention limits during restore.
 Layout IDs unavailable on another OS/computer
 may require adjustment. The file is revalidated and its hash must match the preview.
 Only three fixed archive entries are accepted; traversal/duplicate entries, oversized

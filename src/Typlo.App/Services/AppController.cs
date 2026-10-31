@@ -36,6 +36,9 @@ public sealed partial class AppController : IDisposable
     private readonly Dictionary<int, KeyboardLayout> _layoutHotkeys = [];
 
     public AppSettings Settings { get; private set; }
+    // Immutable clone published only after a complete settings application/restore commit.
+    private AppSettings _publishedSettings = null!;
+    internal AppSettings PublishedSettings => Volatile.Read(ref _publishedSettings);
     public ClipStore Store { get; }
     public IPlatform Platform => _platform;
     public LayoutCatalog LayoutCatalog { get; private set; } = new([]);
@@ -80,6 +83,7 @@ public sealed partial class AppController : IDisposable
         DiscoverLayouts();
         LayoutCatalog.Synchronize(Settings);
         if (_remote is null) _settingsStore.Save(Settings);
+        _publishedSettings = Settings.Clone();
         Loc.SetLanguage(Settings.UiLanguage);
         Store = new ClipStore(paths.HistoryDb, ClipCrypto.LoadOrCreate(paths.KeyFile, keyProtector), Limits(Settings));
         BuildConverter();
@@ -133,13 +137,14 @@ public sealed partial class AppController : IDisposable
         BuildConverter();
         ApplySnippets();
         ConfigureApplicationLayouts();
+        Volatile.Write(ref _publishedSettings, Settings.Clone());
     }
 
     private IEnumerable<KeyboardLayout> SourceLayouts(KeyboardLayout? preferred) => preferred is { SupportsConversion: true }
         ? new[] { preferred }.Concat(_converter.Layouts).DistinctBy(l => l.Id) : _converter.Layouts;
 
     public void ApplySettings(AppSettings settings) { lock (_settingsLock) { EnsureConfigurationWritable(); ApplySettingsCore(settings); } }
-    private void ApplySettingsCore(AppSettings settings, bool updateHistoryLimits = true)
+    private void ApplySettingsCore(AppSettings settings, bool updateHistoryLimits = true, bool publish = true)
     {
         if (_remote is not null)
         {
@@ -163,6 +168,7 @@ public sealed partial class AppController : IDisposable
         ApplySnippets();
         RegisterHotkeys();
         ConfigureApplicationLayouts();
+        if (publish) Volatile.Write(ref _publishedSettings, Settings.Clone());
     }
 
     /// <summary>Raised when settings change (e.g. to refresh the tray menu); may be on any thread.</summary>
@@ -1264,7 +1270,7 @@ public sealed partial class AppController : IDisposable
 
     private void UpdateRemoteState(RuntimeReply reply)
     {
-        Settings = _settingsStore.Load(); Loc.SetLanguage(Settings.UiLanguage); LayoutCatalog.Synchronize(Settings); BuildConverter();
+        Settings = reply.Settings?.Clone() ?? _settingsStore.Load(); Loc.SetLanguage(Settings.UiLanguage); LayoutCatalog.Synchronize(Settings); BuildConverter();
         // Retention belongs to the resident. A UI state refresh may observe a staged restore.
         Store.UpdateLimits(Limits(Settings), enforce: false);
         FailedHotkeys = reply.FailedHotkeys ?? [];

@@ -147,18 +147,19 @@ public sealed partial class AppControllerTests
             if (_controller.Settings.SnippetsEnabled) return;
             // A UI process can refresh while staged settings are on disk; it must not prune history.
             using var ui = AppController.CreateRemote(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(channel));
-            Assert.Equal(10, ui.Settings.MaxItems);
+            Assert.Equal(500, ui.Settings.MaxItems);
             Assert.Equal(100, _controller.Store.Stats().Count);
+            ui.Store.Add(ClipContent.FromText("UI OCR copy during restore"));
             _controller.Store.Add(ClipContent.FromText("copy during restore"));
-            Assert.Equal(101, _controller.Store.Stats().Count);
+            Assert.Equal(102, _controller.Store.Stats().Count);
             if (failCommitMarker) Directory.CreateDirectory(Path.Combine(BackupArchive.RecoveryDirectory(_dir), "committed"));
             else throw new IOException("fixture post-application failure");
         };
         await Assert.ThrowsAnyAsync<Exception>(() => _controller.RestoreBackupAsync(file, info.Hash));
-        Assert.Equal(500, _controller.Settings.MaxItems); Assert.Equal(101, _controller.Store.Stats().Count);
+        Assert.Equal(500, _controller.Settings.MaxItems); Assert.Equal(102, _controller.Store.Stats().Count);
         _controller.Dispose();
         using var restarted = new AppController(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), diagnostic: true);
-        Assert.Equal(500, restarted.Settings.MaxItems); Assert.Equal(101, restarted.Store.Stats().Count);
+        Assert.Equal(500, restarted.Settings.MaxItems); Assert.Equal(102, restarted.Store.Stats().Count);
     }
 
     [Fact]

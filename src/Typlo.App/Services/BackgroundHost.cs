@@ -80,7 +80,7 @@ internal sealed class BackgroundHost : IDisposable
             catch (InvalidOperationException) { }
         }
         var (count, _) = _controller.Store.Stats();
-        return new(true, FailedHotkeys: _controller.FailedHotkeys.ToArray(), PausedUntil: _controller.PausedUntil, UiProcessId: pid, StoredItems: count, AvailableVersion: _updates.Available?.Version.ToString(), UiChannel: uiPipe);
+        return new(true, FailedHotkeys: _controller.FailedHotkeys.ToArray(), PausedUntil: _controller.PausedUntil, UiProcessId: pid, StoredItems: count, AvailableVersion: _updates.Available?.Version.ToString(), UiChannel: uiPipe, Settings: _controller.PublishedSettings);
     }
     private Task<RuntimeReply> DispatchAsync(RuntimeRequest command)
     {
