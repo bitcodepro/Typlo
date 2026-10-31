@@ -99,7 +99,9 @@ public sealed partial class PersonalLexicon
         lock (_gate) { ObjectDisposedException.ThrowIf(_disposed, this); Open(); }
         // Slow file I/O must not hold the reader's gate or stall automatic/manual text tools.
         using var worker = new PersonalLexicon(path);
-        return worker.ImportCore(stream, exclusions);
+        _maintenance.EnterReadLock();
+        try { return worker.ImportCore(stream, exclusions); }
+        finally { worker.Dispose(); _maintenance.ExitReadLock(); }
     }
 
     private PersonalImportResult ImportCore(Stream stream, bool exclusions)
@@ -194,7 +196,9 @@ public sealed partial class PersonalLexicon
     {
         lock (_gate) ObjectDisposedException.ThrowIf(_disposed, this);
         using var worker = new PersonalLexicon(path);
-        worker.ExportCore(file, exclusions);
+        _maintenance.EnterReadLock();
+        try { worker.ExportCore(file, exclusions); }
+        finally { worker.Dispose(); _maintenance.ExitReadLock(); }
     }
 
     private void ExportCore(string file, bool exclusions)

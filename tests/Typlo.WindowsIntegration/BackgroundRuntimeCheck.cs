@@ -49,7 +49,7 @@ internal static class BackgroundRuntimeCheck
         var pidFile = Path.Combine(Path.GetTempPath(), "typlo-ocr-helper-" + Guid.NewGuid().ToString("N") + ".pid");
         using var cancel = new CancellationTokenSource();
         var start = new ProcessStartInfo("powershell.exe") { ArgumentList = { "-NoProfile", "-NonInteractive", "-Command",
-            "[IO.File]::WriteAllText($env:TYPLO_TEST_PID, [string]$PID); Start-Sleep -Seconds 60" } };
+            "[IO.File]::WriteAllText($env:TYPLO_TEST_PID + \".tmp\", [string]$PID); [IO.File]::Move($env:TYPLO_TEST_PID + \".tmp\", $env:TYPLO_TEST_PID); Start-Sleep -Seconds 60" } };
         start.Environment["TYPLO_TEST_PID"] = pidFile;
         try
         {
@@ -74,6 +74,7 @@ internal static class BackgroundRuntimeCheck
         var paths = new AppPaths(Path.Combine(output, "data-" + Guid.NewGuid().ToString("N")));
         new SettingsStore(paths.SettingsFile).Save(new AppSettings
         {
+            ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "",
             ToggleHotkey = "", ClipboardHotkey = "", UndoHotkey = "", CaseHotkey = "", TranslitHotkey = "",
             ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", LayoutsInitialized = true, StartWithSystem = false, UiLanguage = "en",
             AddWordHotkey = "", LayoutSwitchHotkey = "", AutoCorrectEnabled = false,
@@ -227,6 +228,16 @@ internal static class BackgroundRuntimeCheck
             await runtime.CallAsync(new("excluded-word", Text: "sql", Flag: true));
             var importedExcluded = await runtime.CallAsync(new("personal-import", Text: excludedExport, Flag: true));
             Check(importedExcluded.ImportResult is { Added: 1 }, "Native AOT edits, deletes, exports and imports exclusions independently of personal forms");
+            var tools = await runtime.CallAsync(new("tools-state"));
+            Check(tools.Tools is { PrivateBytes: > 0, ManagedBytes: > 0 }, "Native AOT tools reports resident memory without editor text");
+            var fullBackup = Path.Combine(output, "full-backup.typlo");
+            await runtime.CallAsync(new("backup-export", Text: fullBackup), 120_000);
+            var preview = await runtime.CallAsync(new("backup-preview", Text: fullBackup), 120_000);
+            Check(preview.Backup is { Words: 2, Exclusions: 1 }, "Native AOT validates and previews a complete backup over IPC");
+            await runtime.CallAsync(new("personal-add", Words: [new("temporaryword", "en")]));
+            await runtime.CallAsync(new("backup-restore", Text: fullBackup, Args: [preview.Backup!.Hash]), 120_000);
+            var restoredPage = await runtime.CallAsync(new("personal-query", WordQuery: new()));
+            Check(restoredPage.WordPage is { Total: 2 }, "Native AOT restores the exact dictionary and settings snapshot over IPC");
             var checkedDictionary = await runtime.CallAsync(new("dictionary-check"));
             Check(checkedDictionary.AutoCorrection?.Health == DictionaryHealth.Ready, "Resident verifies dictionary readers without restarting");
             Check(IpcServer.Send(["--dictionary"], info["commands"]), "Dictionary manager UI command accepted");

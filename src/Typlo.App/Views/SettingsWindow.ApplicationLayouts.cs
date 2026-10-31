@@ -10,7 +10,7 @@ namespace Typlo.App.Views;
 public partial class SettingsWindow
 {
     private sealed record ApplicationRow(TextBox Process, CheckBox Enabled, List<string> Order,
-        HashSet<string> Selected, TextBlock Status);
+        HashSet<string> Selected, TextBlock Status, CheckBox Auto, CheckBox Snippets);
     private sealed record RunningApplication(string Process, string Title)
     {
         public override string ToString() => Title.Length == 0 ? Process : $"{Title} · {Process}";
@@ -38,8 +38,10 @@ public partial class SettingsWindow
         var selected = rule.Layouts.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12 };
         var choices = new StackPanel { Spacing = 3 };
-        var editor = new ApplicationRow(process, enabled, order, selected, status);
-        var content = new StackPanel { Spacing = 7, Children = { header, enabled, choices, status } };
+        var auto = new CheckBox { Content = Loc.T("tools.profileAuto"), IsThreeState = true, IsChecked = rule.AutoCorrection };
+        var snippets = new CheckBox { Content = Loc.T("tools.profileSnippets"), IsThreeState = true, IsChecked = rule.SnippetExpansion };
+        var editor = new ApplicationRow(process, enabled, order, selected, status, auto, snippets);
+        var content = new StackPanel { Spacing = 7, Children = { header, enabled, auto, snippets, choices, status } };
         var border = new Border { Padding = new(10), BorderThickness = new(1), CornerRadius = new(6),
             BorderBrush = Brushes.Gray, Child = content };
         _applicationRows.Add(editor); ApplicationLayoutRows.Children.Add(border);
@@ -92,7 +94,7 @@ public partial class SettingsWindow
     private List<ApplicationLayoutRule> CollectApplicationLayouts() => _applicationRows.Select(row => new ApplicationLayoutRule
     {
         ProcessName = ApplicationLayoutRule.ProcessKey(row.Process.Text), Enabled = row.Enabled.IsChecked == true,
-        Layouts = row.Order.Where(row.Selected.Contains).ToList(),
+        Layouts = row.Order.Where(row.Selected.Contains).ToList(), AutoCorrection = row.Auto.IsChecked, SnippetExpansion = row.Snippets.IsChecked,
     }).ToList();
 
     private async Task<string?> ChooseProcessAsync()

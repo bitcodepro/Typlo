@@ -1866,7 +1866,7 @@ public sealed partial class AppControllerTests : IDisposable
             case "image-write-begin": _controller.BeginExternalClipboardWrite(); break;
             case "image-write-end": _controller.EndExternalClipboardWrite(); break;
         }
-        return new(true, PausedUntil: _controller.PausedUntil);
+        return new(true, PausedUntil: _controller.PausedUntil, Settings: _controller.PublishedSettings);
     }, diagnostic => _output.WriteLine(diagnostic.Summary));
 
     [Fact]

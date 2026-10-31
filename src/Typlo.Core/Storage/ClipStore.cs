@@ -126,9 +126,9 @@ public sealed class ClipStore : IDisposable
             if ((long)columns.ExecuteScalar()! == 0) Exec("ALTER TABLE clips ADD COLUMN extra BLOB");
     }
 
-    public void UpdateLimits(StoreLimits limits)
+    public void UpdateLimits(StoreLimits limits, bool enforce = true)
     {
-        lock (_lock) { _limits = limits; Enforce(); }
+        lock (_lock) { _limits = limits; if (enforce) Enforce(); }
         Changed?.Invoke();
     }
 

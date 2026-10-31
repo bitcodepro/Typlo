@@ -10,7 +10,7 @@ public sealed partial class AppController
     public async Task SetPersonalWordAsync(string word, string language, bool remove = false)
     {
         if (_remote is not null) await _remote.CallAsync(new("personal-word", Text: word, Args: [language], Flag: remove));
-        else await Task.Run(() => _personal.Set(word, language, remove));
+        else await MutateDictionaryAsync(() => _personal.Set(word, language, remove));
     }
 
     internal async Task CapturePersonalWordAsync()

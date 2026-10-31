@@ -13,28 +13,28 @@ public sealed partial class AppController
     public async Task EditPersonalWordAsync(PersonalWord original, PersonalWord replacement, bool exclusions = false)
     {
         if (exclusions) await StopPendingAutomaticWords();
-        if (_remote is null) await Task.Run(() => _personal.Edit(original, replacement, exclusions));
+        if (_remote is null) await MutateDictionaryAsync(() => _personal.Edit(original, replacement, exclusions));
         else await _remote.CallAsync(new("personal-edit", OriginalWord: original, ReplacementWord: replacement, Flag: exclusions));
     }
 
     public async Task<PersonalImportResult> AddPersonalWordsAsync(PersonalWord[] words, bool exclusions = false)
     {
         if (exclusions) await StopPendingAutomaticWords();
-        return _remote is null ? await Task.Run(() => _personal.AddMany(words, exclusions)) :
+        return _remote is null ? await MutateDictionaryAsync(() => _personal.AddMany(words, exclusions)) :
             (await _remote.CallAsync(new("personal-add", Words: words, Flag: exclusions))).ImportResult ?? throw new IOException("Missing import result");
     }
 
     public async Task<PersonalImportResult> ImportPersonalWordsAsync(string file, bool exclusions = false)
     {
         if (exclusions) await StopPendingAutomaticWords();
-        return _remote is null ? await Task.Run(() => _personal.Import(file, exclusions)) :
+        return _remote is null ? await MutateDictionaryAsync(() => _personal.Import(file, exclusions)) :
             (await _remote.CallAsync(new("personal-import", Text: file, Flag: exclusions), 120_000)).ImportResult ?? throw new IOException("Missing import result");
     }
 
     public async Task SetExcludedWordAsync(string word, bool remove = false)
     {
         if (_remote is not null) await _remote.CallAsync(new("excluded-word", Text: word, Flag: remove));
-        else { await StopPendingAutomaticWords(); await Task.Run(() => _personal.SetExclusion(word, remove)); }
+        else { await StopPendingAutomaticWords(); await MutateDictionaryAsync(() => _personal.SetExclusion(word, remove)); }
     }
 
     public async Task ExportPersonalWordsAsync(string file, bool exclusions = false)

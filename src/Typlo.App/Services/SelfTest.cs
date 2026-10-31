@@ -92,6 +92,31 @@ internal static partial class SelfTest
             await Check("dictionary collection switches reject stale selection during delayed and failed queries",
                 () => CheckDictionaryCollectionSwitchesAsync(controller));
 
+            await Check("manual spelling popup preserves editor focus and supports apply and Undo", async () =>
+            {
+                Views.ToolsWindow? popup = null;
+                try
+                {
+                    return await TransformSequenceInTextBox(platform, "", [
+                        (async () =>
+                        {
+                            var target = platform.ForegroundWindow;
+                            var english = controller.AvailableLayouts.First(l => l.LanguageCode == "en" && l.SupportsConversion);
+                            platform.SwitchKeyboardLayout(target, english);
+                            foreach (var c in "ghb") UserChar(platform, c);
+                            await Task.Delay(100);
+                            await controller.CycleChoicesAsync();
+                            if ((await controller.GetToolsStatusAsync()).Choices.Length == 0) throw new InvalidOperationException("No spelling candidates");
+                            await Dispatcher.UIThread.InvokeAsync(() => { popup = new(controller, true); popup.Show(); });
+                            await Task.Delay(100);
+                            if (platform.ForegroundWindow != target) throw new InvalidOperationException("Candidate popup activated instead of the editor");
+                            await controller.ApplyChoiceAsync();
+                        }, "при"),
+                        (() => controller.UndoLastTransformAsync(), "ghb")], select: false);
+                }
+                finally { await Dispatcher.UIThread.InvokeAsync(() => popup?.Close()); }
+            }, when: caps.SimulateInput && platform.Capabilities.SwitchLayout);
+
             await Check("own writes are not captured", async () =>
             {
                 platform.SetText("own-write-should-not-be-stored");
@@ -507,6 +532,7 @@ internal static partial class SelfTest
     private static Core.Settings.AppSettings Tweak(Core.Settings.AppSettings s)
     {
         // Self-test must not grab the user's real shortcuts or touch autostart.
+        s.ToolsHotkey = s.ChoicesHotkey = s.AcceptChoiceHotkey = s.CancelChoiceHotkey = "";
         s.ToggleHotkey = "";
         s.CaseHotkey = ""; s.TranslitHotkey = ""; s.UndoHotkey = ""; s.AddWordHotkey = ""; s.LayoutSwitchHotkey = "";
         s.AutoCorrectEnabled = false;

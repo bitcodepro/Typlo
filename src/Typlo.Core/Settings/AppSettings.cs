@@ -73,6 +73,10 @@ public sealed class AppSettings
 
     /// <summary>Puts back the text replaced by the last layout fix, case change or transliteration.</summary>
     public string UndoHotkey { get; set; } = "Ctrl+Alt+Shift+Z";
+    public string ToolsHotkey { get; set; } = "Ctrl+Alt+Shift+D";
+    public string ChoicesHotkey { get; set; } = "Ctrl+Alt+Shift+L";
+    public string AcceptChoiceHotkey { get; set; } = "Ctrl+Alt+Shift+Enter";
+    public string CancelChoiceHotkey { get; set; } = "Ctrl+Alt+Shift+Escape";
     public string AddWordHotkey { get; set; } = "Ctrl+Shift+K";
 
     /// <summary>Typed triggers replaced by text (";addr" → address). Stored in settings.json, not encrypted.</summary>
@@ -80,6 +84,8 @@ public sealed class AppSettings
 
     /// <summary>With nothing selected, convert only the recently typed input run; never include older adjacent text.</summary>
     public bool ConvertLastWord { get; set; } = true;
+    public bool ProtectTechnicalInput { get; set; } = true;
+    public bool SnippetsEnabled { get; set; } = true;
     public bool AutoCorrectEnabled { get; set; } = true;
 
     /// <summary>Also switch the system keyboard layout to the target after converting.</summary>
@@ -156,7 +162,7 @@ public sealed class AppSettings
         CaseHotkey ??= "";
         TranslitHotkey ??= "";
         UndoHotkey ??= "";
-        AddWordHotkey ??= "";
+        AddWordHotkey ??= ""; ToolsHotkey ??= ""; ChoicesHotkey ??= ""; AcceptChoiceHotkey ??= ""; CancelChoiceHotkey ??= "";
         if (!Enum.IsDefined(ScreenshotShape)) ScreenshotShape = CaptureShape.Rectangle;
         ScreenshotCopyHotkey ??= "";
         ScreenshotSaveHotkey ??= "";

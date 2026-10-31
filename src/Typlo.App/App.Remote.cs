@@ -85,6 +85,7 @@ public partial class App
                     ShowHistory(target);
                 }
                 else if (args.Contains("--shortcuts")) ShowShortcuts();
+                else if (args.Contains("--tools") || args.Contains("--choices")) ShowTools(args.Contains("--choices"));
                 else if (args.Contains("--dictionary")) ShowDictionary();
                 else if (args.Contains("--update")) ShowUpdateDialog();
                 else if (args.Contains("--update-failed")) _ = ShowUpdateFailureAsync();

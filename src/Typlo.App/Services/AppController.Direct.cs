@@ -46,12 +46,13 @@ public sealed partial class AppController
     // False is a capability decline before any mutation. All other outcomes are terminal for this
     // command: especially a timed-out write must never be followed by a clipboard paste.
     private async Task<bool> TryDirectTransformAsync(nint window, nint element, long version, Func<bool> valid,
-        Func<string, KeyboardLayout?, (string Text, KeyboardLayout? SwitchTo)> transform, KeyboardLayout? emptyLayout)
+        Func<string, KeyboardLayout?, (string Text, KeyboardLayout? SwitchTo)> transform, KeyboardLayout? emptyLayout, RecentTyping.Run? specifiedRun = null)
     {
         if (!_platform.SupportsDirectTextEditing || element == 0)
         { Log.Info("Direct text: selection strategy (no eligible native target)"); return false; }
+        var useRecent = specifiedRun is not null || Settings.ConvertLastWord;
         var last = CaptureLastTransform(window);
-        if (Settings.ConvertLastWord && last is { Direct: null })
+        if (useRecent && last is { Direct: null })
         { Log.Info("Direct text: selection strategy (retained selection range)"); return false; }
         var capture = await _platform.CaptureDirectTextAsync(window, element, valid);
         if (capture.Status != DirectCaptureStatus.Ready) Log.Info("Direct text: capture=" + capture.Status);
@@ -62,10 +63,10 @@ public sealed partial class AppController
         KeyboardLayout? source = active;
         var start = snapshot.SelectionStart;
         var length = snapshot.SelectionEnd - start;
-        var run = _recentTyping.Capture(window);
+        var run = specifiedRun ?? _recentTyping.Capture(window);
         var automatic = false;
         var reusing = false;
-        if (Settings.ConvertLastWord && run is not null)
+        if (useRecent && run is not null)
         {
             automatic = true;
             length = run.Keys.Length;
@@ -74,7 +75,7 @@ public sealed partial class AppController
             source = run.MatchSource(snapshot.Text.Substring(start, length), SourceLayouts(active));
             if (source is null) return true;
         }
-        else if (Settings.ConvertLastWord && last?.Direct is { } previous)
+        else if (useRecent && last?.Direct is { } previous)
         {
             if (!previous.SameContext(snapshot)) { LastTransform = null; return true; }
             start = last.DirectStart;

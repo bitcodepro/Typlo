@@ -264,3 +264,67 @@ CI, release versioning, verified packages and first-release instructions:
 - `src/Typlo.App/Platform` – `IPlatform`; `Windows/`, `Mac/`, `Linux/`; `Shared/HookPlatformBase` (SharpHook)
 - `src/Typlo.App/Views` – tray, history popup, settings
 - `src/Typlo.App/Services` – controller, IPC (`--history`, `--convert`), self-test
+
+
+## Field tools, spelling choices and measurements
+
+Open **Tools, performance and backup** from Settings or the tray. Close Settings before
+using global commands in an editor (Settings intentionally suspends shortcuts).
+
+- `Ctrl+Alt+Shift+D`: read-only capability check of the current field. Direct reading
+  and synthetic-input availability are distinguished from proven editor acceptance;
+  checking a field does not replace text or write the clipboard.
+- `Ctrl+Alt+Shift+L`: show dictionary candidates for the current recently typed word.
+  Press again to cycle; `Ctrl+Alt+Shift+Enter` applies, `Ctrl+Alt+Shift+Escape` cancels.
+  The popup does not activate. Typing, caret/focus changes, Settings changes or 30 s
+  expiry invalidate the choice. Application language cycles constrain candidates;
+  explicit choices remain available when automatic correction is disabled.
+- Shortcuts can be changed in Settings and are listed in the shortcuts window.
+
+Measurements retain only the latest 50 operations in RAM. They include dictionary lookup,
+modifier/copy/editor waits, replacement/verification and clipboard restoration. Median/P95
+include canceled attempts. Resident working set, private commit and managed memory are
+sampled on demand; no background profiling or forced collections are added. Performance
+reports contain no words, clipboard contents, candidate strings or application names.
+
+Application profiles independently set automatic correction and snippet expansion to On,
+Off or Inherit. Empty language selections still use the global cycle. Snippets also have a
+global enable setting. Feature policies are cached; the keyboard callback performs no
+process lookup or dictionary I/O. Settings changes cancel in-flight automatic decisions.
+
+**Protect code, paths and commands** is enabled by default. It guards paths, URLs, emails,
+flags, identifiers, mixed-case symbols and code operators before opening the vocabulary.
+Known terminal/shell processes default to no automatic correction; an explicit profile On
+can override this. Ordinary hyphenated words and the reported `htdm.dftim` spelling remain
+eligible. Manual layout conversion and explicit spelling choices are not blocked.
+
+## Full configuration backup
+
+In Tools → **Backup and reports**, export an applied configuration as `.typlo`. It contains
+settings, all shortcuts, language/application rules, snippets, personal exact forms and
+never-correct exceptions. Clipboard history, copied files, screenshots, encryption keys
+and diagnostics are not included. The existing settings-only JSON export/import remains.
+
+Restore shows entry/profile/snippet counts and requires confirmation. It replaces the
+configuration and both personal collections. After successful commit, restored retention
+limits may evict old unpinned clipboard history; failed restores do not apply these limits.
+UI processes receive a committed settings snapshot over IPC, so a concurrent OCR/history
+write cannot adopt provisional retention limits during restore.
+Layout IDs unavailable on another OS/computer
+may require adjustment. The file is revalidated and its hash must match the preview.
+Only three fixed archive entries are accepted; traversal/duplicate entries, oversized
+payloads, invalid settings or SQLite schema/data are rejected before live data changes.
+Only the canonical Typlo table/index definitions are accepted; extra CHECK constraints,
+collations, conflict policies and indexes are rejected.
+Limits: 64 MiB archive/database, 1 MiB settings, one million entries per collection.
+
+SQLite snapshots and streaming compression/extraction keep large dictionaries on disk.
+Existing readers/writers are coordinated during replacement. Failed application rolls
+back both files, with a local recovery journal for an interrupted process; startup recovers
+a pending restore before reading settings. A successful rollback retires the journal
+before edits resume, so later user changes survive restart. An incomplete rollback
+blocks settings/dictionary writes and editing commands until restart recovery.
+Completed journals are cleaned on restart if
+immediate cleanup fails. Backups contain private user configuration and should be kept
+private. New tool labels are available in English, Russian and Ukrainian; other interface
+languages currently fall back to English for those labels.

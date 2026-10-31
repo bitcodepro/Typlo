@@ -18,6 +18,7 @@ public sealed partial class AppController : IDisposable
     private const int ClipboardId = 2;
     private const int CaseId = 3;
     private const int TranslitId = 4;
+    private const int ToolsId = 20, ChoicesId = 21, AcceptChoiceId = 22, CancelChoiceId = 23;
     private const int UndoId = 5;
     private const int ScreenshotCopyId = 6;
     private const int ScreenshotSaveId = 7;
@@ -35,6 +36,9 @@ public sealed partial class AppController : IDisposable
     private readonly Dictionary<int, KeyboardLayout> _layoutHotkeys = [];
 
     public AppSettings Settings { get; private set; }
+    // Immutable clone published only after a complete settings application/restore commit.
+    private AppSettings _publishedSettings = null!;
+    internal AppSettings PublishedSettings => Volatile.Read(ref _publishedSettings);
     public ClipStore Store { get; }
     public IPlatform Platform => _platform;
     public LayoutCatalog LayoutCatalog { get; private set; } = new([]);
@@ -73,11 +77,13 @@ public sealed partial class AppController : IDisposable
         _diagnostic = diagnostic;
         _platform = platform;
         _settingsStore = new SettingsStore(paths.SettingsFile);
+        if (_remote is null) Typlo.Core.Settings.BackupArchive.Recover(paths.DataDir);
         Settings = _settingsStore.Load();
         if (_remote is null && !_diagnostic && _platform.Name == "Windows") Settings.InitializeWindowsShortcuts();
         DiscoverLayouts();
         LayoutCatalog.Synchronize(Settings);
         if (_remote is null) _settingsStore.Save(Settings);
+        _publishedSettings = Settings.Clone();
         Loc.SetLanguage(Settings.UiLanguage);
         Store = new ClipStore(paths.HistoryDb, ClipCrypto.LoadOrCreate(paths.KeyFile, keyProtector), Limits(Settings));
         BuildConverter();
@@ -117,6 +123,8 @@ public sealed partial class AppController : IDisposable
     }
 
     public void RefreshKeyboardLayouts()
+    { lock (_settingsLock) { EnsureConfigurationWritable(); RefreshKeyboardLayoutsCore(); } }
+    private void RefreshKeyboardLayoutsCore()
     {
         if (_remote is not null)
         {
@@ -129,24 +137,27 @@ public sealed partial class AppController : IDisposable
         BuildConverter();
         ApplySnippets();
         ConfigureApplicationLayouts();
+        Volatile.Write(ref _publishedSettings, Settings.Clone());
     }
 
     private IEnumerable<KeyboardLayout> SourceLayouts(KeyboardLayout? preferred) => preferred is { SupportsConversion: true }
         ? new[] { preferred }.Concat(_converter.Layouts).DistinctBy(l => l.Id) : _converter.Layouts;
 
-    public void ApplySettings(AppSettings settings)
+    public void ApplySettings(AppSettings settings) { lock (_settingsLock) { EnsureConfigurationWritable(); ApplySettingsCore(settings); } }
+    private void ApplySettingsCore(AppSettings settings, bool updateHistoryLimits = true, bool publish = true)
     {
         if (_remote is not null)
         {
             UpdateRemoteState(_remote.Call(new("settings", Settings: settings)));
             SettingsChanged?.Invoke(); return;
         }
+        _ = StopPendingAutomaticWords(); CancelChoices();
         settings.Normalize();
         LayoutCatalog.Synchronize(settings);
         Settings = settings;
         Loc.SetLanguage(settings.UiLanguage);
         _settingsStore.Save(settings);
-        Store.UpdateLimits(Limits(settings));
+        if (updateHistoryLimits) Store.UpdateLimits(Limits(settings));
         BuildConverter();
         if (!_diagnostic)
         {
@@ -157,6 +168,7 @@ public sealed partial class AppController : IDisposable
         ApplySnippets();
         RegisterHotkeys();
         ConfigureApplicationLayouts();
+        if (publish) Volatile.Write(ref _publishedSettings, Settings.Clone());
     }
 
     /// <summary>Raised when settings change (e.g. to refresh the tray menu); may be on any thread.</summary>
@@ -243,6 +255,10 @@ public sealed partial class AppController : IDisposable
 
         Register(ToggleId, Settings.ToggleHotkey, Loc.T("hk.toggle"));
         Register(LayoutSwitchId, Settings.LayoutSwitchHotkey, Loc.T("hk.inputCycle"));
+        Register(ToolsId, Settings.ToolsHotkey, Loc.T("tools.title"));
+        Register(ChoicesId, Settings.ChoicesHotkey, Loc.T("tools.choices"));
+        Register(AcceptChoiceId, Settings.AcceptChoiceHotkey, Loc.T("tools.accept"));
+        Register(CancelChoiceId, Settings.CancelChoiceHotkey, Loc.T("tools.cancel"));
         Register(AddWordId, Settings.AddWordHotkey, Loc.T("dictionary.title"));
         Register(ClipboardId, Settings.ClipboardHotkey, Loc.T("hk.history"));
         Register(CaseId, Settings.CaseHotkey, Loc.T("hk.case"));
@@ -274,6 +290,10 @@ public sealed partial class AppController : IDisposable
             else if (id == ClipboardId) ShowHistoryRequested?.Invoke(_platform.ForegroundWindow);
             else if (id == ToggleId) _ = ConvertSelectionAsync(null);
             else if (id == LayoutSwitchId) _ = CycleInputLayoutAsync();
+            else if (id == ToolsId) _ = ProbeFieldAsync();
+            else if (id == ChoicesId) _ = CycleChoicesAsync();
+            else if (id == AcceptChoiceId) _ = ApplyChoiceAsync();
+            else if (id == CancelChoiceId) CancelChoices();
             else if (id == AddWordId) _ = CapturePersonalWordAsync();
             else if (id == CaseId) _ = ChangeCaseAsync();
             else if (id == TranslitId) _ = TransliterateAsync();
@@ -404,12 +424,14 @@ public sealed partial class AppController : IDisposable
             Log.Info("Text tools: synthetic input is not available on this platform/session");
             return;
         }
+        var timingStart = Stopwatch.GetTimestamp();
         var origin = _platform.ForegroundWindow;
         var originInput = Interlocked.Read(ref _typingVersion);
         if (automaticWord is null) await StopPendingAutomaticWords();
         else if (!AutomaticWordIsCurrent(automaticWord)) return;
         if (!await EnterManualTextOperationAsync(origin)) { if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Busy; return; }
-        var timing = new TransformTiming();
+        var timing = new TransformTiming(RecordPerformance, timingStart);
+        timing.Mark("queue/drain");
         try
         {
             if (_platform.ForegroundWindow != origin || Interlocked.Read(ref _typingVersion) != originInput ||
@@ -470,9 +492,9 @@ public sealed partial class AppController : IDisposable
     }
 
     /// <summary>Only phase names and elapsed time, never text or key contents.</summary>
-    private sealed class TransformTiming
+    private sealed class TransformTiming(Action<PerformanceSample> record, long started)
     {
-        private readonly long _start = Stopwatch.GetTimestamp();
+        private readonly long _start = started;
         private readonly List<string> _phases = [];
         private long _previous;
 
@@ -486,6 +508,7 @@ public sealed partial class AppController : IDisposable
         public void Finish()
         {
             Mark("settle/restore");
+            record(new(DateTimeOffset.UtcNow, "text-replacement", _previous, _phases.ToArray()));
             Log.Info($"Text tool timing: {string.Join(", ", _phases)}; total={_previous}ms");
         }
     }
@@ -835,12 +858,14 @@ public sealed partial class AppController : IDisposable
 
     private async Task ExpandSnippetAsync(Snippet snippet, nint window, long typingVersion)
     {
+        var snippetProcess = _platform.GetApplicationProcessName(window) ?? "";
+        if (!SnippetsForProcess(snippetProcess)) return;
         if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(2))) return;
         ClipboardSnapshot? snapshot = null;
         try
         {
             await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromMilliseconds(500));
-            bool StillValid() => IsTargetActive(window) && Interlocked.Read(ref _typingVersion) == typingVersion;
+            bool StillValid() => SnippetsForProcess(snippetProcess) && IsTargetActive(window) && Interlocked.Read(ref _typingVersion) == typingVersion;
             if (!StillValid())
             {
                 Log.Info("Snippet skipped: another window is active or more text was typed");
@@ -1245,8 +1270,9 @@ public sealed partial class AppController : IDisposable
 
     private void UpdateRemoteState(RuntimeReply reply)
     {
-        Settings = _settingsStore.Load(); Loc.SetLanguage(Settings.UiLanguage); LayoutCatalog.Synchronize(Settings); BuildConverter();
-        Store.UpdateLimits(Limits(Settings));
+        Settings = reply.Settings?.Clone() ?? _settingsStore.Load(); Loc.SetLanguage(Settings.UiLanguage); LayoutCatalog.Synchronize(Settings); BuildConverter();
+        // Retention belongs to the resident. A UI state refresh may observe a staged restore.
+        Store.UpdateLimits(Limits(Settings), enforce: false);
         FailedHotkeys = reply.FailedHotkeys ?? [];
         PausedUntil = reply.PausedUntil;
     }

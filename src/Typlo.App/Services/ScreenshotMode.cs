@@ -28,6 +28,7 @@ internal static class ScreenshotMode
             var s = controller.Settings.Clone();
             s.AutoCorrectEnabled = false;
             s.AddWordHotkey = ""; s.LayoutSwitchHotkey = "";
+            s.ToolsHotkey = s.ChoicesHotkey = s.AcceptChoiceHotkey = s.CancelChoiceHotkey = "";
             s.ToggleHotkey = ""; s.ClipboardHotkey = ""; s.CaseHotkey = ""; s.TranslitHotkey = ""; s.UndoHotkey = ""; s.ScreenshotCopyHotkey = ""; s.ScreenshotSaveHotkey = ""; s.StartWithSystem = false;
             controller.ApplySettings(s);
 
@@ -180,6 +181,9 @@ internal static class ScreenshotMode
                 Save(manager, Path.Combine(outDir, "dictionary_manager.png"));
                 manager.ShowExclusions(); await Task.Delay(500);
                 Save(manager, Path.Combine(outDir, "dictionary_exclusions.png")); manager.Close();
+                var toolWindow = new ToolsWindow(controller, false); toolWindow.Show(); await Task.Delay(400);
+                Save(toolWindow, Path.Combine(outDir, "tools.png"));
+                toolWindow.ShowBackup(); await Task.Delay(100); Save(toolWindow, Path.Combine(outDir, "tools_backup.png")); toolWindow.Close();
                 var diagnosis = new DictionaryWindow(controller, diagnostics: true); diagnosis.Show(); await Task.Delay(500);
                 diagnosis.DisplayStatus(new(true, true, DictionaryHealth.Ready,
                     [new(DateTimeOffset.UtcNow, AutoCorrectionReason.Corrected, 194, "en", "ru"),

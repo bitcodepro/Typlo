@@ -17,7 +17,8 @@ public sealed partial class AppControllerTests
         _platform.Type(keys + " "); await _controller.AutoCorrectionIdleAsync();
         var status = await _controller.GetAutomaticStatusAsync();
         Assert.Equal(expected, Assert.Single(status.Recent).Reason);
-        Assert.Equal(DictionaryHealth.Ready, status.Health);
+        Assert.Equal(expected == AutoCorrectionReason.ProtectedToken ? DictionaryHealth.NotChecked : DictionaryHealth.Ready, status.Health);
+        if (expected == AutoCorrectionReason.ProtectedToken) Assert.False(_controller.DictionaryIsOpen);
         var report = AutoCorrectionReport.Format(status);
         Assert.DoesNotContain(keys, report); Assert.DoesNotContain("original clipboard", report); Assert.DoesNotContain("editor", report);
     }
