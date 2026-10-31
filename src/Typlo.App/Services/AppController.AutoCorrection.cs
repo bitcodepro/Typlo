@@ -25,6 +25,7 @@ public sealed partial class AppController
 
     internal async Task ReplaceUpdateFilesAsync(Action replace)
     {
+        EnsureConfigurationWritable();
         if (Interlocked.Exchange(ref _updating, 1) != 0) throw new InvalidOperationException("An update is already being installed");
         var editing = _editingSettings;
         try

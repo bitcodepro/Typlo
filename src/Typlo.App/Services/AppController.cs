@@ -119,6 +119,8 @@ public sealed partial class AppController : IDisposable
     }
 
     public void RefreshKeyboardLayouts()
+    { lock (_settingsLock) { EnsureConfigurationWritable(); RefreshKeyboardLayoutsCore(); } }
+    private void RefreshKeyboardLayoutsCore()
     {
         if (_remote is not null)
         {
@@ -136,8 +138,8 @@ public sealed partial class AppController : IDisposable
     private IEnumerable<KeyboardLayout> SourceLayouts(KeyboardLayout? preferred) => preferred is { SupportsConversion: true }
         ? new[] { preferred }.Concat(_converter.Layouts).DistinctBy(l => l.Id) : _converter.Layouts;
 
-    public void ApplySettings(AppSettings settings) { lock (_settingsLock) ApplySettingsCore(settings); }
-    private void ApplySettingsCore(AppSettings settings)
+    public void ApplySettings(AppSettings settings) { lock (_settingsLock) { EnsureConfigurationWritable(); ApplySettingsCore(settings); } }
+    private void ApplySettingsCore(AppSettings settings, bool updateHistoryLimits = true)
     {
         if (_remote is not null)
         {
@@ -150,7 +152,7 @@ public sealed partial class AppController : IDisposable
         Settings = settings;
         Loc.SetLanguage(settings.UiLanguage);
         _settingsStore.Save(settings);
-        Store.UpdateLimits(Limits(settings));
+        if (updateHistoryLimits) Store.UpdateLimits(Limits(settings));
         BuildConverter();
         if (!_diagnostic)
         {
@@ -1263,7 +1265,8 @@ public sealed partial class AppController : IDisposable
     private void UpdateRemoteState(RuntimeReply reply)
     {
         Settings = _settingsStore.Load(); Loc.SetLanguage(Settings.UiLanguage); LayoutCatalog.Synchronize(Settings); BuildConverter();
-        Store.UpdateLimits(Limits(Settings));
+        // Retention belongs to the resident. A UI state refresh may observe a staged restore.
+        Store.UpdateLimits(Limits(Settings), enforce: false);
         FailedHotkeys = reply.FailedHotkeys ?? [];
         PausedUntil = reply.PausedUntil;
     }

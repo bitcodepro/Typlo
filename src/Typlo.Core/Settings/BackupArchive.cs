@@ -70,6 +70,12 @@ public static class BackupArchive
     }
 
     public static string RecoveryDirectory(string data) => Path.Combine(data, ".restore-pending");
+    /// <summary>Both commit and successful rollback retire the snapshot before normal writes resume.</summary>
+    public static void CompleteRecovery(string recovery)
+    {
+        using var marker = new FileStream(Path.Combine(recovery, "committed"), FileMode.Create, FileAccess.Write, FileShare.None);
+        marker.WriteByte(1); marker.Flush(flushToDisk: true);
+    }
     public static void Recover(string data)
     {
         var recovery = RecoveryDirectory(data); if (!System.IO.Directory.Exists(recovery)) return;

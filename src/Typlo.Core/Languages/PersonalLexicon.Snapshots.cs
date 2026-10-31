@@ -57,6 +57,21 @@ public sealed partial class PersonalLexicon
         if (!Equals(command.ExecuteScalar(), "ok")) throw new InvalidDataException("Damaged dictionary snapshot.");
         command.CommandText = "SELECT count(*) FROM sqlite_master WHERE type IN ('trigger','view') OR (type='table' AND name NOT IN ('words','excluded_words'))";
         if (Convert.ToInt32(command.ExecuteScalar()) != 0) throw new InvalidDataException("Unsupported dictionary schema.");
+        // Column metadata cannot detect CHECKs, conflict policies, collations or unique indexes.
+        // Backups are Typlo-generated snapshots, so accept only our canonical DDL.
+        static string Definition(string sql) => string.Concat(sql.Where(c => !char.IsWhiteSpace(c))).ToUpperInvariant();
+        var expected = new Dictionary<string, string>(StringComparer.Ordinal)
+        { ["words"] = WordsSchema, ["words_language"] = LanguageIndexSchema, ["excluded_words"] = ExclusionsSchema };
+        command.CommandText = "SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL";
+        using (var definitions = command.ExecuteReader())
+        {
+            while (definitions.Read())
+            {
+                if (!expected.Remove(definitions.GetString(0), out var definition) || Definition(definitions.GetString(1)) != Definition(definition))
+                    throw new InvalidDataException("Unsupported dictionary constraints or indexes.");
+            }
+        }
+        if (expected.Count != 0) throw new InvalidDataException("Incomplete dictionary schema.");
         void Schema(string table, string[] columns)
         {
             command.CommandText = "PRAGMA table_info(" + table + ")";

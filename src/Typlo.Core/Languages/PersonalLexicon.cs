@@ -9,6 +9,9 @@ public sealed partial class PersonalLexicon(string path) : IDisposable
     private readonly Lock _gate = new();
     private SqliteConnection? _connection;
     private bool _disposed;
+    private const string WordsSchema = "CREATE TABLE words (word TEXT NOT NULL, language TEXT NOT NULL, PRIMARY KEY(word,language)) WITHOUT ROWID";
+    private const string LanguageIndexSchema = "CREATE INDEX words_language ON words(language,word)";
+    private const string ExclusionsSchema = "CREATE TABLE excluded_words (word TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID";
 
     public static bool IsWord(string? text) => text is { Length: >= 2 and <= 128 } && char.IsLetter(text[0]) && char.IsLetter(text[^1]) &&
         text.Select((c, i) => char.IsLetter(c) || (c is '\'' or '-' && i > 0 && i < text.Length - 1 && char.IsLetter(text[i - 1]) && char.IsLetter(text[i + 1]))).All(x => x);
@@ -23,7 +26,10 @@ public sealed partial class PersonalLexicon(string path) : IDisposable
         {
             connection.Open();
             using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA cache_size=-32; PRAGMA mmap_size=0; CREATE TABLE IF NOT EXISTS words (word TEXT NOT NULL, language TEXT NOT NULL, PRIMARY KEY(word,language)) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS words_language ON words(language,word); CREATE TABLE IF NOT EXISTS excluded_words (word TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID;";
+            command.CommandText = "PRAGMA cache_size=-32; PRAGMA mmap_size=0; " +
+                WordsSchema.Replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS") + ";" +
+                LanguageIndexSchema.Replace("CREATE INDEX", "CREATE INDEX IF NOT EXISTS") + ";" +
+                ExclusionsSchema.Replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS") + ";";
             command.ExecuteNonQuery();
             return _connection = connection;
         }

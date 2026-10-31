@@ -3,6 +3,9 @@ using Microsoft.Data.Sqlite;
 using Typlo.Core.Languages;
 using Typlo.Core.Settings;
 using Typlo.Core.Text;
+using Typlo.App.Services;
+using Typlo.Core;
+using Typlo.Core.Storage;
 
 namespace Typlo.Tests;
 
@@ -24,6 +27,8 @@ public sealed class BackupArchiveTests : IDisposable
         using var zip = ZipFile.OpenRead(Archive); Assert.Equal(new[] { "format.txt", "personal.sqlite3", "settings.json" }, zip.Entries.Select(e => e.FullName).Order().ToArray());
         words.Set("другое", "ru"); words.ReplaceSnapshot(stage.Database, () => { });
         Assert.Equal(0, words.Lookup("другое")); Assert.Equal(2, words.Lookup("напиши")); Assert.True(words.IsExcluded("ghb"));
+        words.Set("новое", "ru"); words.Set("нове", "uk");
+        Assert.Equal(2, words.Lookup("новое")); Assert.Equal(4, words.Lookup("нове"));
     }
     [Fact]
     public void InvalidArchivesAndWrongFormatsCannotEscapeStagingOrTouchLiveData()
@@ -72,7 +77,7 @@ public sealed class BackupArchiveTests : IDisposable
 public sealed partial class AppControllerTests
 {
     [Fact]
-    public async Task SettingsFailureDuringRestoreRollsBackBothCollectionsAndKeepsRecoveryJournal()
+    public async Task SuccessfulRollbackRetiresJournalAndPreservesLaterEditsAcrossRestart()
     {
         var file = Path.Combine(_dir, "rollback.typlo");
         await _controller.SetPersonalWordAsync("напиши", "ru");
@@ -84,7 +89,118 @@ public sealed partial class AppControllerTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.RestoreBackupAsync(file, info.Hash));
         Assert.True(_controller.Settings.SnippetsEnabled); Assert.Equal(2, (await _controller.QueryPersonalWordsAsync(new())).Total);
         Assert.Single((await _controller.QueryPersonalWordsAsync(new(Exclusions: true))).Items);
+        Assert.False(Directory.Exists(BackupArchive.RecoveryDirectory(_dir)));
+        var later = _controller.Settings.Clone(); later.MaxItems = 123; _controller.ApplySettings(later);
+        await _controller.SetPersonalWordAsync("добавлено", "ru"); await _controller.SetExcludedWordAsync("api");
+        _controller.Dispose();
+        using var restarted = new AppController(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), diagnostic: true);
+        Assert.Equal(123, restarted.Settings.MaxItems); Assert.True(restarted.Settings.SnippetsEnabled);
+        Assert.Equal(3, (await restarted.QueryPersonalWordsAsync(new())).Total);
+        Assert.Equal(2, (await restarted.QueryPersonalWordsAsync(new(Exclusions: true))).Total);
+    }
+
+    [Fact]
+    public async Task IncompleteRollbackBlocksAllConfigurationWritesUntilRestartRecovery()
+    {
+        var file = Path.Combine(_dir, "incomplete.typlo");
+        await _controller.SetPersonalWordAsync("напиши", "ru");
+        var settings = _controller.Settings.Clone(); settings.SnippetsEnabled = false; _controller.ApplySettings(settings);
+        await _controller.ExportBackupAsync(file); var info = await _controller.PreviewBackupAsync(file);
+        settings = _controller.Settings.Clone(); settings.SnippetsEnabled = true; _controller.ApplySettings(settings);
+        Task? queuedWrite = null;
+        _controller.SettingsChanged += () =>
+        {
+            queuedWrite ??= _controller.SetPersonalWordAsync("очередь", "ru");
+            throw new IOException("fixture callback fails during apply and rollback");
+        };
+        await Assert.ThrowsAsync<AggregateException>(() => _controller.RestoreBackupAsync(file, info.Hash));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => queuedWrite!);
         Assert.True(Directory.Exists(BackupArchive.RecoveryDirectory(_dir)));
+        Assert.Throws<InvalidOperationException>(() => _controller.ApplySettings(_controller.Settings.Clone()));
+        Assert.Throws<InvalidOperationException>(() => _controller.RefreshKeyboardLayouts());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.SetPersonalWordAsync("добавлено", "ru"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.SetExcludedWordAsync("api"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.AddPersonalWordsAsync([new("добавлено", "ru")]));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.EditPersonalWordAsync(new("напиши", "ru"), new("добавлено", "ru")));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.ImportPersonalWordsAsync(Path.Combine(_dir, "unused.json")));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.ReplaceUpdateFilesAsync(() => throw new Exception("must not run")));
+        _controller.Dispose();
+        using var restarted = new AppController(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), diagnostic: true);
+        Assert.True(restarted.Settings.SnippetsEnabled); Assert.Single((await restarted.QueryPersonalWordsAsync(new())).Items);
+        await restarted.SetPersonalWordAsync("добавлено", "ru"); Assert.Equal(2, (await restarted.QueryPersonalWordsAsync(new())).Total);
+        Assert.False(Directory.Exists(BackupArchive.RecoveryDirectory(_dir)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedRestoreCannotEvictHistoryBeforeCommit(bool failCommitMarker)
+    {
+        var file = Path.Combine(_dir, "retention.typlo");
+        var settings = _controller.Settings.Clone(); settings.SnippetsEnabled = false; settings.MaxItems = 10; _controller.ApplySettings(settings);
+        await _controller.ExportBackupAsync(file); var info = await _controller.PreviewBackupAsync(file);
+        settings = _controller.Settings.Clone(); settings.SnippetsEnabled = true; settings.MaxItems = 500; _controller.ApplySettings(settings);
+        for (var i = 0; i < 100; i++) _controller.Store.Add(ClipContent.FromText("history " + i));
+        var channel = "Typlo.Test." + Guid.NewGuid().ToString("N"); using var server = RemoteServer(channel);
+        _controller.SettingsChanged += () =>
+        {
+            if (_controller.Settings.SnippetsEnabled) return;
+            // A UI process can refresh while staged settings are on disk; it must not prune history.
+            using var ui = AppController.CreateRemote(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(channel));
+            Assert.Equal(10, ui.Settings.MaxItems);
+            Assert.Equal(100, _controller.Store.Stats().Count);
+            _controller.Store.Add(ClipContent.FromText("copy during restore"));
+            Assert.Equal(101, _controller.Store.Stats().Count);
+            if (failCommitMarker) Directory.CreateDirectory(Path.Combine(BackupArchive.RecoveryDirectory(_dir), "committed"));
+            else throw new IOException("fixture post-application failure");
+        };
+        await Assert.ThrowsAnyAsync<Exception>(() => _controller.RestoreBackupAsync(file, info.Hash));
+        Assert.Equal(500, _controller.Settings.MaxItems); Assert.Equal(101, _controller.Store.Stats().Count);
+        _controller.Dispose();
+        using var restarted = new AppController(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), diagnostic: true);
+        Assert.Equal(500, restarted.Settings.MaxItems); Assert.Equal(101, restarted.Store.Stats().Count);
+    }
+
+    [Fact]
+    public async Task SuccessfulRestoreEnforcesHistoryLimitsOnlyAfterConfigurationCommit()
+    {
+        var file = Path.Combine(_dir, "limits.typlo");
+        var settings = _controller.Settings.Clone(); settings.MaxItems = 10; _controller.ApplySettings(settings);
+        await _controller.ExportBackupAsync(file); var info = await _controller.PreviewBackupAsync(file);
+        settings = _controller.Settings.Clone(); settings.MaxItems = 500; _controller.ApplySettings(settings);
+        for (var i = 0; i < 100; i++) _controller.Store.Add(ClipContent.FromText("history " + i));
+        _controller.SettingsChanged += () => { if (_controller.Settings.MaxItems == 10) Assert.Equal(100, _controller.Store.Stats().Count); };
+        await _controller.RestoreBackupAsync(file, info.Hash);
+        Assert.Equal(10, _controller.Store.Stats().Count);
+    }
+
+    [Theory]
+    [InlineData("CHECK(language='en')")]
+    [InlineData("COLLATE NOCASE")]
+    [InlineData("UNIQUE INDEX")]
+    public async Task ArchiveWithUnexpectedSchemaCannotChangeLiveSettingsOrDictionary(string alteration)
+    {
+        var file = Path.Combine(_dir, "schema.typlo"); var database = Path.Combine(_dir, "unexpected.sqlite3");
+        await _controller.SetPersonalWordAsync("напиши", "ru"); await _controller.SetExcludedWordAsync("api");
+        var settings = _controller.Settings.Clone(); settings.MaxItems = 111; _controller.ApplySettings(settings);
+        await _controller.ExportBackupAsync(file);
+        using (var connection = new SqliteConnection($"Data Source={database};Pooling=False"))
+        {
+            connection.Open(); using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE words (word TEXT " + (alteration == "COLLATE NOCASE" ? "COLLATE NOCASE " : "") +
+                "NOT NULL, language TEXT NOT NULL, PRIMARY KEY(word,language)" + (alteration.StartsWith("CHECK") ? ", " + alteration : "") +
+                ") WITHOUT ROWID; CREATE INDEX words_language ON words(language,word); CREATE TABLE excluded_words (word TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID;" +
+                (alteration == "UNIQUE INDEX" ? "CREATE UNIQUE INDEX unexpected ON words(language);" : "");
+            command.ExecuteNonQuery();
+        }
+        using (var archive = ZipFile.Open(file, ZipArchiveMode.Update))
+        { archive.GetEntry("personal.sqlite3")!.Delete(); archive.CreateEntryFromFile(database, "personal.sqlite3"); }
+        await Assert.ThrowsAsync<InvalidDataException>(() => _controller.PreviewBackupAsync(file));
+        await Assert.ThrowsAsync<InvalidDataException>(() => _controller.RestoreBackupAsync(file, "unused"));
+        Assert.Single((await _controller.QueryPersonalWordsAsync(new())).Items);
+        Assert.Single((await _controller.QueryPersonalWordsAsync(new(Exclusions: true))).Items);
+        Assert.Equal(111, _controller.Settings.MaxItems);
+        Assert.False(Directory.Exists(BackupArchive.RecoveryDirectory(_dir)));
     }
 
     [Fact]

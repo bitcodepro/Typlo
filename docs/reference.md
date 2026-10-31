@@ -306,16 +306,23 @@ never-correct exceptions. Clipboard history, copied files, screenshots, encrypti
 and diagnostics are not included. The existing settings-only JSON export/import remains.
 
 Restore shows entry/profile/snippet counts and requires confirmation. It replaces the
-configuration and both personal collections. Layout IDs unavailable on another OS/computer
+configuration and both personal collections. After successful commit, restored retention
+limits may evict old unpinned clipboard history; failed restores do not apply these limits.
+Layout IDs unavailable on another OS/computer
 may require adjustment. The file is revalidated and its hash must match the preview.
 Only three fixed archive entries are accepted; traversal/duplicate entries, oversized
 payloads, invalid settings or SQLite schema/data are rejected before live data changes.
+Only the canonical Typlo table/index definitions are accepted; extra CHECK constraints,
+collations, conflict policies and indexes are rejected.
 Limits: 64 MiB archive/database, 1 MiB settings, one million entries per collection.
 
 SQLite snapshots and streaming compression/extraction keep large dictionaries on disk.
 Existing readers/writers are coordinated during replacement. Failed application rolls
 back both files, with a local recovery journal for an interrupted process; startup recovers
-a pending restore before reading settings. Completed journals are cleaned on restart if
+a pending restore before reading settings. A successful rollback retires the journal
+before edits resume, so later user changes survive restart. An incomplete rollback
+blocks settings/dictionary writes and editing commands until restart recovery.
+Completed journals are cleaned on restart if
 immediate cleanup fails. Backups contain private user configuration and should be kept
 private. New tool labels are available in English, Russian and Ukrainian; other interface
 languages currently fall back to English for those labels.

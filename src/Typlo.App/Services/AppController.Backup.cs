@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Typlo.Core.Settings;
 
 namespace Typlo.App.Services;
@@ -7,6 +6,23 @@ public sealed partial class AppController
 {
     private readonly SemaphoreSlim _backupGate = new(1, 1);
     private readonly Lock _settingsLock = new();
+    private volatile bool _configurationRecoveryRequired;
+    private void EnsureConfigurationWritable()
+    {
+        if (_configurationRecoveryRequired) throw new InvalidOperationException("Restore recovery is incomplete. Restart Typlo before changing settings or the dictionary.");
+    }
+    private async Task<T> MutateDictionaryAsync<T>(Func<T> mutation)
+    {
+        await _backupGate.WaitAsync();
+        try { EnsureConfigurationWritable(); return await Task.Run(mutation); }
+        finally { _backupGate.Release(); }
+    }
+    private Task MutateDictionaryAsync(Action mutation) => MutateDictionaryAsync(() => { mutation(); return true; });
+    private static void CleanupRecovery(string journal)
+    {
+        try { Directory.Delete(journal, true); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Log.Error("Finalized restore cleanup deferred to restart", e); }
+    }
     public async Task ExportBackupAsync(string file)
     {
         if (_remote is not null) { await _remote.CallAsync(new("backup-export", Text: file), 120_000); return; }
@@ -29,6 +45,7 @@ public sealed partial class AppController
         await _backupGate.WaitAsync();
         try
         {
+            EnsureConfigurationWritable();
             using var staged = await Task.Run(() => BackupArchive.Read(file, _dictionaryDataDir));
             if (!string.Equals(staged.Info.Hash, expectedHash, StringComparison.Ordinal)) throw new InvalidDataException("Backup changed after preview; inspect it again.");
             if (Interlocked.CompareExchange(ref _updating, 1, 0) != 0) throw new InvalidOperationException("Application maintenance is already running.");
@@ -51,23 +68,37 @@ public sealed partial class AppController
                             {
                                 try
                                 {
-                                    _personal.ReplaceSnapshot(staged.Database, () => ApplySettings(staged.Settings), Path.Combine(preparation, "personal.sqlite3"), () =>
+                                    _personal.ReplaceSnapshot(staged.Database, () => ApplySettingsCore(staged.Settings, updateHistoryLimits: false), Path.Combine(preparation, "personal.sqlite3"), () =>
                                     {
                                         new SettingsStore(Path.Combine(preparation, "settings.json")).Export(previous, Path.Combine(preparation, "settings.json"));
                                         Directory.Move(preparation, journal);
                                     });
-                                    File.WriteAllText(Path.Combine(journal, "committed"), "ok");
+                                    BackupArchive.CompleteRecovery(journal);
                                 }
-                                catch
+                                catch (Exception restoreError)
                                 {
-                                    _dictionaryFailed = true;
                                     if (Directory.Exists(journal))
-                                        _personal.ReplaceSnapshot(Path.Combine(journal, "personal.sqlite3"), () => ApplySettings(previous));
-                                    else ApplySettings(previous);
+                                    {
+                                        try
+                                        {
+                                            _personal.ReplaceSnapshot(Path.Combine(journal, "personal.sqlite3"), () => ApplySettingsCore(previous, updateHistoryLimits: false));
+                                            BackupArchive.CompleteRecovery(journal);
+                                            CleanupRecovery(journal);
+                                            _dictionaryFailed = false;
+                                        }
+                                        catch (Exception rollbackError)
+                                        {
+                                            _configurationRecoveryRequired = true; _dictionaryFailed = true;
+                                            _platform.UnregisterAllHotkeys();
+                                            throw new AggregateException("Restore and recovery failed. Restart Typlo before making further changes.", restoreError, rollbackError);
+                                        }
+                                    }
                                     throw;
                                 }
-                                try { Directory.Delete(journal, true); }
-                                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Log.Error("Committed restore cleanup deferred to restart", e); }
+                                // History is outside the archive/rollback. Enforce its limits only after commit.
+                                try { Store.UpdateLimits(Limits(Settings)); }
+                                catch (Exception e) { Log.Error("Committed restore history limits could not be enforced", e); }
+                                CleanupRecovery(journal);
                                 _dictionaryFailed = false;
                             }
                             finally { if (Directory.Exists(preparation)) Directory.Delete(preparation, true); }
@@ -76,7 +107,11 @@ public sealed partial class AppController
                 }
                 finally { _convertGate.Release(); }
             }
-            finally { Volatile.Write(ref _updating, 0); if (_editingSettings) SuspendHotkeys(); else RegisterHotkeys(); }
+            finally
+            {
+                if (!_configurationRecoveryRequired)
+                { Volatile.Write(ref _updating, 0); if (_editingSettings) SuspendHotkeys(); else RegisterHotkeys(); }
+            }
         }
         finally { _backupGate.Release(); }
     }
