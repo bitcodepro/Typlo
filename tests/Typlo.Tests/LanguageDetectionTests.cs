@@ -57,5 +57,28 @@ public sealed class LanguageDetectionTests : IDisposable
         Assert.Null(_lexicon.Lookup("xqzvnotaword987"));
         Assert.Null(_lexicon.Lookup("\ud800"));
     }
+    [Fact]
+    public async Task LookupsCannotReopenThePackWhileUpdateFilesAreBeingReplaced()
+    {
+        Assert.NotNull(_lexicon.Lookup("hello"));
+        using var replacing = new ManualResetEventSlim(); using var release = new ManualResetEventSlim();
+        using var lookupStarted = new ManualResetEventSlim();
+        var update = Task.Factory.StartNew(() => _lexicon.WithClosedReader(() =>
+        {
+            Assert.False(_lexicon.IsOpen); replacing.Set();
+            if (!release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("fixture update release");
+        }), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        Task<WordEvidence?>? lookup = null;
+        try
+        {
+            Assert.True(replacing.Wait(TimeSpan.FromSeconds(5)));
+            lookup = Task.Factory.StartNew(() => { lookupStarted.Set(); return _lexicon.Lookup("hello"); },
+                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            Assert.True(lookupStarted.Wait(TimeSpan.FromSeconds(5)));
+            Assert.NotSame(lookup, await Task.WhenAny(lookup, Task.Delay(200)));
+        }
+        finally { release.Set(); await update; if (lookup is not null) await lookup; }
+        Assert.NotNull(await lookup!); Assert.True(_lexicon.IsOpen);
+    }
     public void Dispose() => _lexicon.Dispose();
 }

@@ -9,6 +9,72 @@ namespace Typlo.App.Services;
 
 internal static partial class SelfTest
 {
+    private static async Task<string?> CheckDictionarySpellingInputAsync(AppController controller)
+    {
+        const string custom = "typloxyz";
+        var layouts = controller.AvailableLayouts.ToArray();
+        PersonalWordDialog? dialog = null;
+        T Control<T>(string name) where T : Control => dialog!.GetLogicalDescendants().OfType<T>().Single(c => c.Name == name);
+        static void Require(bool value, string error) { if (!value) throw new InvalidOperationException(error); }
+        async Task Until(Func<bool> predicate)
+        {
+            var deadline = System.Diagnostics.Stopwatch.StartNew();
+            while (!await Dispatcher.UIThread.InvokeAsync(predicate))
+            { if (deadline.Elapsed > TimeSpan.FromSeconds(5)) throw new TimeoutException("Dictionary input did not settle"); await Task.Delay(25); }
+        }
+        var english = Array.FindIndex(Loc.Languages.Where(l => PersonalLexicon.LanguageCodes.Contains(l.Code)).ToArray(), l => l.Code == "en");
+        try
+        {
+            controller.ConfigureDiagnosticLayouts(Typlo.Core.Layouts.KeyboardLayouts.All);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                dialog = new(controller, "ыйд", "ru"); dialog.Show();
+                Control<ComboBox>("PersonalWordLanguage").SelectedIndex = english;
+                Require(!Control<Button>("PersonalWordAdd").IsEnabled, "Wrong-script word was silently accepted");
+                Control<Button>("DictionaryUseSpelling").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Require(dialog.Word.Text == "sql", "Explicit conversion did not update the spelling");
+            });
+            // TextBox.TextChanged is posted by Avalonia; wait for validation to observe the new value.
+            await Until(() => Control<Button>("PersonalWordAdd").IsEnabled);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                Control<Button>("PersonalWordAdd").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            });
+            await Until(() => !string.IsNullOrEmpty(Control<TextBlock>("PersonalWordMessage").Text));
+            Require((await controller.QueryPersonalWordsAsync(new("sql", "en"))).Total == 0, "Bundled word was duplicated in the personal dictionary");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                Require(dialog!.IsVisible, "Duplicate warning closed before it could be read");
+                Control<Button>("PersonalWordPriority").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            });
+            await Until(() => !dialog!.IsVisible);
+            Require((await controller.QueryPersonalWordsAsync(new("sql", "en"))).Total == 1, "Explicit personal priority did not preserve the override workflow");
+            await controller.SetPersonalWordAsync("sql", "en", remove: true);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                dialog = new(controller, custom, "en"); dialog.Show();
+                Control<Button>("PersonalWordAdd").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            });
+            await Until(() => !dialog!.IsVisible);
+            Require((await controller.QueryPersonalWordsAsync(new(custom, "en"))).Total == 1, "New spelling was not stored");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                dialog = new(controller, custom.ToUpperInvariant(), "en"); dialog.Show();
+                Control<Button>("PersonalWordAdd").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            });
+            await Until(() => Control<TextBlock>("PersonalWordMessage").Text == Loc.T("dictionary.existsPersonal", custom));
+            Require((await controller.QueryPersonalWordsAsync(new(custom, "en"))).Total == 1, "Personal word was duplicated");
+            return null;
+        }
+        finally
+        {
+            await Dispatcher.UIThread.InvokeAsync(() => dialog?.Close());
+            await controller.SetPersonalWordAsync(custom, "en", remove: true);
+            await controller.SetPersonalWordAsync("sql", "en", remove: true);
+            controller.ConfigureDiagnosticLayouts(layouts);
+        }
+    }
+
     private static async Task<string?> CheckDictionaryCollectionSwitchesAsync(AppController controller)
     {
         // Identical text in both collections reproduces the destructive cross-collection case.

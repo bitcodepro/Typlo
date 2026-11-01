@@ -46,7 +46,7 @@ For PowerShell inside Windows Terminal, choose the **WindowsTerminal** process.
 
 - **Automatic correction after Space**, using offline dictionaries; switch it on or off in Settings.
 - **Full backup** in Tools: settings, shortcuts, profiles, snippets, personal words and exceptions in one `.typlo` file.
-- **Personal words** survive updates. Add each form you use (`писать`, `напиши`, `написал`) separately.
+- **Personal words** survive updates. Save the correct spelling (`sql` + English, rather than `ыйд`). Existing words are skipped; add forms such as `писать`, `напиши`, `написал` separately.
 - **Dictionaries and diagnostics** in Settings: search/edit personal words, import/export JSON, check dictionary health and see why auto-correction skipped a word.
 - **Multiline snippets** with a `{cursor}` marker for the insertion point.
 - **Screenshot drawing tools** and encrypted clipboard history for text, images and files.
