@@ -8,13 +8,15 @@ namespace Typlo.App.Services;
 public sealed partial class AppController
 {
     private enum ClipboardPasteState { Confirmed, Unchanged, Unknown }
+    // These editors handle Copy/Paste asynchronously. Use the protected-copy/Unicode path
+    // instead of trusting a custom paste handler to replace its selection.
     private bool NeedsPasteVerification(nint window) => _platform.SupportsTextRangeBatch &&
-        ApplicationLayoutRule.ProcessKey(_platform.GetApplicationProcessName(window)).ToLowerInvariant() is "ms-teams" or "teams";
+        ApplicationLayoutRule.ProcessKey(_platform.GetApplicationProcessName(window)).ToLowerInvariant() is "ms-teams" or "teams" or "chatgpt";
     private bool PreferUnicodeReplacement(nint window, string text) => _platform.SupportsUnicodeTextReplacement &&
         text.Length <= 4096 && text.IndexOfAny(['\n', '\r', '\t']) < 0 && NeedsPasteVerification(window);
 
     // Some rich editors append a paragraph terminator to a copied word. Strip only one
-    // virtual terminator, only in Teams, and only when the entire remaining range matches
+    // virtual terminator, only in known asynchronous editors, and only when the entire remaining range matches
     // the known input/result. Explicit multiline selections keep their actual line breaks.
     private string? MatchKnownEditorCopy(nint window, string text, Func<string, bool> expected)
     {
@@ -23,7 +25,7 @@ public sealed partial class AppController
         var trimmed = text.EndsWith("\r\n", StringComparison.Ordinal) ? text[..^2] :
             text.EndsWith('\n') ? text[..^1] : null;
         if (trimmed is not null && expected(trimmed)) return trimmed;
-        Log.Info($"Teams copy range mismatch: chars={text.Length}, whitespace={text.All(char.IsWhiteSpace)}, paragraph={trimmed is not null}");
+        Log.Info($"Rich editor copy range mismatch: chars={text.Length}, whitespace={text.All(char.IsWhiteSpace)}, paragraph={trimmed is not null}");
         return null;
     }
     private void CanonicalizeVerifiedCopy(nint window, string raw, string canonical)
@@ -72,7 +74,7 @@ public sealed partial class AppController
         if (!Current()) return ClipboardPasteState.Unknown;
         if (probeRemainingSelection && NeedsPasteVerification(window))
         {
-            // Teams can ignore a paste and leave the original selection intact. Re-selecting
+            // Rich editors can ignore a paste and leave the original selection intact. Re-selecting
             // from that selection would extend it into older text. Probe it before moving the caret.
             var selected = await CopySelectionAsync(window, Current, allowRevalidation: false,
                 copyTimeout: TimeSpan.FromMilliseconds(120));
