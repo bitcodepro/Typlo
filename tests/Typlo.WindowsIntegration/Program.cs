@@ -336,14 +336,17 @@ internal sealed class EditorCheck : Form
                 finally { await _browser.ExecuteScriptAsync("document.getElementById('editor').removeEventListener('input',window.serializeSpace)"); }
             });
 
+            foreach (var editorProcess in new[] { "ms-teams", "ChatGPT" })
             foreach (var automatic in new[] { false, true })
             foreach (var interruption in new[] { 0, 1, 2, 3 })
             {
+                var inputWord = editorProcess == "ChatGPT" ? "rfr" : "ghb";
+                var outputWord = editorProcess == "ChatGPT" ? "как" : "при";
                 var interruptCopy = interruption != 0;
                 var gestureName = interruption == 2 ? " after physical Alt+Shift" : interruption == 3 ? " after disabled physical Ctrl+Shift" : "";
-                await Check(interruptCopy ? $"continuing input{gestureName} during delayed Teams {(automatic ? "automatic" : "manual")} copy preserves the word" :
-                    automatic ? "dictionary correction in a Teams-like editor with delayed paragraph copy and blocked paste" :
-                    "manual repeat and Undo in a Teams-like editor with delayed paragraph copy and blocked paste", async () =>
+                await Check(interruptCopy ? $"continuing input{gestureName} during delayed {editorProcess} {(automatic ? "automatic" : "manual")} copy preserves the word" :
+                    automatic ? $"dictionary correction in a {editorProcess}-like editor with delayed paragraph copy and custom paste" :
+                    $"manual repeat and Undo in a {editorProcess}-like editor with delayed paragraph copy and custom paste", async () =>
                 {
                     var active = true;
                     var copySession = Guid.NewGuid().ToString("N");
@@ -386,10 +389,10 @@ internal sealed class EditorCheck : Form
                         }
                     }
                     _browser.CoreWebView2.WebMessageReceived += OnCopy;
-                    platform.ApplicationProcessProbe = target => target == Handle ? "ms-teams" : null;
+                    platform.ApplicationProcessProbe = target => target == Handle ? editorProcess : null;
                     try
                     {
-                        using var controller = Controller(platform, automatic ? "teams-auto" : "teams-manual", recent: true);
+                        using var controller = Controller(platform, $"{editorProcess}-{automatic}-{interruption}", recent: true);
                         var source = english ?? KeyboardLayouts.English;
                         controller.ConfigureDiagnosticLayouts([source, KeyboardLayouts.Russian, KeyboardLayouts.Ukrainian]);
                         var settings = controller.Settings.Clone(); settings.Layouts = [source.Id, "ru", "uk"]; settings.AutoCorrectEnabled = automatic;
@@ -400,7 +403,7 @@ internal sealed class EditorCheck : Form
                         await platform.WaitForTypingWatchAsync();
                         if (english is not null) platform.SwitchKeyboardLayout(Handle, english);
                         await Prepare("готовое ", select: false, formatted: true);
-                        await _browser.ExecuteScriptAsync($"window.fixtureCopySession='{copySession}';window.fixtureGateCopy={(interruption > 1 ? "true" : "false")}");
+                        await _browser.ExecuteScriptAsync($"window.fixtureCopySession='{copySession}';window.fixtureGateCopy={(interruption > 1 ? "true" : "false")};window.fixtureAppendPaste={(editorProcess == "ChatGPT" ? "true" : "false")}");
                         await _browser.ExecuteScriptAsync("""
                             (() => {const e=document.getElementById('editor');window.blockedPastes=0;
                             window.fixtureCopy=e => {e.preventDefault();const session=window.fixtureCopySession;
@@ -408,13 +411,15 @@ internal sealed class EditorCheck : Form
                               chrome.webview.postMessage({fixtureCopyStarted:true,fixtureSession:session});
                               setTimeout(()=>ready.then(()=>{const text=getSelection().toString();
                               chrome.webview.postMessage({fixtureCopy:text ? text+'\r\n' : '',fixtureSession:session});}),window.fixtureCopyDelay);};
-                            window.fixturePaste=e => {window.blockedPastes++;e.preventDefault();};
+                            window.fixturePaste=e => {window.blockedPastes++;e.preventDefault();
+                              if(window.fixtureAppendPaste){getSelection().collapseToEnd();document.execCommand('insertText',false,e.clipboardData.getData('text/plain'));}};
                             e.addEventListener('copy',window.fixtureCopy);e.addEventListener('paste',window.fixturePaste);})()
                             """);
                         await _browser.ExecuteScriptAsync($"window.fixtureCopyDelay={(interruption > 1 ? 350 : 60)}");
-                        const string marker = "teams-copy-clipboard-fixture";
+                        const string marker = "rich-editor-copy-clipboard-fixture";
+                        var replacementTimer = Stopwatch.StartNew();
                         platform.SetText(marker);
-                        await TypeFixture(platform);
+                        await TypeFixture(platform, inputWord.ToUpperInvariant());
                         if (interruption > 1)
                             await _browser.ExecuteScriptAsync("""
                                 (()=>{const selection=getSelection(),range=selection.getRangeAt(0),tail=document.createTextNode('TAIL');
@@ -422,7 +427,7 @@ internal sealed class EditorCheck : Form
                                 selection.removeAllRanges();selection.addRange(range);})()
                                 """);
                         if (platform.CanRetainDirectInputTarget(Handle, platform.FocusedInputElement))
-                            throw new InvalidOperationException("Teams fixture unexpectedly used native Edit replacement");
+                            throw new InvalidOperationException("Rich editor fixture unexpectedly used native Edit replacement");
                         if (automatic) platform.SendChord(KeyModifiers.None, "Space");
                         else await controller.ConvertSelectionAsync(KeyboardLayouts.Russian);
                         var suffix = automatic ? " " : "";
@@ -435,23 +440,24 @@ internal sealed class EditorCheck : Form
                             }
                             var typed = interruption > 1 ? "x" : "xyZ";
                             var tail = interruption > 1 ? "TAIL" : "";
-                            await ExpectNormalizedText("готовое ghb" + suffix + typed + tail);
+                            await ExpectNormalizedText("готовое " + inputWord + suffix + typed + tail);
                             await controller.AutoCorrectionIdleAsync();
                             await gesture;
-                            await ExpectNormalizedText("готовое ghb" + suffix + typed + tail);
+                            await ExpectNormalizedText("готовое " + inputWord + suffix + typed + tail);
                             if (continuedKeys != typed.Length) throw new InvalidOperationException("Continuing input was observed more than once or lost");
                             if (new[] { 0x58, 0x59, 0x5a, 0xa0, 0xa2, 0xa4 }.Any(key => (Native.GetAsyncKeyState(key) & 0x8000) != 0))
                                 throw new InvalidOperationException("Continuing input left a key or modifier held");
                             return;
                         }
-                        await ExpectNormalizedText("готовое при" + suffix);
+                        await ExpectNormalizedText("готовое " + outputWord + suffix);
                         await controller.AutoCorrectionIdleAsync();
+                        _report.Add($"TIMING {editorProcess} automatic={automatic}: replacement={replacementTimer.ElapsedMilliseconds}ms (includes fixture typing, debounce and delayed copy)");
                         await controller.ConvertSelectionAsync(KeyboardLayouts.English);
-                        await ExpectNormalizedText("готовое ghb" + suffix);
+                        await ExpectNormalizedText("готовое " + inputWord + suffix);
                         await controller.UndoLastTransformAsync();
-                        await ExpectNormalizedText("готовое при" + suffix);
+                        await ExpectNormalizedText("готовое " + outputWord + suffix);
                         if (await _browser.ExecuteScriptAsync("window.blockedPastes") != "0") throw new InvalidOperationException("Replacement still depended on Ctrl+V");
-                        if (platform.ReadText() != marker) throw new InvalidOperationException("Teams replacement did not restore the clipboard");
+                        if (platform.ReadText() != marker) throw new InvalidOperationException("Rich editor replacement did not restore the clipboard");
                     }
                     finally
                     {

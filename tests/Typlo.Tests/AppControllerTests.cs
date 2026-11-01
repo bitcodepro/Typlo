@@ -1973,7 +1973,7 @@ public sealed partial class AppControllerTests : IDisposable
         }
         private bool _inTextRangeBatch;
         private readonly Queue<Action> _deferredTyping = new();
-        public bool DropNextPaste;
+        public bool DropNextPaste, AppendPaste;
         public bool TrySendTextRangeBatch(nint window, int characters, bool paste, Func<bool> stillValid)
         {
             if (!SupportsTextRangeBatch || !stillValid() || Window != window) return false;
@@ -2109,6 +2109,12 @@ public sealed partial class AppControllerTests : IDisposable
         {
             PasteCount++;
             if (DropNextPaste) { DropNextPaste = false; return; }
+            // Model a rich editor paste handler that appends instead of replacing.
+            if (AppendPaste)
+            {
+                Document.Caret = Math.Max(Document.Caret, Document.Anchor ?? Document.Caret);
+                Document.Anchor = null;
+            }
             Document.Type(ClipboardText); AfterPaste?.Invoke();
         }
         public nint ForegroundWindow
