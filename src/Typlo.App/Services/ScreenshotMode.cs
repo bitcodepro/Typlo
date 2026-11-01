@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -170,9 +171,18 @@ internal static class ScreenshotMode
                     editor.Close();
                 }
 
+                Loc.SetLanguage("ru");
                 var personalWord = new PersonalWordDialog(controller, "напиши", "ru");
                 personalWord.Show(); await Task.Delay(250);
                 Save(personalWord, Path.Combine(outDir, "personal_dictionary.png")); personalWord.Close();
+                var wrongWord = new PersonalWordDialog(controller, "ыйд", "ru"); wrongWord.Show();
+                wrongWord.GetVisualDescendants().OfType<ComboBox>().Single(c => c.Name == "PersonalWordLanguage").SelectedIndex = 0;
+                await Task.Delay(250); Save(wrongWord, Path.Combine(outDir, "personal_dictionary_spelling.png"));
+                wrongWord.GetVisualDescendants().OfType<Button>().Single(c => c.Name == "DictionaryUseSpelling").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                for (var attempt = 0; attempt < 100 && !wrongWord.GetVisualDescendants().OfType<Button>().Single(c => c.Name == "PersonalWordAdd").IsEnabled; attempt++) await Task.Delay(25);
+                wrongWord.GetVisualDescendants().OfType<Button>().Single(c => c.Name == "PersonalWordAdd").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                for (var attempt = 0; attempt < 100 && string.IsNullOrEmpty(wrongWord.GetVisualDescendants().OfType<TextBlock>().Single(c => c.Name == "PersonalWordMessage").Text); attempt++) await Task.Delay(25);
+                Save(wrongWord, Path.Combine(outDir, "personal_dictionary_duplicate.png")); wrongWord.Close();
 
                 Loc.SetLanguage("ru");
                 await controller.AddPersonalWordsAsync([new("напиши", "ru"), new("писать", "ru"), new("написал", "ru"), new("рев'ювати", "uk"), new("sql", "en")]);

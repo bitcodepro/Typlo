@@ -78,7 +78,14 @@ public sealed class LanguageLexicon(string path) : IDisposable
     public static string Normalize(string token) => token.Replace('’', '\'').Replace('ʼ', '\'').Replace('‘', '\'')
         .Replace('‐', '-').Replace('‑', '-').ToLowerInvariant().Normalize(NormalizationForm.FormC);
 
-    /// <summary>Release the versioned pack before replacement; the next lookup reopens it.</summary>
+    /// <summary>Keep the versioned reader closed until file replacement completes.</summary>
+    public void WithClosedReader(Action replace)
+    {
+        // Duplicate checks and other readers must not reopen the old file between Close and swap.
+        lock (_gate) { Close(); replace(); }
+    }
+
+    /// <summary>Release the versioned pack; the next lookup reopens it.</summary>
     public void Close()
     {
         lock (_gate) { _lookup?.Dispose(); _lookup = null; _connection?.Dispose(); _connection = null; }

@@ -121,6 +121,7 @@ public sealed partial class AppControllerTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.SetPersonalWordAsync("добавлено", "ru"));
         await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.SetExcludedWordAsync("api"));
         await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.AddPersonalWordsAsync([new("добавлено", "ru")]));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.AddMissingPersonalWordsAsync([new("добавлено", "ru")]));
         await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.EditPersonalWordAsync(new("напиши", "ru"), new("добавлено", "ru")));
         await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.ImportPersonalWordsAsync(Path.Combine(_dir, "unused.json")));
         await Assert.ThrowsAsync<InvalidOperationException>(() => _controller.ReplaceUpdateFilesAsync(() => throw new Exception("must not run")));

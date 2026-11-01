@@ -84,7 +84,7 @@ internal sealed class BackgroundHost : IDisposable
     }
     private Task<RuntimeReply> DispatchAsync(RuntimeRequest command)
     {
-        if (command.Command is "auto-status" or "dictionary-check" or "personal-query" or "personal-edit" or "personal-add" or "personal-import" or "personal-export" or "personal-word" or "excluded-word" or "backup-export" or "backup-preview" or "backup-restore" or "tools-state")
+        if (command.Command is "auto-status" or "dictionary-check" or "personal-query" or "personal-edit" or "personal-add" or "personal-add-missing" or "personal-word-status" or "personal-import" or "personal-export" or "personal-word" or "excluded-word" or "backup-export" or "backup-preview" or "backup-restore" or "tools-state")
             return DispatchDictionaryAsync(command);
         if (_diagnostic && command.Command == "register-hotkeys" && File.Exists(Path.Combine(_paths.DataDir, "hold-hotkey-restore")))
             return HoldHotkeyRestoreAsync(command);
@@ -177,6 +177,12 @@ internal sealed class BackgroundHost : IDisposable
             case "personal-add":
                 if (command.Words is null) return new(false, "Missing words");
                 return new(true, ImportResult: await _controller.AddPersonalWordsAsync(command.Words, command.Flag));
+            case "personal-add-missing":
+                if (command.Words is null) return new(false, "Missing words");
+                return new(true, ImportResult: await _controller.AddMissingPersonalWordsAsync(command.Words));
+            case "personal-word-status":
+                if (command.Text is null || command.Args is not [var statusLanguage]) return new(false, Loc.T("dictionary.invalid"));
+                return new(true, PersonalStatus: await _controller.GetPersonalWordStatusAsync(command.Text, statusLanguage));
             case "personal-import":
                 if (command.Text is null) return new(false, "Missing import file");
                 return new(true, ImportResult: await _controller.ImportPersonalWordsAsync(command.Text, command.Flag));

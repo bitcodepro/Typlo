@@ -89,6 +89,9 @@ internal static partial class SelfTest
                 return Task.FromResult(back == "Привет, clipboard ✓" ? null : $"got '{back}'");
             });
 
+            await Check("dictionary input previews correct spellings and warns about bundled and personal duplicates",
+                () => CheckDictionarySpellingInputAsync(controller));
+
             await Check("dictionary collection switches reject stale selection during delayed and failed queries",
                 () => CheckDictionaryCollectionSwitchesAsync(controller));
 

@@ -33,7 +33,7 @@ public sealed partial class AppController
             _platform.UnregisterAllHotkeys();
             await StopPendingAutomaticWords();
             if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(5))) throw new TimeoutException("A text operation is still running. Try the update again.");
-            try { _lexicon.Close(); replace(); }
+            try { _lexicon.WithClosedReader(replace); }
             finally { _convertGate.Release(); }
         }
         finally

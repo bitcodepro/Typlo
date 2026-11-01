@@ -209,6 +209,15 @@ internal static class BackgroundRuntimeCheck
             Check(state.AvailableVersion == "9.9.9" && state.UiProcessId == 0, "Automatic update helper exits and publishes the available version without UI");
             Sample("after-update-check");
 
+            var sqlStatus = await runtime.CallAsync(new("personal-word-status", Text: "SQL", Args: ["en"]));
+            Check(sqlStatus.PersonalStatus is { Personal: false, Bundled: true }, "Native AOT reports an existing IT word without a personal duplicate");
+            var existingSql = await runtime.CallAsync(new("personal-add-missing", Words: [new("SQL", "en"), new("sql", "en")]));
+            Check(existingSql.ImportResult is { Added: 0, Skipped: 2 }, "Native AOT skips bundled word duplicates over IPC");
+            var customAdded = await runtime.CallAsync(new("personal-add-missing", Words: [new("typloxyz", "en"), new("TYPLOXYZ", "en")]));
+            Check(customAdded.ImportResult is { Added: 1, Skipped: 1 }, "Native AOT inserts a new personal form only once");
+            var customStatus = await runtime.CallAsync(new("personal-word-status", Text: "typloxyz", Args: ["en"]));
+            Check(customStatus.PersonalStatus is { Personal: true, Bundled: false }, "Native AOT distinguishes personal and bundled membership");
+            await runtime.CallAsync(new("personal-word", Text: "typloxyz", Args: ["en"], Flag: true));
             var addedWords = await runtime.CallAsync(new("personal-add", Words: [new("словарик", "ru"), new("словарик", "uk"), new("проверка", "ru")]));
             Check(addedWords.ImportResult?.Added == 3, "Resident adds a batch of personal forms over IPC");
             var wordPage = await runtime.CallAsync(new("personal-query", WordQuery: new("сло", "ru")));

@@ -65,17 +65,28 @@ internal sealed class DictionaryWindow : Window
         var footer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _previous, _pageLabel, _next, ActionButton("manage.refresh", LoadWordsAsync) } };
         _formsHint.Text = Loc.T("manage.formsHint"); _actions.Children.Add(_formsHint);
         _actions.Children.Add(_forms); _actions.Children.Add(_language);
+        var spelling = new DictionarySpellingHint(controller.AvailableLayouts, value => _forms.Text = value, multiple: true);
+        void RefreshSpelling() => spelling.Update(_forms.Text ?? "", Exclusions || _language.SelectedIndex < 0 ? null : _languages[_language.SelectedIndex].Code);
+        _actions.Children.Add(spelling);
+        _forms.TextChanged += (_, _) => RefreshSpelling(); _language.SelectionChanged += (_, _) => RefreshSpelling();
         _actions.Children.Add(ActionButton("dictionary.add", () => Mutate(async () =>
         {
             var language = Exclusions ? "" : SelectedLanguage();
+            if (!Exclusions) PersonalWordSpelling.RequireCorrectScript(_forms.Text ?? "", language);
             var entries = (_forms.Text ?? "").Split(['\r', '\n', ',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(word => new PersonalWord(word, language)).ToArray();
             if (entries.Length == 0) throw new ArgumentException(Loc.T("dictionary.invalid"));
-            ShowImportResult(await _controller.AddPersonalWordsAsync(entries, Exclusions));
+            ShowImportResult(Exclusions ? await _controller.AddPersonalWordsAsync(entries, true) : await _controller.AddMissingPersonalWordsAsync(entries));
         })));
         _actions.Children.Add(ActionButton("manage.edit", () => Mutate(async () =>
         {
             if (_selected is null) throw new InvalidOperationException(Loc.T("manage.select"));
+            if (!Exclusions) PersonalWordSpelling.RequireCorrectScript(_forms.Text ?? "", SelectedLanguage());
+            if (!Exclusions)
+            {
+                var status = await _controller.GetPersonalWordStatusAsync(_forms.Text ?? "", SelectedLanguage());
+                if (status.Bundled == true) { _message.Text = Loc.T("dictionary.existsBundled", _forms.Text ?? ""); return; }
+            }
             await _controller.EditPersonalWordAsync(_selected, new(_forms.Text ?? "", Exclusions ? "" : SelectedLanguage()), Exclusions);
             _message.Text = Loc.T("manage.saved");
         })));
@@ -121,6 +132,7 @@ internal sealed class DictionaryWindow : Window
             if (!Exclusions && _language.SelectedIndex < 0) _language.SelectedIndex = 0;
             _formsHint.Text = Loc.T(Exclusions ? "exclude.hint" : "manage.formsHint");
             _forms.Text = ""; _page = 0; await LoadWordsAsync();
+            RefreshSpelling();
         };
         _filter.SelectionChanged += async (_, _) => { _page = 0; await LoadWordsAsync(); };
         _previous.Click += async (_, _) => { _page--; await LoadWordsAsync(); };

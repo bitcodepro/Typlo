@@ -328,3 +328,25 @@ Completed journals are cleaned on restart if
 immediate cleanup fails. Backups contain private user configuration and should be kept
 private. New tool labels are available in English, Russian and Ukrainian; other interface
 languages currently fall back to English for those labels.
+
+
+## Correct spellings and duplicate checks
+
+The personal dictionary stores **correct exact spellings**, not source-to-target rules.
+Choose `sql` + English, rather than `ыйд` + English. The add dialog warns about a
+script/language mismatch and offers an explicit physical-layout conversion when an
+installed layout can provide it. Selecting a suggestion updates the dialog only;
+adding a word does not replace the selection in another app. Automatic correction
+acts on future input after Space when enabled and the target language is allowed.
+
+Interactive single/batch additions skip words already present in the selected
+language's bundled or personal dictionary and show a warning/count. Membership
+normalizes case and Unicode. For a deliberate confidence override, the selected-word
+dialog offers **Add personal priority** after a bundled-word warning. This creates
+one personal entry, without editing the bundled vocabulary. Personal JSON import
+and full backup restore preserve explicit user overrides; SQLite uniqueness prevents
+repeated `(word, language)` entries. Existing words are never silently relabeled,
+converted or removed. Different languages can legitimately share a spelling.
+
+Duplicate checks use indexed disk lookups and run outside input hooks. Spelling
+previews use cached installed-layout maps and do not load the full vocabulary.
