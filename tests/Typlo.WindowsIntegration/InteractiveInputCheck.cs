@@ -13,7 +13,7 @@ namespace Typlo.WindowsIntegration;
 // keys are accepted only in this explicitly started test process, never in the shipped app.
 internal static class InteractiveInputCheck
 {
-    internal static async Task<int> RunAsync(string directory)
+    internal static async Task<int> RunAsync(string directory, bool chatGptOnly = false)
     {
         Directory.CreateDirectory(directory);
         Typlo.App.Log.FilePath = Path.Combine(directory, "live-input.log");
@@ -35,7 +35,7 @@ internal static class InteractiveInputCheck
             var uk = layouts.First(l => l.LanguageCode == "uk");
             var ru = layouts.First(l => l.LanguageCode == "ru");
             var paths = new AppPaths(directory);
-            new SettingsStore(paths.SettingsFile).Save(new AppSettings
+            var settings = new AppSettings
             {
                 WindowsShortcutsInitialized = true, LayoutsInitialized = true, Layouts = [uk.Id, ru.Id, en.Id],
                 ToggleHotkey = "Ctrl+Alt+Shift+Space", LayoutSwitchHotkey = "Ctrl+Shift",
@@ -44,15 +44,37 @@ internal static class InteractiveInputCheck
                 ClipboardHotkey = "", ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", CaseHotkey = "", TranslitHotkey = "",
                 UndoHotkey = "Ctrl+Alt+Shift+Z", AutoCorrectEnabled = true, HistoryEnabled = false,
                 ApplicationLayouts = [new() { ProcessName = "ms-teams", Layouts = [en.Id, uk.Id] }],
-            });
+            };
+            if (chatGptOnly)
+            {
+                if (!string.Equals(platform.GetApplicationProcessName(window), "ChatGPT", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Activate the ChatGPT input before starting this isolated runner");
+                // The installed app ignores simulated input. This test controller accepts it, only
+                // enables automatic editing in ChatGPT, and registers no competing global shortcuts.
+                settings.ToggleHotkey = settings.LayoutSwitchHotkey = settings.UndoHotkey = settings.AddWordHotkey = "";
+                settings.ToolsHotkey = settings.ChoicesHotkey = settings.AcceptChoiceHotkey = settings.CancelChoiceHotkey = "";
+                settings.LayoutHotkeys = []; settings.AutoCorrectEnabled = false;
+                settings.ApplicationLayouts = [new() { ProcessName = "ChatGPT", Layouts = [en.Id, ru.Id], AutoCorrection = true, SnippetExpansion = false }];
+            }
+            new SettingsStore(paths.SettingsFile).Save(settings);
             TypingEvents.AcceptSimulated = true;
             using var controller = new AppController(platform, paths, PlatformFactory.CreateKeyProtector(true), diagnostic: true);
             await platform.WaitForTypingWatchAsync();
             var characters = 0;
             platform.KeyTyped += key => { if (!key.Reset && !key.Backspace) Interlocked.Increment(ref characters); };
             Console.WriteLine("READY " + string.Join(',', controller.FailedHotkeys));
-            while (await Console.In.ReadLineAsync() is { } command && command != "stop")
+            while (true)
+            {
+                string? command;
+                try { command = await Console.In.ReadLineAsync().WaitAsync(TimeSpan.FromMinutes(2)); }
+                catch (TimeoutException) { break; }
+                if (command is null or "stop") break;
                 if (command == "state") Console.WriteLine($"characters={characters}; layout={platform.GetCurrentLayoutId(platform.ForegroundWindow)}; dictionary={controller.DictionaryIsOpen}");
+                if (command == "english" && chatGptOnly)
+                { platform.SwitchKeyboardLayout(window, en); Console.WriteLine("SOURCE_ENGLISH"); }
+                if (command == "status" && chatGptOnly)
+                { await controller.AutoCorrectionIdleAsync(); Console.WriteLine(AutoCorrectionReport.Format(await controller.GetAutomaticStatusAsync())); }
+            }
             await controller.AutoCorrectionIdleAsync();
             if (original is not null) { platform.SwitchKeyboardLayout(window, original); await Task.Delay(150); }
             return 0;
