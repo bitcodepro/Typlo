@@ -65,7 +65,7 @@ internal sealed class DictionaryWindow : Window
         var footer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Children = { _previous, _pageLabel, _next, ActionButton("manage.refresh", LoadWordsAsync) } };
         _formsHint.Text = Loc.T("manage.formsHint"); _actions.Children.Add(_formsHint);
         _actions.Children.Add(_forms); _actions.Children.Add(_language);
-        var spelling = new DictionarySpellingHint(controller.AvailableLayouts, value => _forms.Text = value);
+        var spelling = new DictionarySpellingHint(controller.AvailableLayouts, value => _forms.Text = value, multiple: true);
         void RefreshSpelling() => spelling.Update(_forms.Text ?? "", Exclusions || _language.SelectedIndex < 0 ? null : _languages[_language.SelectedIndex].Code);
         _actions.Children.Add(spelling);
         _forms.TextChanged += (_, _) => RefreshSpelling(); _language.SelectionChanged += (_, _) => RefreshSpelling();

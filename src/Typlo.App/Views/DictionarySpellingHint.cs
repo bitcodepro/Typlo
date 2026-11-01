@@ -11,9 +11,10 @@ internal sealed class DictionarySpellingHint : StackPanel
     private readonly WrapPanel _options = new();
     private readonly IReadOnlyList<KeyboardLayout> _layouts;
     private readonly Action<string> _use;
-    internal DictionarySpellingHint(IReadOnlyList<KeyboardLayout> layouts, Action<string> use)
+    private readonly bool _multiple;
+    internal DictionarySpellingHint(IReadOnlyList<KeyboardLayout> layouts, Action<string> use, bool multiple = false)
     {
-        _layouts = layouts; _use = use; Spacing = 8;
+        _layouts = layouts; _use = use; _multiple = multiple; Spacing = 8;
         Children.Add(_hint); Children.Add(_options);
     }
     internal void Update(string text, string? language)
@@ -23,7 +24,7 @@ internal sealed class DictionarySpellingHint : StackPanel
         IsVisible = mismatch;
         if (!mismatch) return;
         _hint.Text = Loc.T("dictionary.scriptMismatch");
-        foreach (var spelling in PersonalWordSpelling.Suggestions(text, language!, _layouts))
+        foreach (var spelling in PersonalWordSpelling.Suggestions(text, language!, _layouts, _multiple))
         {
             var button = new Button { Name = "DictionaryUseSpelling", MaxWidth = 260,
                 Content = new TextBlock { Text = Loc.T("dictionary.useSpelling", spelling), TextWrapping = TextWrapping.Wrap, MaxWidth = 220 } };

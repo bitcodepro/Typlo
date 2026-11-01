@@ -28,11 +28,12 @@ internal static class PersonalWordSpelling
         if (HasMismatch(text, language)) throw new ArgumentException(Loc.T("dictionary.scriptMismatch"));
     }
 
-    internal static string[] Suggestions(string text, string language, IReadOnlyList<KeyboardLayout> layouts)
+    internal static string[] Suggestions(string text, string language, IReadOnlyList<KeyboardLayout> layouts, bool multiple = false)
     {
-        var forms = Forms(text);
-        if (forms.Length != 1 || !HasMismatch(text, language)) return [];
-        var word = forms[0];
+        var word = text.Trim();
+        // In the selected-word dialog punctuation can be a physical letter key (e.g. ,jkm → боль).
+        // In the batch editor the same punctuation separates forms; never replace a partial list.
+        if (word.Any(char.IsWhiteSpace) || multiple && word.IndexOfAny([',', ';']) >= 0 || !HasMismatch(text, language)) return [];
         var available = layouts.Where(l => l.SupportsConversion).ToArray();
         var targets = available.Where(l => l.LanguageCode.Split('-', '_')[0].Equals(language, StringComparison.OrdinalIgnoreCase));
         return available.Where(source => word.Where(char.IsLetter).All(source.Contains))

@@ -21,6 +21,15 @@ public sealed class DictionarySpellingTests
     public void ConversionPreviewUsesInstalledPhysicalMapsAndPreservesCase(string input, string expected)
         => Assert.Equal([expected], PersonalWordSpelling.Suggestions(input, "en", KeyboardLayouts.All));
 
+    [Theory]
+    [InlineData(",jkm", "боль")] [InlineData(";bnm", "жить")]
+    public void SingleWordPreviewRetainsPunctuationKeysAndBatchPreviewNeverDropsForms(string input, string expected)
+    {
+        Assert.Equal([expected], PersonalWordSpelling.Suggestions(input, "ru", KeyboardLayouts.All));
+        Assert.Empty(PersonalWordSpelling.Suggestions(input, "ru", KeyboardLayouts.All, multiple: true));
+        Assert.Empty(PersonalWordSpelling.Suggestions(input + ",hello", "ru", KeyboardLayouts.All, multiple: true));
+    }
+
     [Fact]
     public void MultiFormAndMissingLayoutSuggestionsNeverDiscardOrGuessInput()
     {
