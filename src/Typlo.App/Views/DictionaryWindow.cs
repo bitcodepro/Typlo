@@ -85,7 +85,7 @@ internal sealed class DictionaryWindow : Window
             if (!Exclusions)
             {
                 var status = await _controller.GetPersonalWordStatusAsync(_forms.Text ?? "", SelectedLanguage());
-                if (status.Bundled == true) { _message.Text = Loc.T("dictionary.existsBundled", _forms.Text ?? ""); return; }
+                if (status.Bundled == true && !status.NeedsPriority) { _message.Text = Loc.T("dictionary.existsBundled", _forms.Text ?? ""); return; }
             }
             await _controller.EditPersonalWordAsync(_selected, new(_forms.Text ?? "", Exclusions ? "" : SelectedLanguage()), Exclusions);
             _message.Text = Loc.T("manage.saved");
@@ -197,7 +197,7 @@ internal sealed class DictionaryWindow : Window
         catch (Exception e) { if (!_closed) _message.Text = e.Message; }
         finally { _mutating = false; if (!_closed) UpdateWordControls(); }
     }
-    private void ShowImportResult(PersonalImportResult result) => _message.Text = Loc.T("manage.imported", result.Added, result.Skipped);
+    private void ShowImportResult(PersonalImportResult result) => _message.Text = Loc.T("manage.imported", result.Added, result.Skipped) + (result.Prioritized > 0 ? " · " + Loc.T("dictionary.priorityCount", result.Prioritized) : "");
     private async Task ImportAsync()
     {
         var files = await StorageProvider.OpenFilePickerAsync(new() { Title = Loc.T("manage.import"), FileTypeFilter = [JsonType] });

@@ -148,3 +148,5 @@ margins, addresses, numbers and identifiers are skipped. Shared output spellings
 configured cycle order to resolve equal evidence. Corpus weights remain evidence rather
 than calibrated probabilities. These conservative heuristics are not an authoritative
 spelling checker or language translation, and the subtitle corpus has the limits above.
+
+Explicit interactive additions of low-confidence corpus words save one personal priority rather than being skipped as duplicates. Reliable bundled forms still show the duplicate warning; repeated personal additions are skipped. `git` is an English IT supplement entry.

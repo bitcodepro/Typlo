@@ -136,7 +136,7 @@ class PackTests(unittest.TestCase):
         with sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True) as db:
             actual = dict(db.execute("SELECT word,supplement_mask FROM words WHERE supplement_mask<>0"))
             self.assertEqual(actual, masks)
-            for language, words in {"en": ["sql", "nosql", "mysql", "postgresql", "sqlite"], "ru": ["ревьюить", "ревьюваешь", "коммитишь", "закоммитил", "пушить", "запушили", "смерджили"],
+            for language, words in {"en": ["git", "sql", "nosql", "mysql", "postgresql", "sqlite"], "ru": ["ревьюить", "ревьюваешь", "коммитишь", "закоммитил", "пушить", "запушили", "смерджили"],
                                     "uk": ["рев’ювити", "ревʼювати", "рев'юїти", "комітити", "комітиш", "закомітила", "пушити", "запушили", "змерджили"]}.items():
                 for word in words:
                     self.assertTrue(actual[build.normalize(word)] & (1 << build.LANGUAGES.index(language)), (language, word))

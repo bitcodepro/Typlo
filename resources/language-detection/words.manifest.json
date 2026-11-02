@@ -1,15 +1,15 @@
 {
   "schema": 3,
-  "sha256": "0fbfaa42dbd0bcf1eb5282d42245f955ae16fcf45c4d6565d481fe2fcab6fb1f",
-  "content_sha256": "4540f90b5ef7eab86aaf9e7c02fba83f095d925112a70b2a6e020412412ce073",
+  "sha256": "c79aac45ec8a3238531f34789455fa7dbb90d01e022367dd1d2da4cb1fa8e925",
+  "content_sha256": "c2a670d96ca1dc251e2c8bec3c397764d6cf1dc093f4cfce3eb5bb21e63f42e7",
   "bytes": 7458816,
   "words": 292803,
   "language_entries": 391153,
   "ambiguous_words": 52747,
   "supplement": {
-    "sha256": "f3222e3e3aca4bd38f0b8dc0f8625dd0511edf49a0f8271587241da958409c65",
-    "unique_words": 1142,
-    "families": 123
+    "sha256": "3498595f63e24f16240b202731e65479db9dbadb464b253acabdd97f1e720b9b",
+    "unique_words": 1143,
+    "families": 124
   },
   "sqlite_builder_version": "3.53.1",
   "unicode_version": "15.0.0",
@@ -19,7 +19,7 @@
       "retained_words": 48623,
       "rejected_rows": 1377,
       "source_total_count": 725119374,
-      "supplemental_words": 5,
+      "supplemental_words": 6,
       "supplemental_only_words": 5,
       "combined_words": 48628
     },

@@ -2,7 +2,7 @@ using Typlo.Core.Languages;
 
 namespace Typlo.App.Services;
 
-public sealed record PersonalWordStatus(bool Personal, bool? Bundled);
+public sealed record PersonalWordStatus(bool Personal, bool? Bundled, bool NeedsPriority = false);
 
 public sealed partial class AppController
 {
@@ -17,7 +17,12 @@ public sealed partial class AppController
         if (!PersonalLexicon.IsWord(word) || index < 0) throw new ArgumentException(Loc.T("dictionary.invalid"));
         var exists = (_personal.Lookup(word) & (1 << index)) != 0;
         if (!checkBundled) return new(exists, null);
-        try { return new(exists, _lexicon.Lookup(word)?.Includes(index) == true); }
+        try
+        {
+            var evidence = _lexicon.Lookup(word);
+            var bundled = evidence?.Includes(index) == true;
+            return new(exists, bundled, bundled && !evidence!.Value.Reliable(index));
+        }
         catch (Exception e) when (e is IOException or Microsoft.Data.Sqlite.SqliteException or InvalidDataException or UnauthorizedAccessException)
         { Log.Error("Bundled dictionary duplicate check unavailable", e); return new(exists, null); }
     }
@@ -34,17 +39,20 @@ public sealed partial class AppController
             if (words.Length > PersonalLexicon.MaxImportWords) throw new InvalidDataException("Too many dictionary forms.");
             // Validate the complete batch before its first write. Lookup is indexed and bounded on disk.
             var checkBundled = true;
+            var priorities = new HashSet<PersonalWord>();
             var missing = words.Where(entry =>
             {
                 if (entry is null || entry.Word is null || entry.Language is null) throw new ArgumentException(Loc.T("dictionary.invalid"));
                 PersonalWordSpelling.RequireCorrectScript(entry.Word, entry.Language);
                 var status = PersonalWordStatusCore(entry.Word, entry.Language, checkBundled);
                 checkBundled &= status.Bundled.HasValue;
-                return !status.Personal && status.Bundled != true;
+                if (!status.Personal && status.NeedsPriority)
+                    priorities.Add(new(LanguageLexicon.Normalize(entry.Word.Trim()), entry.Language));
+                return !status.Personal && (status.Bundled != true || status.NeedsPriority);
             }).ToArray();
             if (missing.Length == 0) return new PersonalImportResult(0, words.Length);
-            var added = _personal.AddMany(missing);
-            return new PersonalImportResult(added.Added, words.Length - added.Added);
+            var added = _personal.AddMany(missing, priorities: priorities);
+            return added with { Skipped = words.Length - added.Added };
         });
     }
 
