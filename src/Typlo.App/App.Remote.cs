@@ -44,6 +44,7 @@ public partial class App
             var lastRequest = Environment.TickCount64;
             var shuttingDown = false;
             var diagnosticUi = Program.Args.Contains("--diagnostic-ui");
+            var ignoreShutdownFixture = false;
             void TraceUi(string phase, long trace = 0, string action = "none")
             {
                 if (diagnosticUi) Log.Info($"UI lifecycle pid={Environment.ProcessId} tid={Platform.Windows.Native.GetCurrentThreadId()} phase={phase} trace={trace} action={action} stopping={Volatile.Read(ref shuttingDown)}");
@@ -60,7 +61,7 @@ public partial class App
             void Command(string[] args)
             {
                 Interlocked.Exchange(ref lastRequest, Environment.TickCount64);
-                if (args.Contains("--shutdown")) { Shutdown(); return; }
+                if (args.Contains("--shutdown")) { if (!ignoreShutdownFixture) Shutdown(); else TraceUi("shutdown-ignored-fixture"); return; }
                 if (args.Contains("--dismiss"))
                 {
                     _screenCapture.CancelSelection();
@@ -134,6 +135,8 @@ public partial class App
                 if (diagnosticUi && request.Command == "update-dialog-fixture")
                     return await Dispatcher.UIThread.InvokeAsync(() => new RuntimeReply(_updateDialog?.IsVisible == true,
                         Error: _updateDialog?.DisplayedError, AvailableVersion: _updates.Available?.Version.ToString()));
+                if (diagnosticUi && request.Command == "update-ignore-shutdown-fixture")
+                    return await Dispatcher.UIThread.InvokeAsync(() => { ignoreShutdownFixture = true; return new RuntimeReply(true); });
                 if (diagnosticUi && request.Command == "update-install-fixture")
                     return await Dispatcher.UIThread.InvokeAsync(() =>
                     {

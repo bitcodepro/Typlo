@@ -5,6 +5,8 @@ using System.Text.Json;
 
 namespace Typlo.Core.Updates;
 
+public sealed record UpdateFileEvent(string Phase, string Operation, string Source, string? Target, string Outcome, Exception? Error = null);
+
 /// <summary>Semantic version (MAJOR.MINOR.PATCH[-prerelease]); build metadata after '+' is ignored.</summary>
 public sealed record SemVersion(int Major, int Minor, int Patch, string? Prerelease) : IComparable<SemVersion>
 {
@@ -154,7 +156,7 @@ public static class UpdateInstaller
     /// Old entries are renamed to unique backups (a running executable can be renamed, not overwritten);
     /// on any failure everything is rolled back. The user's data folder is never touched.
     /// </summary>
-    public static void Swap(string staging, string installRoot)
+    public static void Swap(string staging, string installRoot, Action<UpdateFileEvent>? diagnostic = null)
     {
         var done = new List<(string Target, string? Backup)>();
         var previousBackups = ReadBackupNames(installRoot).ToArray();
@@ -173,29 +175,56 @@ public static class UpdateInstaller
                 if (Exists(target))
                 {
                     backup = target + suffix;
-                    Move(target, backup);
+                    Observe(diagnostic, "install", "backup", target, backup, () => Move(target, backup));
                 }
                 done.Add((target, backup));
-                Move(source, target);
+                Observe(diagnostic, "install", "place", source, target, () => Move(source, target));
             }
             // Remember exactly what we created; cleanup on the next start removes only these.
             var backups = done.Where(d => d.Backup is not null).Select(d => Path.GetFileName(d.Backup!));
-            WriteBackupManifest(installRoot, previousBackups.Concat(backups).Distinct());
+            WriteBackupManifest(installRoot, previousBackups.Concat(backups).Distinct(), diagnostic);
         }
-        catch
+        catch (Exception original)
         {
+            var rollbackErrors = new List<Exception>();
             for (var i = done.Count - 1; i >= 0; i--)
             {
                 var (target, backup) = done[i];
                 try
                 {
-                    if (Exists(target)) Delete(target);
-                    if (backup is not null && Exists(backup)) Move(backup, target);
+                    if (Exists(target)) Observe(diagnostic, "rollback", "remove-new", target, null, () => Delete(target));
+                    if (backup is not null && Exists(backup))
+                        Observe(diagnostic, "rollback", "restore", backup, target, () => Move(backup, target));
                 }
-                catch (IOException) { }
+                catch (Exception error) { rollbackErrors.Add(error); }
             }
+            if (rollbackErrors.Count > 0)
+            {
+                var errors = new AggregateException(new[] { original }.Concat(rollbackErrors));
+                Report(diagnostic, new("rollback", "summary", installRoot, null, "incomplete", errors));
+                throw new IOException("File replacement failed and rollback is incomplete. " + original.Message, errors);
+            }
+            Report(diagnostic, new("rollback", "summary", installRoot, null, "completed"));
             throw;
         }
+    }
+
+    private static void Observe(Action<UpdateFileEvent>? diagnostic, string phase, string operation, string source, string? target, Action action)
+    {
+        Report(diagnostic, new(phase, operation, source, target, "started"));
+        try { action(); }
+        catch (Exception error)
+        {
+            Report(diagnostic, new(phase, operation, source, target, "failed", error));
+            throw;
+        }
+        Report(diagnostic, new(phase, operation, source, target, "completed"));
+    }
+
+    private static void Report(Action<UpdateFileEvent>? diagnostic, UpdateFileEvent value)
+    {
+        // Diagnostics must never turn a successful move into a failed installation or mask its error.
+        try { diagnostic?.Invoke(value); } catch (Exception) { }
     }
 
     /// <summary>Lists the backups made by the last update, one file or folder name per line.</summary>
@@ -243,14 +272,14 @@ public static class UpdateInstaller
                suffix.Length == 32 && suffix.All(char.IsAsciiHexDigit);
     }
 
-    private static void WriteBackupManifest(string installRoot, IEnumerable<string> names)
+    private static void WriteBackupManifest(string installRoot, IEnumerable<string> names, Action<UpdateFileEvent>? diagnostic = null)
     {
         var manifest = Path.Combine(installRoot, ManifestName);
         var temp = manifest + ".tmp-" + Guid.NewGuid().ToString("N");
         try
         {
-            File.WriteAllLines(temp, names);
-            File.Move(temp, manifest, overwrite: true);
+            Observe(diagnostic, "install", "write-manifest", temp, null, () => File.WriteAllLines(temp, names));
+            Observe(diagnostic, "install", "commit-manifest", temp, manifest, () => File.Move(temp, manifest, overwrite: true));
         }
         finally
         {
