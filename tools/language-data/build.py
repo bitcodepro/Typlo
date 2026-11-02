@@ -95,6 +95,8 @@ def checked_source(source: dict, cache: Path, fetch: bool) -> bytes:
 
 def read_supplement(path: Path) -> tuple[dict[str, int], dict]:
     raw = path.read_bytes()
+    if b"\r" in raw:
+        raise ValueError("IT supplement must use LF line endings, matching .gitattributes; convert before building the pack")
     data = json.loads(raw)
     if data.get("schema") != 1 or data.get("license") != "MIT" or not isinstance(data.get("entries"), list):
         raise ValueError("Invalid IT supplement schema/license")

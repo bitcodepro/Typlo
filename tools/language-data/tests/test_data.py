@@ -62,6 +62,14 @@ class SourceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum"):
                 build.checked_source({"language": "en", "bytes": 1, "sha256": "wrong"}, Path(folder), False)
 
+    def test_supplement_rejects_crlf_before_embedding_a_platform_dependent_checksum(self):
+        data = {"schema": 1, "license": "MIT", "entries": [{"language": "en", "family": "database", "forms": ["sql"]}]}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "windows.json"
+            path.write_bytes(json.dumps(data, indent=2).replace("\n", "\r\n").encode("utf-8"))
+            with self.assertRaisesRegex(ValueError, "LF line endings"):
+                build.read_supplement(path)
+
     def test_supplement_validation_rejects_bad_labels_words_and_duplicates(self):
         for entries in [
             [{"language": "en", "family": "push", "forms": ["пушить"]}],

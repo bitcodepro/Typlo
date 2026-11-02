@@ -1,13 +1,13 @@
 {
   "schema": 3,
-  "sha256": "c79aac45ec8a3238531f34789455fa7dbb90d01e022367dd1d2da4cb1fa8e925",
+  "sha256": "4aa4bdaa5f06eb6a20871784dfcc7dc319c86014916ec8a36c70acb0c2381d35",
   "content_sha256": "c2a670d96ca1dc251e2c8bec3c397764d6cf1dc093f4cfce3eb5bb21e63f42e7",
   "bytes": 7458816,
   "words": 292803,
   "language_entries": 391153,
   "ambiguous_words": 52747,
   "supplement": {
-    "sha256": "3498595f63e24f16240b202731e65479db9dbadb464b253acabdd97f1e720b9b",
+    "sha256": "115cb6469a09f136d1aecc47ab2603733e423162d1aa599310804e06692078b4",
     "unique_words": 1143,
     "families": 124
   },
