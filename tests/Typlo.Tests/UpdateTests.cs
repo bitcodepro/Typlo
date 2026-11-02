@@ -230,6 +230,71 @@ public sealed class UpdateTests : IDisposable
         Assert.Empty(Directory.GetFiles(install, "A.typlo-backup-*"));
     }
 
+    [Fact]
+    public void LockedReplacementReportsExactFailureCompleteRollbackAndAllowsFreshRetry()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var install = Path.Combine(_dir, "trace-install"); var staging = Path.Combine(_dir, "trace-staging");
+        Directory.CreateDirectory(install); Directory.CreateDirectory(staging);
+        foreach (var name in new[] { "A", "B" })
+        { File.WriteAllText(Path.Combine(install, name), "old " + name); File.WriteAllText(Path.Combine(staging, name), "new " + name); }
+        var trace = new List<UpdateFileEvent>();
+        using (new FileStream(Path.Combine(install, "B"), FileMode.Open, FileAccess.Read, FileShare.Read))
+            Assert.ThrowsAny<IOException>(() => UpdateInstaller.Swap(staging, install, trace.Add));
+        var failed = Assert.Single(trace, e => e.Outcome == "failed");
+        Assert.Equal("install", failed.Phase); Assert.Equal("backup", failed.Operation);
+        Assert.Equal(Path.Combine(install, "B"), failed.Source);
+        Assert.StartsWith(Path.Combine(install, "B.typlo-backup-"), failed.Target);
+        Assert.Equal(unchecked((int)0x80070020), failed.Error!.HResult);
+        Assert.NotEmpty(failed.Error.StackTrace!);
+        Assert.Contains(trace, e => e.Phase == "rollback" && e.Operation == "summary" && e.Outcome == "completed");
+        foreach (var name in new[] { "A", "B" })
+        {
+            Assert.Equal("old " + name, File.ReadAllText(Path.Combine(install, name)));
+            File.WriteAllText(Path.Combine(staging, name), "new " + name); // Retry downloads/extracts a fresh stage.
+        }
+        UpdateInstaller.Swap(staging, install, trace.Add);
+        foreach (var name in new[] { "A", "B" }) Assert.Equal("new " + name, File.ReadAllText(Path.Combine(install, name)));
+    }
+
+    [Fact]
+    public void IncompleteRollbackPreservesBothErrorsAndTheRecoverableBackup()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var install = Path.Combine(_dir, "incomplete-install"); var staging = Path.Combine(_dir, "incomplete-stage");
+        Directory.CreateDirectory(install); Directory.CreateDirectory(staging);
+        Directory.CreateDirectory(Path.Combine(install, UpdateInstaller.ManifestName)); // Deterministic commit failure.
+        var target = Path.Combine(install, "A");
+        File.WriteAllText(target, "old"); File.WriteAllText(Path.Combine(staging, "A"), "new");
+        var trace = new List<UpdateFileEvent>(); FileStream? held = null;
+        try
+        {
+            var error = Assert.Throws<IOException>(() => UpdateInstaller.Swap(staging, install, e =>
+            {
+                trace.Add(e);
+                if (e.Phase == "install" && e.Operation == "place" && e.Outcome == "completed")
+                    held = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.Read);
+            }));
+            Assert.Contains("rollback is incomplete", error.Message);
+            Assert.Equal(2, Assert.IsType<AggregateException>(error.InnerException).InnerExceptions.Count);
+            Assert.Contains(trace, e => e.Operation == "commit-manifest" && e.Outcome == "failed");
+            Assert.Contains(trace, e => e.Phase == "rollback" && e.Operation == "remove-new" && e.Error?.HResult == unchecked((int)0x80070020));
+            Assert.Contains(trace, e => e.Phase == "rollback" && e.Operation == "summary" && e.Outcome == "incomplete");
+            Assert.Equal("old", File.ReadAllText(Assert.Single(Directory.GetFiles(install, "A.typlo-backup-*"))));
+        }
+        finally { held?.Dispose(); }
+    }
+
+    [Fact]
+    public void DiagnosticCallbackCannotTurnSuccessfulReplacementIntoFailure()
+    {
+        var install = Path.Combine(_dir, "observer-install"); var staging = Path.Combine(_dir, "observer-stage");
+        Directory.CreateDirectory(install); Directory.CreateDirectory(staging);
+        File.WriteAllText(Path.Combine(install, "A"), "old"); File.WriteAllText(Path.Combine(staging, "A"), "new");
+        UpdateInstaller.Swap(staging, install, _ => throw new IOException("Broken diagnostic sink fixture"));
+        Assert.Equal("new", File.ReadAllText(Path.Combine(install, "A")));
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_dir, true); } catch (IOException) { }

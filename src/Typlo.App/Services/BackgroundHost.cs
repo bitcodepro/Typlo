@@ -341,23 +341,53 @@ internal sealed class BackgroundHost : IDisposable
     }
     private void CloseUi()
     {
-        Process? child; string? pipe; lock (_uiLock) { child = _ui; pipe = _uiPipe; }
-        if (child is null) return;
-        try
+        Process? lease = null; string? pipe; int pid;
+        lock (_uiLock)
         {
-            if (!child.HasExited)
+            if (_ui is not { } child) { Log.Info("Update UI exit confirmed no-active-ui=true"); return; }
+            pid = child.Id; pipe = _uiPipe;
+            if (child.HasExited) { Log.Info($"Update UI exit confirmed pid={pid} already-exited=true"); return; }
+            try
+            {
+                // Pin an independent process handle before Exited can dispose the published object.
+                // Holding the original handle under this lock also prevents PID reuse during acquisition.
+                lease = Process.GetProcessById(pid); _ = lease.SafeHandle;
+            }
+            catch (ArgumentException) when (child.HasExited)
+            { lease?.Dispose(); Log.Info($"Update UI exit confirmed pid={pid} exited-during-acquisition=true"); return; }
+            catch { lease?.Dispose(); throw; }
+        }
+        using (lease)
+        {
+            var watch = Stopwatch.StartNew();
+            var forced = false;
+            Log.Info($"Update UI shutdown requested pid={pid}");
+            try
             {
                 try { new RuntimeClient(pipe!).Call(new("ui", Args: ["--shutdown"]), 1000); }
-                catch (Exception e) when (e is IOException or OperationCanceledException) { }
-                if (!child.WaitForExit(3000)) child.Kill(entireProcessTree: true);
+                catch (Exception error) when (error is IOException or OperationCanceledException)
+                { Log.Error($"Update UI shutdown IPC pid={pid} hresult=0x{error.HResult:X8}", error); }
+                if (!lease.WaitForExit(3000))
+                {
+                    forced = true; Log.Info($"Update UI termination requested pid={pid}");
+                    try { lease.Kill(entireProcessTree: true); }
+                    catch (InvalidOperationException) when (lease.HasExited) { }
+                    if (!lease.WaitForExit(5000)) throw new IOException($"UI process {pid} did not exit after termination; update replacement was not started");
+                }
+                Log.Info($"Update UI exit confirmed pid={pid} forced={forced} elapsed-ms={watch.ElapsedMilliseconds}");
+            }
+            catch (Exception error)
+            {
+                Log.Error($"Update UI shutdown failed pid={pid} hresult=0x{error.HResult:X8} stack={error}");
+                throw; // Installation must not continue without confirmed process exit.
             }
         }
-        catch (InvalidOperationException) { }
     }
     public void Dispose()
     {
         lock (_uiLock) _stopping = true;
         _stop.Cancel(); _updateProbe.GetAwaiter().GetResult();
-        CloseUi(); _commands.Dispose(); _runtime.Dispose(); _updates.Dispose(); _tray.Dispose(); _controller.Dispose(); _platform.Dispose();
+        try { CloseUi(); } catch (Exception error) { Log.Error("UI close during resident disposal failed", error); }
+        _commands.Dispose(); _runtime.Dispose(); _updates.Dispose(); _tray.Dispose(); _controller.Dispose(); _platform.Dispose();
     }
 }

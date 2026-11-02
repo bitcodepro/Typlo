@@ -184,7 +184,7 @@ public sealed class UpdateService : IDisposable
             UpdateInstaller.Extract(archive, staging);
             var root = InstallRoot;
             Log.Info($"Update {info.Version}: replacing files in {root}");
-            void Replace() => UpdateInstaller.Swap(staging, root);
+            void Replace() => UpdateInstaller.Swap(staging, root, UpdateFileDiagnostics.Record);
             if (replaceFiles is null) Replace(); else await replaceFiles(Replace);
             Log.Info($"Installed {info.Version} into {root}");
 
@@ -198,7 +198,7 @@ public sealed class UpdateService : IDisposable
         }
         catch (Exception e)
         {
-            Log.Error("Update failed", e);
+            Log.Error($"Update failed hresult=0x{e.HResult:X8} stack={e}");
             LastError = e.Message;
             return false;
         }

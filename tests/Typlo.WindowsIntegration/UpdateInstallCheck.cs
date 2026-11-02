@@ -39,6 +39,8 @@ internal static class UpdateInstallCheck
         var mode = 0; // 0 HTTP failure, 1 bad checksum, 2/3 valid archive
         var downloading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var retryDownloading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRetry = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var server = Serve();
         var paths = new AppPaths(Path.Combine(install, "data"));
         new SettingsStore(paths.SettingsFile).Save(new AppSettings
@@ -80,18 +82,38 @@ internal static class UpdateInstallCheck
             Volatile.Write(ref mode, 2);
             await runtime.CallAsync(new("dictionary-fixture")); // The real resident holds the pack open before Update Now.
             var oldUi = child!.Id;
-            using (var locked = new FileStream(Path.Combine(install, "Typlo.exe"), FileMode.Open, FileAccess.Read, FileShare.Read))
+            using var replacedUi = Process.GetProcessById(oldUi); _ = replacedUi.SafeHandle;
+            var lockedTarget = Path.Combine(install, "Typlo.exe");
+            using (var locked = new FileStream(lockedTarget, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
+                await ui.CallAsync(new("update-ignore-shutdown-fixture"));
                 await ui.CallAsync(new("update-install-fixture"));
                 await Until(async () => !(await runtime.CallAsync(new("update-state"))).UpdateInstalling && (await runtime.CallAsync(new("update-state"))).UpdateError is { Length: > 0 }, "locked-file rejection");
                 await Until(async () => { var state = await runtime.CallAsync(new("state")); return state.UiProcessId > 0 && state.UiProcessId != oldUi; }, "replacement failure reopens UI");
                 await BindUi();
                 await Until(async () => (await ui.CallAsync(new("update-dialog-fixture"), allowRejected: true)).Error is { Length: > 0 }, "reopened error dialog");
                 Check(!host.HasExited && !File.Exists(Path.Combine(install, "update-check.txt")), "Locked destination rolls back and reopens a visible error dialog");
+                var rejected = (await runtime.CallAsync(new("update-state"))).UpdateError!;
+                var failureTimer = Stopwatch.StartNew();
+                try { await WaitForInstallExit(); throw new InvalidOperationException("Terminal install error was ignored"); }
+                catch (IOException error) when (error.Message.Contains(rejected, StringComparison.Ordinal)) { }
+                Check(failureTimer.Elapsed < TimeSpan.FromSeconds(5), "Terminal UpdateError is surfaced immediately instead of an exit timeout");
+                var log = await File.ReadAllTextAsync(paths.LogFile);
+                Check(log.Contains($"Update UI exit confirmed pid={oldUi} forced=True") && replacedUi.HasExited,
+                    "A forcibly terminated UI has exited before replacement starts");
+                var lockedPaths = "source=\"" + lockedTarget + "\" target=\"" + lockedTarget + ".typlo-backup-";
+                Check(log.Contains(lockedPaths) && log.Contains("operation=backup outcome=failed") && log.Contains("hresult=0x80070020") && log.Contains("phase=rollback operation=summary outcome=completed") && log.Contains("exception=System.IO.IOException") && log.Contains("UpdateInstaller"),
+                    "Replacement logs include operation, both paths, HRESULT, stack and separate rollback result");
+                Check(log.Contains($"Update resource user pid={Environment.ProcessId} "), "Restart Manager identifies the known external file holder");
             }
             await runtime.CallAsync(new("dictionary-fixture"));
+            Volatile.Write(ref mode, 3);
             await ui.CallAsync(new("update-install-fixture"));
-            await Until(() => Task.FromResult(host.HasExited), "old resident exits after installation");
+            await retryDownloading.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var acceptedRetry = await runtime.CallAsync(new("update-state"));
+            Check(acceptedRetry.UpdateInstalling && acceptedRetry.UpdateError is null, "Retry is acknowledged and clears the previous error before replacement");
+            releaseRetry.TrySetResult();
+            await WaitForInstallExit();
             await Until(async () => (await HostInfo())["pid"] != host.Id.ToString(), "updated resident starts");
             var next = await HostInfo(); restarted = Process.GetProcessById(int.Parse(next["pid"]));
             var nextRuntime = new RuntimeClient(next["channel"]);
@@ -102,6 +124,21 @@ internal static class UpdateInstallCheck
             Check(settings.SequenceEqual(newSettings) && personal.SequenceEqual(newPersonal), "Update preserves settings and the personal dictionary");
             await nextRuntime.CallAsync(new("dictionary-fixture"));
             Check(true, "Restarted resident opens the new dictionary pack");
+
+            async Task WaitForInstallExit()
+            {
+                await Until(async () =>
+                {
+                    if (host.HasExited) return true;
+                    RuntimeReply state;
+                    try { state = await runtime.CallAsync(new("update-state"), 1000); }
+                    catch (Exception error) when (error is IOException or OperationCanceledException)
+                    { return host.HasExited; } // Endpoint can close just before the process handle is signaled.
+                    if (!state.UpdateInstalling && state.UpdateError is { Length: > 0 } installError)
+                        throw new IOException("UpdateError while waiting for old resident exit: " + installError);
+                    return host.HasExited;
+                }, "old resident exits after installation");
+            }
 
             async Task BindUi()
             {
@@ -114,7 +151,7 @@ internal static class UpdateInstallCheck
         catch (Exception e) { lines.Add("FAIL " + e); }
         finally
         {
-            release.TrySetResult(); stop.Cancel(); listener.Stop();
+            release.TrySetResult(); releaseRetry.TrySetResult(); stop.Cancel(); listener.Stop();
             try { await server; } catch (OperationCanceledException) { }
             foreach (var process in new[] { host, restarted, child })
             { try { if (process is { HasExited: false }) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(); } } catch (InvalidOperationException) { } finally { process?.Dispose(); } }
@@ -158,7 +195,12 @@ internal static class UpdateInstallCheck
                         downloading.TrySetResult(); await release.Task.WaitAsync(stop.Token);
                         status = "503 Service Unavailable"; body = [];
                     }
-                    else body = bytes;
+                    else
+                    {
+                        if (Volatile.Read(ref mode) == 3)
+                        { retryDownloading.TrySetResult(); await releaseRetry.Task.WaitAsync(stop.Token); }
+                        body = bytes;
+                    }
                 }
                 else body = Encoding.ASCII.GetBytes($"{(Volatile.Read(ref mode) == 1 ? new string('0', 64) : checksum)}  Typlo-9.9.9-win-x64.zip\n");
                 var header = Encoding.ASCII.GetBytes($"HTTP/1.1 {status}\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
