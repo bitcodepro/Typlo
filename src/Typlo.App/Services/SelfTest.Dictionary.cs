@@ -64,6 +64,14 @@ internal static partial class SelfTest
             });
             await Until(() => Control<TextBlock>("PersonalWordMessage").Text == Loc.T("dictionary.existsPersonal", custom));
             Require((await controller.QueryPersonalWordsAsync(new(custom, "en"))).Total == 1, "Personal word was duplicated");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                dialog!.Close(); dialog = new(controller, "abacus", "en"); dialog.Show();
+                Control<Button>("PersonalWordAdd").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            });
+            await Until(() => Control<TextBlock>("PersonalWordMessage").Text == Loc.T("dictionary.priorityAdded", "abacus"));
+            Require((await controller.QueryPersonalWordsAsync(new("abacus", "en"))).Total == 1, "Weak bundled word did not gain a personal priority");
+            await Dispatcher.UIThread.InvokeAsync(() => Require(!Control<Button>("PersonalWordAdd").IsEnabled, "Saved priority could be added twice"));
             return null;
         }
         finally
@@ -71,6 +79,7 @@ internal static partial class SelfTest
             await Dispatcher.UIThread.InvokeAsync(() => dialog?.Close());
             await controller.SetPersonalWordAsync(custom, "en", remove: true);
             await controller.SetPersonalWordAsync("sql", "en", remove: true);
+            await controller.SetPersonalWordAsync("abacus", "en", remove: true);
             controller.ConfigureDiagnosticLayouts(layouts);
         }
     }

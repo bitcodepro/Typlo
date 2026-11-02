@@ -9,7 +9,7 @@ public sealed record LayoutOption(string LayoutId, string Text, int Evidence);
 /// <summary>Conservative keyboard correction from exact disk vocabulary evidence, not translation.</summary>
 public sealed class LayoutLanguageDetector(LanguageLexicon lexicon, PersonalLexicon? personal = null)
 {
-    private const int Reliable = 120, Margin = 32, AmbiguityMargin = 24;
+    private const int Reliable = WordEvidence.ReliableScore, Margin = 32, AmbiguityMargin = 24;
     private sealed record Candidate(KeyboardLayout Layout, string Text, int Score);
 
     public LayoutOption[] Options(string keys, IReadOnlyList<KeyboardLayout> allowed)
@@ -73,7 +73,6 @@ public sealed class LayoutLanguageDetector(LanguageLexicon lexicon, PersonalLexi
         if (!cache.TryGetValue(token, out var found)) cache[token] = found = (lexicon.Lookup(token), personal?.Lookup(token) ?? 0);
         if ((found.Personal & (1 << index)) != 0) return new(layout, text, 250);
         if (found.Corpus is not { } evidence) return new(layout, text, 0);
-        var manual = (evidence.SupplementMask & (1 << index)) != 0;
-        return new(layout, text, Math.Max(evidence.CorpusWeights[index], manual ? 160 : 0));
+        return new(layout, text, evidence.Score(index));
     }
 }

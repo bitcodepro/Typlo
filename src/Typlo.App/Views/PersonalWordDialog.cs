@@ -86,14 +86,24 @@ internal sealed class PersonalWordDialog : Window
             try
             {
                 if (delete || boost) await controller.SetPersonalWordAsync(word, language, remove: delete);
-                else if ((await controller.AddMissingPersonalWordsAsync([new(word, language)])).Added == 0)
+                else
                 {
-                    var status = await controller.GetPersonalWordStatusAsync(word, language);
-                    known = status.Personal || status.Bundled == true ? status : null;
-                    priorityFor = !status.Personal && status.Bundled == true ? new(word, language) : null;
-                    _error.Text = status.Personal ? Loc.T("dictionary.existsPersonal", word) :
-                        status.Bundled == true ? Loc.T("dictionary.existsBundled", word) : Loc.T("manage.changed");
-                    return;
+                    var result = await controller.AddMissingPersonalWordsAsync([new(word, language)]);
+                    if (result.Added == 0)
+                    {
+                        var status = await controller.GetPersonalWordStatusAsync(word, language);
+                        known = status.Personal || status.Bundled == true ? status : null;
+                        priorityFor = !status.Personal && status.Bundled == true ? new(word, language) : null;
+                        _error.Text = status.Personal ? Loc.T("dictionary.existsPersonal", word) :
+                            status.Bundled == true ? Loc.T("dictionary.existsBundled", word) : Loc.T("manage.changed");
+                        return;
+                    }
+                    if (result.Prioritized > 0)
+                    {
+                        known = new(true, true);
+                        _error.Text = Loc.T("dictionary.priorityAdded", word);
+                        return;
+                    }
                 }
                 Close();
             }

@@ -218,6 +218,11 @@ internal static class BackgroundRuntimeCheck
             var customStatus = await runtime.CallAsync(new("personal-word-status", Text: "typloxyz", Args: ["en"]));
             Check(customStatus.PersonalStatus is { Personal: true, Bundled: false }, "Native AOT distinguishes personal and bundled membership");
             await runtime.CallAsync(new("personal-word", Text: "typloxyz", Args: ["en"], Flag: true));
+            var weakStatus = await runtime.CallAsync(new("personal-word-status", Text: "abacus", Args: ["en"]));
+            Check(weakStatus.PersonalStatus is { Personal: false, Bundled: true, NeedsPriority: true }, "Native AOT distinguishes weak bundled evidence from an effective personal priority");
+            var weakAdded = await runtime.CallAsync(new("personal-add-missing", Words: [new("abacus", "en"), new("ABACUS", "en")]));
+            Check(weakAdded.ImportResult is { Added: 1, Skipped: 1, Prioritized: 1 }, "Native AOT persists one explicit weak-word priority over IPC");
+            await runtime.CallAsync(new("personal-word", Text: "abacus", Args: ["en"], Flag: true));
             var addedWords = await runtime.CallAsync(new("personal-add", Words: [new("словарик", "ru"), new("словарик", "uk"), new("проверка", "ru")]));
             Check(addedWords.ImportResult?.Added == 3, "Resident adds a batch of personal forms over IPC");
             var wordPage = await runtime.CallAsync(new("personal-query", WordQuery: new("сло", "ru")));

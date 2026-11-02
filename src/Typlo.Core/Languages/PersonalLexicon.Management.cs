@@ -5,7 +5,7 @@ namespace Typlo.Core.Languages;
 public sealed record PersonalWord(string Word, string Language);
 public sealed record PersonalWordQuery(string Prefix = "", string? Language = null, int Page = 0, int PageSize = 50, bool Exclusions = false);
 public sealed record PersonalWordPage(PersonalWord[] Items, int Total, int Page, int PageSize);
-public sealed record PersonalImportResult(int Added, int Skipped);
+public sealed record PersonalImportResult(int Added, int Skipped, int Prioritized = 0);
 
 public sealed partial class PersonalLexicon
 {
@@ -67,7 +67,7 @@ public sealed partial class PersonalLexicon
         }
     }
 
-    public PersonalImportResult AddMany(IReadOnlyList<PersonalWord> entries, bool exclusions = false)
+    public PersonalImportResult AddMany(IReadOnlyList<PersonalWord> entries, bool exclusions = false, IReadOnlySet<PersonalWord>? priorities = null)
     {
         if (entries.Count > MaxImportWords) throw new InvalidDataException("At most 100000 words can be imported at once.");
         var validated = entries.Select(entry => exclusions ? ValidateExclusion(entry) : Validate(entry)).ToArray(); // Complete validation precedes any mutation.
@@ -77,13 +77,15 @@ public sealed partial class PersonalLexicon
             using var command = _connection!.CreateCommand(); command.Transaction = transaction;
             command.CommandText = exclusions ? "INSERT OR IGNORE INTO excluded_words VALUES ($word)" : "INSERT OR IGNORE INTO words VALUES ($word,$language)";
             command.Parameters.AddWithValue("$word", ""); command.Parameters.AddWithValue("$language", ""); command.Prepare();
-            var added = 0;
+            var added = 0; var prioritized = 0;
             foreach (var entry in validated)
             {
                 command.Parameters[0].Value = entry.Word; command.Parameters[1].Value = entry.Language;
-                added += command.ExecuteNonQuery();
+                var inserted = command.ExecuteNonQuery();
+                added += inserted;
+                if (inserted > 0 && priorities?.Contains(entry) == true) prioritized++;
             }
-            transaction.Commit(); return new(added, entries.Count - added);
+            transaction.Commit(); return new(added, entries.Count - added, prioritized);
         }
     }
 

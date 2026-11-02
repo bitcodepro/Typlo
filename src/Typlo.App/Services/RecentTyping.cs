@@ -47,7 +47,9 @@ internal sealed class RecentTyping
                 _version = version;
                 return;
             }
-            if (window != _window || element != _element || (!_suppressAutomatic && now - _lastAt >= PauseMilliseconds) ||
+            // A pause does not move the caret. Preserve the completed word when Space arrives,
+            // so failed/declined automatic correction can still be followed by a manual command.
+            if (window != _window || element != _element || (!_suppressAutomatic && key != ' ' && now - _lastAt >= PauseMilliseconds) ||
                 (_keys.Length > 0 && char.IsWhiteSpace(_keys[^1]) && !char.IsWhiteSpace(key))) Clear();
             _window = window;
             _element = element;

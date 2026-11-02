@@ -31,8 +31,10 @@ internal static class Program
             return DirectEditCheck.RunAsync(args[1]).GetAwaiter().GetResult();
         if (args.FirstOrDefault() == "--system-shortcuts-check")
             return SystemShortcutCheck.RunAsync(args[1]).GetAwaiter().GetResult();
+        if (args.FirstOrDefault() == "--teams-input-check")
+            return InteractiveInputCheck.RunAsync(args[1], automaticProcess: "ms-teams").GetAwaiter().GetResult();
         if (args.FirstOrDefault() == "--chatgpt-input-check")
-            return InteractiveInputCheck.RunAsync(args[1], chatGptOnly: true).GetAwaiter().GetResult();
+            return InteractiveInputCheck.RunAsync(args[1], automaticProcess: "ChatGPT").GetAwaiter().GetResult();
         if (args.FirstOrDefault() == "--interactive-input-check")
             return InteractiveInputCheck.RunAsync(args[1]).GetAwaiter().GetResult();
         if (args.FirstOrDefault() == "--typing-hook-lifecycle-check")

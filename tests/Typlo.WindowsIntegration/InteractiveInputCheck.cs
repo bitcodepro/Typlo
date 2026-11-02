@@ -13,7 +13,7 @@ namespace Typlo.WindowsIntegration;
 // keys are accepted only in this explicitly started test process, never in the shipped app.
 internal static class InteractiveInputCheck
 {
-    internal static async Task<int> RunAsync(string directory, bool chatGptOnly = false)
+    internal static async Task<int> RunAsync(string directory, string? automaticProcess = null)
     {
         Directory.CreateDirectory(directory);
         Typlo.App.Log.FilePath = Path.Combine(directory, "live-input.log");
@@ -45,16 +45,16 @@ internal static class InteractiveInputCheck
                 UndoHotkey = "Ctrl+Alt+Shift+Z", AutoCorrectEnabled = true, HistoryEnabled = false,
                 ApplicationLayouts = [new() { ProcessName = "ms-teams", Layouts = [en.Id, uk.Id] }],
             };
-            if (chatGptOnly)
+            if (automaticProcess is not null)
             {
-                if (!string.Equals(platform.GetApplicationProcessName(window), "ChatGPT", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("Activate the ChatGPT input before starting this isolated runner");
+                if (!string.Equals(platform.GetApplicationProcessName(window), automaticProcess, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Activate the requested editor before starting this isolated runner");
                 // The installed app ignores simulated input. This test controller accepts it, only
-                // enables automatic editing in ChatGPT, and registers no competing global shortcuts.
+                // enables automatic editing in the requested process, and registers no competing global shortcuts.
                 settings.ToggleHotkey = settings.LayoutSwitchHotkey = settings.UndoHotkey = settings.AddWordHotkey = "";
                 settings.ToolsHotkey = settings.ChoicesHotkey = settings.AcceptChoiceHotkey = settings.CancelChoiceHotkey = "";
                 settings.LayoutHotkeys = []; settings.AutoCorrectEnabled = false;
-                settings.ApplicationLayouts = [new() { ProcessName = "ChatGPT", Layouts = [en.Id, ru.Id], AutoCorrection = true, SnippetExpansion = false }];
+                settings.ApplicationLayouts = [new() { ProcessName = automaticProcess, Layouts = [en.Id, ru.Id], AutoCorrection = true, SnippetExpansion = false }];
             }
             new SettingsStore(paths.SettingsFile).Save(settings);
             TypingEvents.AcceptSimulated = true;
@@ -70,9 +70,15 @@ internal static class InteractiveInputCheck
                 catch (TimeoutException) { break; }
                 if (command is null or "stop") break;
                 if (command == "state") Console.WriteLine($"characters={characters}; layout={platform.GetCurrentLayoutId(platform.ForegroundWindow)}; dictionary={controller.DictionaryIsOpen}");
-                if (command == "english" && chatGptOnly)
+                if (command == "english" && automaticProcess is not null)
                 { platform.SwitchKeyboardLayout(window, en); Console.WriteLine("SOURCE_ENGLISH"); }
-                if (command == "status" && chatGptOnly)
+                if (command == "russian" && automaticProcess is not null)
+                { platform.SwitchKeyboardLayout(window, ru); Console.WriteLine("SOURCE_RUSSIAN"); }
+                if (command == "manual-en" && automaticProcess is not null)
+                { await controller.ConvertSelectionAsync(en); Console.WriteLine("MANUAL_EN_DONE"); }
+                if (command == "learn-abacus" && automaticProcess is not null)
+                { var result = await controller.AddMissingPersonalWordsAsync([new("abacus", "en")]); Console.WriteLine($"LEARN added={result.Added}; skipped={result.Skipped}; prioritized={result.Prioritized}"); }
+                if (command == "status" && automaticProcess is not null)
                 { await controller.AutoCorrectionIdleAsync(); Console.WriteLine(AutoCorrectionReport.Format(await controller.GetAutomaticStatusAsync())); }
             }
             await controller.AutoCorrectionIdleAsync();

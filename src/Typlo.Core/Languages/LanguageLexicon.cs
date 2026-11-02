@@ -6,6 +6,9 @@ namespace Typlo.Core.Languages;
 
 public readonly record struct WordEvidence(byte[] CorpusWeights, byte SupplementMask)
 {
+    public const int ReliableScore = 120;
+    public int Score(int language) => Math.Max(CorpusWeights[language], (SupplementMask & (1 << language)) != 0 ? 160 : 0);
+    public bool Reliable(int language) => Score(language) >= ReliableScore;
     public bool Includes(int language) => CorpusWeights[language] > 0 || (SupplementMask & (1 << language)) != 0;
 }
 
