@@ -1,6 +1,7 @@
 name: CI
 
-# PRs produce checked preview packages. Main produces the next release after all checks.
+# Temporary Windows-only distribution: PR previews and main releases use the same gates.
+# Cross-platform source and local packaging remain available; see docs/ci-release.md.
 on:
   pull_request:
   push:
@@ -46,6 +47,8 @@ jobs:
       - run: python -B -m unittest discover -s tests/release -v
       - name: Validate language vocabulary data
         run: python -B -m unittest discover -s tools/language-data/tests -v
+      - name: Validate spelling data and license provenance
+        run: python -B tools/spelling-data/verify.py
       - run: node --test tests/gnome/bridge.test.mjs
 
   build-and-test:
@@ -55,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, ubuntu-24.04, macos-15]
+        os: [windows-2025]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,6 +72,8 @@ jobs:
       - run: dotnet test Typlo.slnx -c Release --no-build --logger trx --results-directory TestResults
       - name: Verify vocabulary with the .NET reader
         run: dotnet run --project tools/LanguageDataProbe -c Release -- verify resources/language-detection/words.sqlite3
+      - name: Check offline spelling worker and resource lifetime
+        run: dotnet run --project tools/SpellingProbe -c Release -- src/Typlo.App/bin/Release/net10.0/Typlo.dll
       - name: Windows WebView2 editor integration
         if: runner.os == 'Windows'
         shell: pwsh
@@ -91,50 +96,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  linux-selftest:
-    name: Linux X11 clipboard and hotkey selftest
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          dotnet-version: 10.0.4xx
-      - run: dotnet publish src/Typlo.App -c Release -r linux-x64 --self-contained true -o dist/ci-linux-publish
-      - run: docker build -t typlo-selftest tests/linux
-      - name: Test in a disposable X11 session
-        run: |
-          mkdir -p dist/selftest
-          docker run --rm --network none \
-            --mount "type=bind,source=$PWD/dist/ci-linux-publish,target=/app,readonly" \
-            --mount "type=bind,source=$PWD/dist/selftest,target=/out" typlo-selftest
-      - name: Retain selftest report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: linux-x11-selftest
-          path: dist/selftest
-          if-no-files-found: warn
-          retention-days: 7
-
-  gnome-selftest:
-    name: GNOME 46 X11 five-source switching
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - run: docker build -t typlo-gnome-selftest -f tests/gnome/Dockerfile .
-      - run: docker run --rm --network none typlo-gnome-selftest
-
   version:
     name: Select release or preview version
-    needs: [release-tooling, build-and-test, linux-selftest, gnome-selftest]
+    needs: [release-tooling, build-and-test]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -190,14 +154,14 @@ jobs:
           pattern: Typlo-*
           path: dist/packages
           merge-multiple: true
-      - name: Check all five archive/checksum pairs
+      - name: Check the Windows archive/checksum pair
         env:
           VERSION: ${{ needs.version.outputs.version }}
-        run: python scripts/release.py verify --directory dist/packages --version "$VERSION" --commit "$GITHUB_SHA"
+        run: python scripts/release.py verify --rid win-x64 --directory dist/packages --version "$VERSION" --commit "$GITHUB_SHA"
 
   release:
     name: Publish release from main
-    needs: [release-tooling, build-and-test, linux-selftest, gnome-selftest, version, packages, verify-packages]
+    needs: [release-tooling, build-and-test, version, packages, verify-packages]
     if: >-
       github.repository == 'bitcodepro/Typlo' && github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
@@ -227,3 +191,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
         run: python scripts/release.py publish --directory dist/packages --version "$VERSION"
+

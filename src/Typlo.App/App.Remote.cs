@@ -87,6 +87,7 @@ public partial class App
                 }
                 else if (args.Contains("--shortcuts")) ShowShortcuts();
                 else if (args.Contains("--tools") || args.Contains("--choices")) ShowTools(args.Contains("--choices"));
+                else if (Array.IndexOf(args, "--spelling") is var spellingIndex and >= 0 && spellingIndex + 1 < args.Length && long.TryParse(args[spellingIndex + 1], out var spellingId)) ShowSpelling(spellingId);
                 else if (args.Contains("--dictionary")) ShowDictionary();
                 else if (args.Contains("--update")) ShowUpdateDialog();
                 else if (args.Contains("--update-failed")) _ = ShowUpdateFailureAsync();

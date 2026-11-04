@@ -5,3 +5,6 @@
 resources/language-detection/*.sqlite3 binary
 resources/language-detection/*.txt text eol=lf
 resources/language-detection/LICENSE-CC-BY-SA-4.0.txt whitespace=-blank-at-eof
+resources/spelling/* -text linguist-vendored=true whitespace=-blank-at-eol,-blank-at-eof
+resources/spelling/*.dic binary
+resources/spelling/manifest.json text eol=lf

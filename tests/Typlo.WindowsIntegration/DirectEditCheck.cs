@@ -73,6 +73,8 @@ internal sealed class DirectEditorFixture : Form
             modeReadSent, plainRichMode = (ulong)mode, plainRichHandleChanged = _fields["plainrich"].Handle != _plainRichInitialHandle,
             plainRichSetup = ((PlainTextRichTextBox)_fields["plainrich"]).Setup,
             nativeLengthSent, nativeLengthError, nativeLength = (ulong)nativeLength, keyboardMessages = _edit.KeyboardMessages,
+            fieldFocused = field.Focused, foreground = (long)Native.GetForegroundWindow(),
+            leftChordCompletions = _edit.LeftChordCompletions, leftControlDown = _edit.LastLeftControlDown, leftShiftDown = _edit.LastLeftShiftDown,
         }));
         if (op == "delay-read") _edit.ReadDelay = root.GetProperty("milliseconds").GetInt32();
     }
@@ -131,9 +133,20 @@ internal sealed class DirectEditorFixture : Form
     private sealed class SlowTextBox : TextBox
     {
         internal int Delay, ReadDelay, AfterWriteReadDelay, Writes, KeyboardMessages;
+        internal int LeftChordCompletions;
+        internal bool LastLeftControlDown, LastLeftShiftDown;
+        private bool _leftAwaitingControlRelease, _leftReleased;
+        [DllImport("user32.dll")] private static extern short GetKeyState(int key);
         protected override void WndProc(ref Message m)
         {
             if (m.Msg is >= 0x100 and <= 0x109) KeyboardMessages++;
+            if (m.Msg == 0x100 && (int)m.WParam == 0x25)
+            {
+                _leftAwaitingControlRelease = true;
+                _leftReleased = false;
+                LastLeftControlDown = (GetKeyState(0x11) & 0x8000) != 0;
+                LastLeftShiftDown = (GetKeyState(0x10) & 0x8000) != 0;
+            }
             if (m.Msg == 0x0d)
             {
                 var delay = Interlocked.Exchange(ref ReadDelay, 0);
@@ -146,6 +159,11 @@ internal sealed class DirectEditorFixture : Form
                 if (delay > 0) Thread.Sleep(delay); // intentional unresponsive editor fixture
             }
             base.WndProc(ref m);
+            // A posted IPC read can overtake queued keyboard input. Acknowledge only after
+            // the native editor handled Left and the final Control release, not on SendInput.
+            if (_leftAwaitingControlRelease && m.Msg == 0x101 && (int)m.WParam == 0x25) _leftReleased = true;
+            if (_leftAwaitingControlRelease && _leftReleased && m.Msg == 0x101 && (int)m.WParam is 0x11 or 0xa2 or 0xa3)
+            { _leftAwaitingControlRelease = false; LeftChordCompletions++; }
             if (m.Msg == 0xc2) ReadDelay = Interlocked.Exchange(ref AfterWriteReadDelay, 0);
         }
     }
@@ -210,7 +228,7 @@ internal static class DirectEditCheck
                 var paths = new AppPaths(Path.Combine(work, "controller"));
                 new SettingsStore(paths.SettingsFile).Save(new AppSettings
                 {
-                    ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
+                    SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
                     LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "",
                     ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "", HistoryEnabled = false,
                     SwitchSystemLayout = false, ConvertLastWord = true,
@@ -245,7 +263,7 @@ internal static class DirectEditCheck
                 var paths = new AppPaths(Path.Combine(work, "slow-" + phase + "-controller"));
                 new SettingsStore(paths.SettingsFile).Save(new AppSettings
                 {
-                    ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
+                    SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
                     LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "",
                     ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "", HistoryEnabled = false,
                     SwitchSystemLayout = false, ConvertLastWord = true,
@@ -395,7 +413,7 @@ internal static class DirectEditCheck
                 var paths = new AppPaths(Path.Combine(work, "application-cycle"));
                 new SettingsStore(paths.SettingsFile).Save(new AppSettings
                 {
-                    ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
+                    SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
                     LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "",
                     ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "", HistoryEnabled = false,
                     SwitchSystemLayout = false,
@@ -427,7 +445,7 @@ internal static class DirectEditCheck
                 var paths = new AppPaths(Path.Combine(work, "automatic-dictionary-controller"));
                 new SettingsStore(paths.SettingsFile).Save(new AppSettings
                 {
-                    ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
+                    SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
                     LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "",
                     ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "", HistoryEnabled = false,
                     SwitchSystemLayout = false, AutoCorrectEnabled = true,

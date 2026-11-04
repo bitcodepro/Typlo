@@ -78,6 +78,7 @@ public sealed class AppSettings
     public string AcceptChoiceHotkey { get; set; } = "Ctrl+Alt+Shift+Enter";
     public string CancelChoiceHotkey { get; set; } = "Ctrl+Alt+Shift+Escape";
     public string AddWordHotkey { get; set; } = "Ctrl+Shift+K";
+    public string SpellingHotkey { get; set; } = "Ctrl+Shift+L";
 
     /// <summary>Typed triggers replaced by text (";addr" → address). Stored in settings.json, not encrypted.</summary>
     public List<Snippet> Snippets { get; set; } = [];
@@ -162,7 +163,7 @@ public sealed class AppSettings
         CaseHotkey ??= "";
         TranslitHotkey ??= "";
         UndoHotkey ??= "";
-        AddWordHotkey ??= ""; ToolsHotkey ??= ""; ChoicesHotkey ??= ""; AcceptChoiceHotkey ??= ""; CancelChoiceHotkey ??= "";
+        SpellingHotkey ??= ""; AddWordHotkey ??= ""; ToolsHotkey ??= ""; ChoicesHotkey ??= ""; AcceptChoiceHotkey ??= ""; CancelChoiceHotkey ??= "";
         if (!Enum.IsDefined(ScreenshotShape)) ScreenshotShape = CaptureShape.Rectangle;
         ScreenshotCopyHotkey ??= "";
         ScreenshotSaveHotkey ??= "";

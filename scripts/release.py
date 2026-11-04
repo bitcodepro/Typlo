@@ -21,6 +21,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RIDS = ("win-x64", "linux-x64", "linux-arm64", "osx-arm64", "osx-x64")
+# Temporary public-release contract; keep RIDS for local/all-platform package validation.
+RELEASE_RIDS = ("win-x64",)
 SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?")
 
 
@@ -138,6 +140,9 @@ def verify_archive(archive, version, rid, commit):
     data_prefix = "Typlo.app/Contents/MacOS/language-data/" if rid.startswith("osx-") else "language-data/"
     vocabulary_files = ("words.sqlite3", "words.manifest.json", "NOTICE.txt", "LICENSE-CC-BY-SA-4.0.txt")
     required.update(data_prefix + name for name in vocabulary_files)
+    spelling_prefix = "Typlo.app/Contents/MacOS/spelling/" if rid.startswith("osx-") else "spelling/"
+    spelling_files = ("manifest.json", *json.loads((ROOT / "resources/spelling/manifest.json").read_text(encoding="utf-8"))["files"])
+    required.update(spelling_prefix + name for name in spelling_files)
     if rid.startswith("linux-"):
         required.update("gnome-extension/" + name for name in GNOME_FILES)
     if rid.startswith("osx-"):
@@ -191,6 +196,10 @@ def verify_archive(archive, version, rid, commit):
             data = read(data_prefix + name, 16 * 1024 * 1024)
             if hashlib.sha256(data).hexdigest() != digest(ROOT / "resources/language-detection" / name):
                 raise ValueError("Vocabulary data or attribution differs from the source: " + name)
+        for name in spelling_files:
+            data = read(spelling_prefix + name, 16 * 1024 * 1024)
+            if hashlib.sha256(data).hexdigest() != digest(ROOT / "resources/spelling" / name):
+                raise ValueError("Spelling data, source or attribution differs from the source: " + name)
         validate_executable(read(executable_path(rid), 8192), rid)
         executable = files[executable_path(rid)]
         mode = executable.external_attr >> 16 if isinstance(bundle, zipfile.ZipFile) else executable.mode
@@ -215,7 +224,7 @@ def verify_packages(directory, version, commit, rids=RIDS):
 
 NOTICES = "THIRD-PARTY-NOTICES.txt"
 # Everything an archive may contain at its top level: no extra folders.
-TOP_LEVEL = {"README.md", "LICENSE", NOTICES, "build-info.json", "Typlo.exe", "Typlo", "Typlo.app", "language-data"}
+TOP_LEVEL = {"README.md", "LICENSE", NOTICES, "build-info.json", "Typlo.exe", "Typlo", "Typlo.app", "language-data", "spelling"}
 WINDOWS_NATIVE_FILES = {"av_libglesv2.dll", "e_sqlite3.dll", "libHarfBuzzSharp.dll", "libSkiaSharp.dll", "uiohook.dll"}
 GNOME_FILES = ("extension.js", "bridge.js", "metadata.json", "install.sh")
 LICENSE_FILE = re.compile(r"(?i)^(license|licence|copying)([._-].*)?(\.txt|\.md)?$")
@@ -398,7 +407,7 @@ def publish(directory, version, env):
     if (env.get("GITHUB_ACTIONS") != "true" or env.get("GITHUB_REPOSITORY") != "bitcodepro/Typlo" or env.get("GITHUB_REF") != "refs/heads/main" or env.get("GITHUB_EVENT_NAME") not in ("push", "workflow_dispatch") or env.get("GITHUB_WORKFLOW_REF") != "bitcodepro/Typlo/.github/workflows/ci.yml@refs/heads/main" or not re.fullmatch(r"[0-9a-f]{40}", commit)):
         raise ValueError("Publication requires Typlo's CI workflow on main with an exact source SHA")
     version_tuple(version)
-    files = verify_packages(directory, version, commit)
+    files = verify_packages(directory, version, commit, RELEASE_RIDS)
     if gh_api("git/ref/heads/main")["object"]["sha"] != commit:
         raise ValueError("main moved since this build; publish from the current main run")
     tags = [ref["ref"].removeprefix("refs/tags/") for ref in gh_api("git/matching-refs/tags/v")]
@@ -407,7 +416,7 @@ def publish(directory, version, env):
     if any(item["tag_name"] == tag for item in releases()):
         raise ValueError("A release/draft already exists for this version; inspect it instead of overwriting")
     gh_api("git/refs", "POST", {"ref": f"refs/tags/{tag}", "sha": commit})
-    args = ["gh", "release", "create", tag, "--repo", "bitcodepro/Typlo", "--verify-tag", "--target", commit, "--title", f"Typlo {tag}", "--generate-notes", "--draft"]
+    args = ["gh", "release", "create", tag, "--repo", "bitcodepro/Typlo", "--verify-tag", "--target", commit, "--title", f"Typlo {tag}", "--generate-notes", "--notes", "This release contains Windows x64 only. macOS and Linux packages and automatic updates are temporarily paused; existing installations remain usable.", "--draft"]
     if "-" in version:
         args.append("--prerelease")
     run(args + [str(file) for file in files])
@@ -446,3 +455,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

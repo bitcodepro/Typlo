@@ -24,6 +24,7 @@ public sealed partial class AppController : IDisposable
     private const int ScreenshotSaveId = 7;
     private const int LayoutSwitchId = 8;
     private const int AddWordId = 9;
+    private const int SpellingId = 24;
     private const int LayoutIdBase = 100;
     // A hotkey is delivered on key-down. Waiting a whole second for its modifiers penalises a held
     // chord; give a normal release a short grace period, then use the platform's safe release path.
@@ -91,6 +92,8 @@ public sealed partial class AppController : IDisposable
         ApplyKeepAwake();
         _platform.HotkeyPressed += OnHotkey;
         _platform.KeyTyped += OnKeyTyped;
+        _spellingForeground = _platform.ForegroundWindow;
+        _platform.ForegroundChanged += TrackSpellingForeground;
         ApplySnippets();
         _platform.ClipboardCaptured += OnClipboardCaptured;
         RegisterHotkeys();
@@ -260,6 +263,7 @@ public sealed partial class AppController : IDisposable
         Register(AcceptChoiceId, Settings.AcceptChoiceHotkey, Loc.T("tools.accept"));
         Register(CancelChoiceId, Settings.CancelChoiceHotkey, Loc.T("tools.cancel"));
         Register(AddWordId, Settings.AddWordHotkey, Loc.T("dictionary.title"));
+        Register(SpellingId, Settings.SpellingHotkey, Loc.T("spell.title"));
         Register(ClipboardId, Settings.ClipboardHotkey, Loc.T("hk.history"));
         Register(CaseId, Settings.CaseHotkey, Loc.T("hk.case"));
         Register(TranslitId, Settings.TranslitHotkey, Loc.T("hk.translit"));
@@ -295,6 +299,7 @@ public sealed partial class AppController : IDisposable
             else if (id == AcceptChoiceId) _ = ApplyChoiceAsync();
             else if (id == CancelChoiceId) CancelChoices();
             else if (id == AddWordId) _ = CapturePersonalWordAsync();
+            else if (id == SpellingId) _ = CaptureSpellingAsync();
             else if (id == CaseId) _ = ChangeCaseAsync();
             else if (id == TranslitId) _ = TransliterateAsync();
             else if (id == UndoId) _ = UndoLastTransformAsync();
@@ -800,6 +805,7 @@ public sealed partial class AppController : IDisposable
             if (own) return; // e.g. the Undo hotkey must not invalidate the conversion it is about to undo
         }
         Volatile.Read(ref _pendingCopyInput)?.Observe(key);
+        ObserveSpellingInput();
         if (!key.LayoutGesture) Interlocked.Increment(ref _caretVersion);
         var version = Interlocked.Increment(ref _typingVersion);
         // Any user input (a key, Backspace, arrows, a click) may move the caret: an older conversion can no longer
@@ -1306,6 +1312,7 @@ public sealed partial class AppController : IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _recentTyping.Reset(Interlocked.Increment(ref _typingVersion));
         _lastTransform = null;
+        _spelling = null;
         StopApplicationLayouts();
         _ = StopPendingAutomaticWords();
         _lexicon.Dispose();
@@ -1316,6 +1323,7 @@ public sealed partial class AppController : IDisposable
         EndExternalCapture();
         _platform.HotkeyPressed -= OnHotkey;
         _platform.KeyTyped -= OnKeyTyped;
+        _platform.ForegroundChanged -= TrackSpellingForeground;
         _platform.SetTypingWatch(false);
         _platform.ClipboardCaptured -= OnClipboardCaptured;
         _activityTimer?.Dispose();
