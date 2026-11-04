@@ -7,6 +7,9 @@ public static partial class Loc
         var labels = new Dictionary<string, (string En, string Ru, string Uk)>
         {
             ["spell.title"] = ("Check spelling", "Проверить орфографию", "Перевірити правопис"),
+            ["spell.copy"] = ("Copy corrected text", "Скопировать результат", "Скопіювати результат"),
+            ["spell.copied"] = ("Corrected text copied.", "Результат скопирован.", "Результат скопійовано."),
+            ["spell.copyOnly"] = ("Safe replacement is unavailable in this environment. Copy the result and paste it into the intended field yourself.", "В этом окружении безопасная замена недоступна. Скопируй результат и вставь его в нужное поле вручную.", "У цьому середовищі безпечна заміна недоступна. Скопіюй результат і встав його в потрібне поле вручну."),
             ["spell.selection"] = ("Select text in your editor, then press the spelling shortcut again.", "Выдели текст в редакторе и нажми сочетание проверки орфографии ещё раз.", "Виділи текст у редакторі й натисни сполучення перевірки правопису ще раз."),
             ["spell.limit"] = ("Select a smaller fragment (up to 20,000 characters).", "Выдели меньший фрагмент (до 20 000 символов).", "Виділи менший фрагмент (до 20 000 символів)."),
             ["spell.hint"] = ("Offline spelling for selected plain text (up to 20,000 characters). Choose corrections below; the original is kept by default. Apply replaces only the unchanged source selection. Formatting may be removed.", "Проверка выделенного текста офлайн (до 20 000 символов). Выбери исправления ниже; по умолчанию слова сохраняются. Применение заменит только неизменённое исходное выделение. Оформление может быть потеряно.", "Перевірка виділеного тексту офлайн (до 20 000 символів). Вибери виправлення нижче; за замовчуванням слова зберігаються. Застосування замінить лише незмінене початкове виділення. Форматування може бути втрачено."),

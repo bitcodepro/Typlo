@@ -34,6 +34,8 @@ While Settings is open, Typlo pauses its shortcuts so you can edit them. Ctrl+Sh
 
 Spelling checks use the bundled `spelling/` folder. Extract it with the application. Select up to 20,000 characters, press Ctrl+Shift+L, choose suggestions and apply. Unknown words stay unchanged until you choose a correction. You can select a language manually. Applying replaces plain text and may remove formatting; changed selections are rejected. Dictionaries load in a temporary worker that exits after each check. Text is processed locally, without temporary text files or network requests. See [spelling data and licenses](docs/spelling.md).
 
+On macOS/Linux, use **Copy corrected text** and paste into the intended field yourself. Direct Apply is disabled when the original input field cannot be safely tracked.
+
 ## Languages per application
 
 In **Settings → Layouts for applications**, choose a process and its languages:

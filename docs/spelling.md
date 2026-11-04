@@ -2,7 +2,11 @@
 
 Select text, press **Ctrl+Shift+L**, review the suggestions and apply. The shortcut can be changed or disabled in Settings. It is independent of wrong-layout correction after Space. No word is changed until a suggestion is selected and Apply is pressed. Language can be selected manually.
 
+Direct Apply requires foreground notifications, a foreground-transition counter and a nonzero input-field identity, both at capture and at application time. When those guarantees are unavailable (currently macOS/Linux), Apply is disabled: review normally, use **Copy corrected text**, and paste into the intended field yourself. The resident also rejects direct Apply requests in that mode before activation, copying or writing. Identical text in another field/window is never treated as a substitute for missing target identity.
+
 English, Russian and Ukrainian Hunspell `.aff`/`.dic` packs are bundled in `spelling/`; extract the entire distribution. Auto mode accepts words valid in any matching language, uses paragraph evidence for Cyrillic suggestions, and offers both RU/UK candidates when uncertain. This is spelling, not contextual grammar correction. Names and slang may need personal entries. Personal entries, exclusions and the bundled IT supplement are respected.
+
+Ordinary surrounding prose punctuation does not hide Title Case typos: `(Speling)`, `«Превет»` and `“Привітт”` are checked with their original offsets and punctuation preserved. Quoted URLs, paths, mixed-case identifiers and empty-argument calls such as `Speling()` stay protected. Internal apostrophes and hyphens in words are retained.
 
 The command reads only the selection, never a whole document automatically. The preview is bounded to 20,000 characters, 3,000 words and 300 reported unknown words. Source selection is copied and compared again before Apply; typing, focus/field changes during the operation and external clipboard changes abort the write. Apply returns to the captured source window. Plain-text replacement preserves whitespace but can remove rich formatting. The normal Typlo Undo shortcut can undo a confirmed replacement until further input.
 

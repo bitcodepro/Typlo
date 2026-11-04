@@ -13,6 +13,7 @@ public sealed partial class AppController
     private long _nextSpelling;
     private nint _spellingForeground;
     public event Action<long>? SpellingRequested;
+    private bool CanApplySpelling(nint element) => element != 0 && _platform.SupportsForegroundNotifications && _platform.ForegroundChangeVersion.HasValue;
     private void TrackSpellingForeground(nint window) => Volatile.Write(ref _spellingForeground, window);
     private void ObserveSpellingInput()
     {
@@ -45,7 +46,7 @@ public sealed partial class AppController
             text = notice is null ? text! : "";
             var ignored = SpellingText.Tokens(text).Select(t => t.Word).Distinct(StringComparer.OrdinalIgnoreCase)
                 .Where(word => _personal.Lookup(word) != 0 || _personal.IsExcluded(word) || _lexicon.Lookup(word)?.SupplementMask > 0).Take(SpellingText.MaxWords).ToArray();
-            session = new(new(Interlocked.Increment(ref _nextSpelling), text, ignored, notice), window, element, Stopwatch.GetTimestamp());
+            session = new(new(Interlocked.Increment(ref _nextSpelling), text, ignored, notice, CanApplySpelling(element)), window, element, Stopwatch.GetTimestamp());
         }
         catch (Exception e) when (e is not OutOfMemoryException) { Log.Info("Spelling selection capture stopped: " + e.GetType().Name); }
         finally
@@ -78,7 +79,7 @@ public sealed partial class AppController
     {
         if (_remote is not null) return (await _remote.CallAsync(new("spelling-apply", Id: id, Text: replacement), 15_000, allowRejected: true)).Ok;
         var session = Volatile.Read(ref _spelling);
-        if (session?.Selection.Id != id || session.Selection.Notice is not null || replacement.Length > SpellingText.MaxResultCharacters ||
+        if (session?.Selection.Id != id || !session.Selection.CanApply || !CanApplySpelling(session.Element) || session.Selection.Notice is not null || replacement.Length > SpellingText.MaxResultCharacters ||
             Stopwatch.GetElapsedTime(session.Started) >= TimeSpan.FromMinutes(5) || Volatile.Read(ref _disposed) != 0 ||
             _editingSettings || Volatile.Read(ref _updating) != 0 || _capturingScreen) return false;
         if (!ReferenceEquals(Interlocked.CompareExchange(ref _spelling, null, session), session)) return false;
@@ -97,8 +98,8 @@ public sealed partial class AppController
             _platform.ActivateWindow(session.Window);
             for (var i = 0; i < 25 && NoInput() && !IsTargetActive(session.Window); i++) await Task.Delay(20);
             var focus = _platform.ForegroundChangeVersion;
-            bool Valid() => NoInput() && IsTargetActive(session.Window) && !ForegroundChanged(focus) &&
-                (session.Element == 0 || _platform.FocusedInputElement == session.Element);
+            bool Valid() => NoInput() && CanApplySpelling(session.Element) && IsTargetActive(session.Window) && !ForegroundChanged(focus) &&
+                _platform.FocusedInputElement == session.Element;
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
             if (!Valid()) return false;
             using var capture = _platform.SuspendCapture(); snapshot = CaptureClipboard();

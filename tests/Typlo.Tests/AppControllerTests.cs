@@ -1917,7 +1917,7 @@ public sealed partial class AppControllerTests : IDisposable
         public Func<nint, string?>? ApplicationProcess;
         public int ApplicationLookups;
         public string? GetApplicationProcessName(nint window) { Interlocked.Increment(ref ApplicationLookups); return ApplicationProcess?.Invoke(window); }
-        public bool SupportsForegroundNotifications => true;
+        public bool SupportsForegroundNotifications { get; set; } = true;
         public event Action<nint>? ForegroundChanged;
         public readonly System.Collections.Concurrent.ConcurrentQueue<(nint Window, string Layout)> LayoutSwitches = new();
         public bool TrackFocusTransitions = true;
@@ -1933,7 +1933,8 @@ public sealed partial class AppControllerTests : IDisposable
         }
         public Action? OnForegroundVersionRead;
         public long? ForegroundChangeVersion { get { OnForegroundVersionRead?.Invoke(); lock (_focusGate) return TrackFocusTransitions ? _foregroundVersion : null; } }
-        public Document Document => DocumentFor(Window);
+        public Document? ActiveDocument;
+        public Document Document => ActiveDocument ?? DocumentFor(Window);
         public Document DocumentFor(nint window)
         {
             lock (_focusGate) return _documents.TryGetValue(window, out var doc) ? doc : _documents[window] = new();

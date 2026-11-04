@@ -52,6 +52,37 @@ public sealed class SpellingTests(SpellingFixture fixture) : IClassFixture<Spell
     [InlineData("https://speling.com user@speling.com C:\\speling\\file.txt speling_name $speling --speling")]
     [InlineData("`speling speling` ```\nspeling speling\n``` Console.WriteLine foo123")]
     public void TechnicalInputIsProtected(string text) => Assert.Empty(fixture.Engine.Check(new(text)).Issues);
+    [Theory]
+    [InlineData("(Speling)", "en", "Spelling")]
+    [InlineData("\"Speling\",", "en", "Spelling")]
+    [InlineData("'Speling'", "en", "Spelling")]
+    [InlineData("«(Speling)»!", "en", "Spelling")]
+    [InlineData("[Превет]", "ru", "Привет")]
+    [InlineData("‘Превет’…", "ru", "Привет")]
+    [InlineData("“Привітт”", "uk", "Привіт")]
+    [InlineData("{Привітт}", "uk", "Привіт")]
+    public void QuotedTitleCaseTyposAreCheckedWithOriginalPunctuation(string text, string language, string correction)
+    {
+        foreach (var mode in new[] { language, "auto" })
+        {
+            var issue = Assert.Single(fixture.Engine.Check(new(text, mode)).Issues);
+            Assert.Contains(correction, issue.Suggestions);
+            Assert.Equal(issue.Word, text.Substring(issue.Start, issue.Length));
+            Assert.Equal(text[..issue.Start] + correction + text[(issue.Start + issue.Length)..], SpellingText.Apply(text, [issue], [correction]));
+        }
+    }
+    [Theory]
+    [InlineData("(https://Speling.com)")]
+    [InlineData("«Speling.org»,")]
+    [InlineData("\"C:\\Speling\\file.txt\"")]
+    [InlineData("(Speling())")]
+    [InlineData("'speling()'")]
+    [InlineData("[speling_name]")]
+    [InlineData("(someSpeling)")]
+    public void WrappedTechnicalInputStillStaysProtected(string text) => Assert.Empty(SpellingText.Tokens(text));
+    [Fact]
+    public void ContractionsAndUkrainianApostrophesKeepTheirInternalCharacters()
+        => Assert.Equal(new[] { "don't", "пам’ять", "будь-який" }, SpellingText.Tokens("'don't' «пам’ять» (будь-який)").Select(t => t.Word));
     [Fact]
     public void CaseAndWhitespaceArePreservedAndNothingIsChangedWithoutAChoice()
     {
@@ -197,5 +228,36 @@ public sealed partial class AppControllerTests
         Assert.Empty(selection.Text);
         Assert.False(await _controller.ApplySpellingAsync(id, "changed"));
         Assert.Equal(text, _platform.Document.Text);
+    }
+    [Theory]
+    [InlineData(false, 0, true)]
+    [InlineData(false, 11, true)]
+    [InlineData(true, 0, true)]
+    [InlineData(true, 11, false)]
+    public async Task SpellingWithoutReliableTargetCannotWriteToAnotherFieldWithIdenticalText(bool notifications, int element, bool transitions)
+    {
+        _platform.SupportsForegroundNotifications = notifications;
+        _platform.FocusedInputElement = element;
+        _platform.TrackFocusTransitions = transitions;
+        var id = await CaptureSpellingSelection("speling");
+        Assert.False((await _controller.GetSpellingSelectionAsync(id))!.CanApply);
+        var fieldA = _platform.Document;
+        var fieldB = new Document(); fieldB.Type("speling"); fieldB.SelectAll();
+        // Same source handle (a PID on macOS), identical content, no observable field/input change.
+        _platform.ActiveDocument = fieldB;
+        Assert.False(await _controller.ApplySpellingAsync(id, "spelling"));
+        Assert.Equal("speling", fieldA.Text); Assert.Equal("speling", fieldB.Text);
+        Assert.Equal(0, _platform.PasteCount); Assert.Equal(0, _platform.Activations);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
+    }
+    [Fact]
+    public async Task SpellingRejectsApplyIfFocusMonitoringStopsAfterCapture()
+    {
+        var id = await CaptureSpellingSelection("speling");
+        Assert.True((await _controller.GetSpellingSelectionAsync(id))!.CanApply);
+        _platform.SupportsForegroundNotifications = false;
+        Assert.False(await _controller.ApplySpellingAsync(id, "spelling"));
+        Assert.Equal("speling", _platform.Document.Text);
+        Assert.Equal(0, _platform.PasteCount);
     }
 }

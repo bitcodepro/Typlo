@@ -14,6 +14,8 @@ internal sealed class SpellingWindow : Window
     private readonly StackPanel _issues = new() { Spacing = 8 };
     private readonly TextBox _preview = new() { AcceptsReturn = true, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, MinHeight = 140 };
     private readonly Button _apply = new();
+    private readonly Button _copy = new();
+    private readonly TextBlock _safety = new() { TextWrapping = TextWrapping.Wrap };
     private readonly ComboBox _language = new() { ItemsSource = new[] { "Auto · EN / RU / UK", "English", "Русский", "Українська" }, SelectedIndex = 0 };
     private SpellingSelection? _selection;
     private string? _replacement;
@@ -28,8 +30,15 @@ internal sealed class SpellingWindow : Window
         panel.Children.Add(new ScrollViewer { Content = _issues, MaxHeight = 260 }); panel.Children.Add(_preview);
         var cancel = new Button { Content = Loc.T("spell.cancel") }; cancel.Click += (_, _) => Close();
         _apply.Content = Loc.T("spell.apply"); _apply.IsEnabled = false;
+        _copy.Content = Loc.T("spell.copy"); _copy.IsEnabled = false;
+        _copy.Click += (_, _) =>
+        {
+            if (_busy || _replacement is null) return;
+            try { _controller.Platform.SetText(_replacement); _status.Text = Loc.T("spell.copied"); }
+            catch { _status.Text = Loc.T("spell.failed"); }
+        };
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-        actions.Children.Add(_apply); actions.Children.Add(cancel); panel.Children.Add(actions);
+        actions.Children.Add(_apply); actions.Children.Add(_copy); actions.Children.Add(cancel); panel.Children.Add(_safety); panel.Children.Add(actions);
         Content = new ScrollViewer { Content = panel };
         Opened += async (_, _) =>
         {
@@ -39,7 +48,7 @@ internal sealed class SpellingWindow : Window
         _language.SelectionChanged += async (_, _) => { if (_selection is not null && !_busy) await CheckAsync(); };
         _apply.Click += async (_, _) =>
         {
-            if (_busy || _selection is null) return; _busy = true; _apply.IsEnabled = false;
+            if (_busy || _selection?.CanApply != true) return; _busy = true; _apply.IsEnabled = _copy.IsEnabled = false;
             using var operation = UiOperations.Shared.Begin();
             if (operation is null) return;
             using var stopping = operation.Token.Register(() => _ = CancelAsync());
@@ -50,7 +59,7 @@ internal sealed class SpellingWindow : Window
                 else if (!_closed) _status.Text = Loc.T("spell.changed");
             }
             catch { if (!_closed) _status.Text = Loc.T("spell.failed"); }
-            finally { _busy = false; }
+            finally { _busy = false; if (!_closed) _copy.IsEnabled = _replacement is not null; }
         };
         Closed += (_, _) => { _closed = true; _stop.Cancel(); _selection = null; _replacement = null; _preview.Text = null; _issues.Children.Clear(); _ = CancelAsync(); };
     }
@@ -58,12 +67,13 @@ internal sealed class SpellingWindow : Window
     { try { await _controller.CancelSpellingAsync(_id); } catch (Exception) { /* Closing/disconnected UI never writes. */ } }
     private async Task CheckAsync()
     {
-        if (_busy || _closed) return; _busy = true; _language.IsEnabled = _apply.IsEnabled = false;
+        if (_busy || _closed) return; _busy = true; _language.IsEnabled = _apply.IsEnabled = _copy.IsEnabled = false;
         _status.Text = Loc.T("spell.busy"); _issues.Children.Clear();
         try
         {
             if (_selection is null) { _status.Text = Loc.T("spell.changed"); return; }
             if (_selection.Notice is { } notice) { _status.Text = Loc.T(notice); return; }
+            _safety.Text = _selection.CanApply ? "" : Loc.T("spell.copyOnly");
             using var operation = UiOperations.Shared.Begin();
             if (operation is null) return;
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token, operation.Token);
@@ -83,7 +93,7 @@ internal sealed class SpellingWindow : Window
             }
             Preview();
             _status.Text = result.Issues.Length == 0 ? Loc.T("spell.clean") : Loc.T("spell.found", result.Issues.Length);
-            _apply.IsEnabled = true;
+            _apply.IsEnabled = _selection.CanApply; _copy.IsEnabled = true;
         }
         catch (OperationCanceledException) { if (!_closed) _status.Text = Loc.T("spell.failed"); }
         catch { if (!_closed) _status.Text = Loc.T("spell.failed"); }
