@@ -242,6 +242,33 @@ class PublicationTests(unittest.TestCase):
                     release.publish(Path("unused"), VERSION, dict(self.env, **{key: value}))
                 api.assert_not_called()
 
+    def test_publisher_uses_exact_windows_release_contract(self):
+        self.assertEqual(release.RELEASE_RIDS, ("win-x64",))
+        self.assertEqual(len(release.RIDS), 5)  # Preserve local cross-platform packaging.
+        with patch.object(release, "verify_packages", side_effect=ValueError("invalid package")) as verify, patch.object(release, "gh_api") as api:
+            with self.assertRaisesRegex(ValueError, "invalid package"):
+                release.publish(Path("unused"), VERSION, self.env)
+            verify.assert_called_once_with(Path("unused"), VERSION, COMMIT, ("win-x64",))
+            api.assert_not_called()
+
+    def test_windows_release_requires_exact_pair_before_any_github_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            make_archive(directory, "win-x64")
+            self.assertEqual(len(release.verify_packages(directory, VERSION, COMMIT, release.RELEASE_RIDS)), 2)
+            # Extra platform or unrelated files are not silently accepted by the publisher.
+            (directory / "unexpected.zip").write_bytes(b"extra")
+            with patch.object(release, "gh_api") as api:
+                with self.assertRaises(ValueError):
+                    release.publish(directory, VERSION, self.env)
+                api.assert_not_called()
+            (directory / "unexpected.zip").unlink()
+            (directory / (release.archive_name(VERSION, "win-x64") + ".sha256")).unlink()
+            with patch.object(release, "gh_api") as api:
+                with self.assertRaises(ValueError):
+                    release.publish(directory, VERSION, self.env)
+                api.assert_not_called()
+
     def test_packages_and_current_main_are_checked_before_tag_creation(self):
         with patch.object(release, "verify_packages", return_value=[]), patch.object(release, "gh_api", return_value={"object": {"sha": "b" * 40}}) as api:
             with self.assertRaisesRegex(ValueError, "main moved"):
@@ -296,9 +323,11 @@ class PublicationTests(unittest.TestCase):
                 self.assertIn(unittest.mock.call("git/refs", "POST", {"ref": "refs/tags/v0.1.0", "sha": COMMIT}), api.call_args_list)
                 create, publish = [call.args[0] for call in runner.call_args_list]
                 self.assertIn("--verify-tag", create)
+                self.assertIn("Windows x64 only", create[create.index("--notes") + 1])
                 self.assertIn("--draft", create)
                 self.assertIn("--draft=false", publish)
 
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -21,6 +21,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RIDS = ("win-x64", "linux-x64", "linux-arm64", "osx-arm64", "osx-x64")
+# Temporary public-release contract; keep RIDS for local/all-platform package validation.
+RELEASE_RIDS = ("win-x64",)
 SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?")
 
 
@@ -405,7 +407,7 @@ def publish(directory, version, env):
     if (env.get("GITHUB_ACTIONS") != "true" or env.get("GITHUB_REPOSITORY") != "bitcodepro/Typlo" or env.get("GITHUB_REF") != "refs/heads/main" or env.get("GITHUB_EVENT_NAME") not in ("push", "workflow_dispatch") or env.get("GITHUB_WORKFLOW_REF") != "bitcodepro/Typlo/.github/workflows/ci.yml@refs/heads/main" or not re.fullmatch(r"[0-9a-f]{40}", commit)):
         raise ValueError("Publication requires Typlo's CI workflow on main with an exact source SHA")
     version_tuple(version)
-    files = verify_packages(directory, version, commit)
+    files = verify_packages(directory, version, commit, RELEASE_RIDS)
     if gh_api("git/ref/heads/main")["object"]["sha"] != commit:
         raise ValueError("main moved since this build; publish from the current main run")
     tags = [ref["ref"].removeprefix("refs/tags/") for ref in gh_api("git/matching-refs/tags/v")]
@@ -414,7 +416,7 @@ def publish(directory, version, env):
     if any(item["tag_name"] == tag for item in releases()):
         raise ValueError("A release/draft already exists for this version; inspect it instead of overwriting")
     gh_api("git/refs", "POST", {"ref": f"refs/tags/{tag}", "sha": commit})
-    args = ["gh", "release", "create", tag, "--repo", "bitcodepro/Typlo", "--verify-tag", "--target", commit, "--title", f"Typlo {tag}", "--generate-notes", "--draft"]
+    args = ["gh", "release", "create", tag, "--repo", "bitcodepro/Typlo", "--verify-tag", "--target", commit, "--title", f"Typlo {tag}", "--generate-notes", "--notes", "This release contains Windows x64 only. macOS and Linux packages and automatic updates are temporarily paused; existing installations remain usable.", "--draft"]
     if "-" in version:
         args.append("--prerelease")
     run(args + [str(file) for file in files])
@@ -453,3 +455,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

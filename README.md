@@ -56,5 +56,6 @@ For PowerShell inside Windows Terminal, choose the **WindowsTerminal** process.
 - **Multiline snippets** with a `{cursor}` marker for the insertion point.
 - **Screenshot drawing tools** and encrypted clipboard history for text, images and files.
 
-Windows, macOS and Linux are supported; screenshots are Windows-only and Wayland has input restrictions.
+Current CI previews and public releases ship **Windows x64 only**. macOS/Linux builds and automatic updates are temporarily paused; their source and local build support remain available. Older installed versions remain usable. See the [temporary release policy](docs/ci-release.md#temporary-windows-only-releases).
 See the [feature and platform reference](docs/reference.md) for details and build instructions.
+

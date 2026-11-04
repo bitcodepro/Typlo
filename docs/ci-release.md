@@ -8,9 +8,26 @@ settings, or ruleset changes. All third-party actions are pinned to commit SHAs.
 Job timeouts bound execution after a runner starts. They cannot guarantee runner
 availability or bound GitHub's queue time, including macOS ARM capacity shortages.
 
+## Temporary Windows-only releases
+
+PR previews and public releases currently ship **Windows x64 only**. macOS and Linux
+application builds, native tests and packages are paused, not treated as passed.
+Their source, local packaging commands and package-format tests remain available.
+Existing macOS/Linux installations remain usable, but the latest stable release
+will have no matching archive for their updater, so automatic update offers are
+paused until those distributions return. Older releases are not removed.
+
+To restore all platforms, restore the build matrix and Linux/GNOME runtime gates,
+package all five RIDs, update `RELEASE_RIDS` in `scripts/release.py`, restore the
+all-platform downloaded-package check, and update workflow tests/docs and the
+Windows-only release-notes notice together.
+Do not merely make failed platform jobs optional or publish unverified artifacts.
+
 ## Checks and packages
 
-- Restore, Release build and the unit tests run on Windows 2025, Ubuntu 24.04 and macOS 15.
+- Restore, Release build and the unit tests run on Windows 2025.
+  Release-tooling, vocabulary/license provenance and isolated GNOME JavaScript tests
+  still run on Ubuntu as platform-independent validation; these do not build a Linux distribution.
 - The Windows job also runs a local WebView2 contenteditable fixture through real copy/paste and
   keyboard input. It checks cross-process clipboard ownership, recent input beside old text,
   formatted paragraphs, Undo, and interruption by an unrelated process's copy. It also exercises
@@ -18,24 +35,20 @@ availability or bound GitHub's queue time, including macOS ARM capacity shortage
   Unit checks also cover cancellation on user input, persistent focus loss and lost selection ranges.
   The fixture uses isolated data/profile folders and sends no Teams messages. Its SDK is a test-only dependency;
   CI explicitly installs Microsoft's WebView2 Runtime if the runner does not already have it.
-- The existing Linux end-to-end selftest runs inside a disposable Ubuntu/Xvfb/Openbox
-  Docker container, with a read-only application mount, isolated writable XDG data/config
-  directories and no network. It checks
-  clipboard text/images, capture, hotkeys, layout conversion and encrypted storage.
-  The report is uploaded even on failure; the test has a 180-second process timeout.
-- Packaging runs natively for `win-x64`, `linux-x64`, `linux-arm64`, `osx-arm64`,
-  and `osx-x64`. Linux archives are `.tar.gz`; Windows and macOS archives are `.zip`.
-  macOS archives contain `Typlo.app` and retain the existing ad-hoc signature.
-  No signing identity or notarization is introduced.
-- Every archive contains only the executable (or `Typlo.app`), README, MIT LICENSE,
-  `THIRD-PARTY-NOTICES.txt` and `build-info.json` (version, RID and source commit).
-  Linux packages additionally contain the restricted GNOME source-switching extension.
-  The notices file lists the packages actually shipped for that RID and their license/notice
-  texts, each identical text once.
-  The verifier checks all five archive/checksum pairs, required contents, embedded
-  source/version/RID, native executable architecture and Unix execute permissions.
+- Windows x64 packaging uses Native AOT and produces a `.zip` plus its `.sha256` file.
+  Linux/macOS runtime selftests and packaging are paused in CI. Their existing local
+  commands remain available; local macOS packaging still requires macOS.
+- The Windows archive contains the Native AOT executable and required native DLLs,
+  README, MIT LICENSE, `THIRD-PARTY-NOTICES.txt`, `build-info.json` (version, RID,
+  source commit and deployment), vocabulary and spelling data with their source/license files.
+  The notices list the components actually shipped for the RID and their license texts.
+  CI and the publisher require exactly the Windows archive/checksum pair. The verifier
+  checks required contents, embedded source/version/RID, PE architecture and data/source hashes.
   It rejects traversal, links, unexpected top-level entries, incomplete notices,
-  missing platforms, extra assets and local data files.
+  missing Windows assets, extra assets and local data files.
+  The publisher uses the explicit `RELEASE_RIDS = ("win-x64",)` contract. Local
+  `verify` without `--rid` still checks all five supported formats, including Unix
+  execute permissions where applicable; CI passes `--rid win-x64`.
 - Test reports and PR preview packages are kept as Actions artifacts for seven days.
 
 macOS Accessibility/Keychain, Linux Wayland behavior and the real Teams application
@@ -67,18 +80,18 @@ only, as do pull requests (`0.0.0-pr.<number>`).
 ## First release after review and merge
 
 1. Review and merge the workflow changes through a PR into protected main.
-   This local preparation does not create that PR or push its branch.
-2. A code/workflow push to main starts CI. All checks, five package builds and
+2. A code/workflow push to main starts CI. All active checks, the Windows package build and
    independent downloaded-package verification must pass before publication.
    Documentation-only pushes are ignored, as in QueueLoom.
 3. With no existing version tags, CI selects `0.1.0`. Alternatively, after a
    `[skip release]` merge, manually run **CI** on **main** with `release_version=0.1.0`.
 4. The publisher checks its workflow/event/repository/ref context, validates the
    packages again and requires current main to equal the tested commit. It then
-   reserves the new immutable tag, creates a draft with all ten assets, checks the
+   reserves the new immutable tag, creates a draft with exactly two Windows assets, checks the
    uploaded asset names/sizes and publishes the draft. It never moves existing tags.
-5. Inspect the release's five archive/checksum pairs and install on real desktops.
-   For example: `sha256sum -c Typlo-0.1.0-linux-x64.tar.gz.sha256`.
+5. Inspect the Windows archive/checksum pair and install on a real Windows desktop.
+   For example: `sha256sum -c Typlo-0.1.0-win-x64.zip.sha256`.
+   Release notes explicitly identify Windows-only availability.
 
 If main advanced during the build, that run cannot publish; use the current main's
 run. If upload/publication fails after tag reservation, the immutable tag or draft
@@ -105,14 +118,6 @@ commands publishes anything; `publish` refuses a normal local session. The legac
 `scripts/publish-all.sh` and `scripts/package-macos.sh` remain available for local
 unversioned builds; CI uses `scripts/release.py` for verified release artifacts.
 
-Both macOS packages are published and signed on `macos-15-intel`. The ARM package
-still targets `osx-arm64`; its Mach-O architecture, signature, source and checksum
-checks remain required. This avoids reserving a second Apple Silicon runner for
-packaging when that hosted pool is capacity constrained. The `macos-15` build/test
-job still runs natively on Apple Silicon before packaging, and the final combined
-gate still verifies all five platform archives.
-
-
 Windows packages use Native AOT and include the five native libraries recorded by the verifier.
 The manifest marks this deployment as `native-aot`; verification checks the DLL set and PE architecture,
 while still recognizing older single-file package manifests. Windows CI additionally publishes Native
@@ -136,3 +141,4 @@ terminated the hook. That result is accepted only after the owning thread has jo
 The WebView2 integration waits for native hook readiness and actual typed-key/browser delivery,
 then verifies recent-input conversion through rapid enable/disable and controller replacement.
 Conversion and Undo assertions remain exact; hook errors include their full stack traces.
+

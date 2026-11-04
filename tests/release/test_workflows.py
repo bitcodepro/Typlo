@@ -22,15 +22,20 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(publisher["permissions"], {"contents": "write"})
         for context in ("bitcodepro/Typlo", "refs/heads/main", "'push'", "'workflow_dispatch'"):
             self.assertIn(context, publisher["if"])
-        self.assertEqual(set(publisher["needs"]), {"release-tooling", "build-and-test", "linux-selftest", "gnome-selftest", "version", "packages", "verify-packages"})
+        self.assertEqual(set(publisher["needs"]), {"release-tooling", "build-and-test", "version", "packages", "verify-packages"})
 
-    def test_all_platforms_and_checks_are_present(self):
+    def test_windows_release_contract_and_checks_are_present(self):
         jobs = self.ci["jobs"]
-        self.assertEqual(len(jobs["build-and-test"]["strategy"]["matrix"]["os"]), 3)
+        self.assertEqual(jobs["build-and-test"]["strategy"]["matrix"]["os"], ["windows-2025"])
         matrix = self.package["jobs"]["package"]["strategy"]["matrix"]["include"]
-        self.assertEqual({row["rid"] for row in matrix}, {"win-x64", "linux-x64", "linux-arm64", "osx-arm64", "osx-x64"})
-        self.assertIn("linux-selftest", jobs["version"]["needs"])
-        self.assertIn("gnome-selftest", jobs["version"]["needs"])
+        self.assertEqual({row["rid"] for row in matrix}, {"win-x64"})
+        self.assertEqual(set(jobs["version"]["needs"]), {"release-tooling", "build-and-test"})
+        self.assertNotIn("linux-selftest", jobs)
+        self.assertNotIn("gnome-selftest", jobs)
+        verify = jobs["verify-packages"]
+        self.assertEqual(set(verify["needs"]), {"version", "packages"})
+        self.assertTrue(any("release.py verify --rid win-x64" in step.get("run", "") for step in verify["steps"]))
+        self.assertFalse(any(job.get("continue-on-error") for job in jobs.values()))
         self.assertIn("node --test tests/gnome/bridge.test.mjs", [step.get("run") for step in jobs["release-tooling"]["steps"]])
         webview = next(step for step in jobs["build-and-test"]["steps"] if step.get("name") == "Windows WebView2 editor integration")
         self.assertEqual(webview["if"], "runner.os == 'Windows'")
@@ -48,3 +53,4 @@ class WorkflowTests(unittest.TestCase):
                         if step["uses"].startswith("actions/checkout@"):
                             self.assertEqual(step["with"]["persist-credentials"], "false")
                             self.assertEqual(step["with"]["ref"], "${{ github.sha }}")
+

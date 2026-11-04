@@ -226,7 +226,7 @@ load any configured source, including the fifth and later ones, and keeps its in
 state in sync. It exposes only source lookup/activation, refuses activation on the lock screen and
 does not require unsafe `Eval` or rewrite your configured sources. Remove it using
 `gnome-extensions uninstall typlo-input-sources@bitcodepro`. Other GNOME versions need a compatible
-bridge version. The five-source GNOME 46/X11 regression runs in `tests/gnome` and CI; GNOME 45
+bridge version. The five-source GNOME 46/X11 regression remains in `tests/gnome`; its native CI run is temporarily paused for Windows-only releases. GNOME 45
 has not been exercised natively. Wayland input limitations remain.
 
 macOS: the build is unsigned. Build/package on a Mac (`scripts/package-macos.sh` ad-hoc signs it), then
@@ -350,3 +350,4 @@ converted or removed. Different languages can legitimately share a spelling.
 
 Duplicate checks use indexed disk lookups and run outside input hooks. Spelling
 previews use cached installed-layout maps and do not load the full vocabulary.
+
