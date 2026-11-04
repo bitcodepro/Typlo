@@ -117,10 +117,28 @@ internal static class SystemShortcutCheck
             }
             finally { platform.HotkeyPressed -= Observed; }
             report.Add("PASS deferred modifiers are replayed and Ctrl+Shift+C remains an ordinary shortcut");
+            state = await Command(new { op = "set", text = "existing text", start = 13, length = 0 });
+            var beforeLeft = state.GetProperty("leftChordCompletions").GetInt32();
             Keys((0xa2, false), (0xa0, false), (0x25, false), (0x25, true), (0xa0, true), (0xa2, true));
-            state = await Command(new { op = "read" });
-            if (state.GetProperty("length").GetInt32() <= 0 || platform.GetCurrentLayoutId(window) != en.Id)
-                throw new InvalidOperationException("Ctrl+Shift+Left lost its text-selection meaning");
+            var selectionWait = Stopwatch.StartNew();
+            while (true)
+            {
+                state = await Command(new { op = "read" });
+                trace.Enqueue($"ctrl-shift-left elapsed_ms={selectionWait.ElapsedMilliseconds} " +
+                    $"completed={state.GetProperty("leftChordCompletions")} start={state.GetProperty("start")} length={state.GetProperty("length")} " +
+                    $"control={state.GetProperty("leftControlDown")} shift={state.GetProperty("leftShiftDown")} " +
+                    $"focused={state.GetProperty("fieldFocused")} foreground={state.GetProperty("foreground")} " +
+                    $"keyboard_messages={state.GetProperty("keyboardMessages")} layout={platform.GetCurrentLayoutId(window)}");
+                if (state.GetProperty("leftChordCompletions").GetInt32() > beforeLeft) break;
+                if (selectionWait.Elapsed > TimeSpan.FromSeconds(5))
+                    throw new InvalidOperationException("Ctrl+Shift+Left was not fully processed by the native editor; see ctrl-shift-left trace");
+                await Task.Delay(10); // Observe the same gesture; never send it again.
+            }
+            if (state.GetProperty("start").GetInt32() != 9 || state.GetProperty("length").GetInt32() != 4 ||
+                state.GetProperty("text").GetString() != "existing text" || !state.GetProperty("fieldFocused").GetBoolean() ||
+                !state.GetProperty("leftControlDown").GetBoolean() || !state.GetProperty("leftShiftDown").GetBoolean() || platform.GetCurrentLayoutId(window) != en.Id)
+                throw new InvalidOperationException("Ctrl+Shift+Left completed with incorrect modifiers, selection, text, focus or layout; see ctrl-shift-left trace");
+            Console.WriteLine($"TIMING Ctrl+Shift+Left editor acknowledgement: {selectionWait.ElapsedMilliseconds}ms");
             await Command(new { op = "set", text = "existing text", start = 13, length = 0 });
             report.Add("PASS Ctrl+Shift+Left selects text and does not cycle the layout");
             platform.ActivateWindow(popup); await Until(() => platform.ForegroundWindow == popup, "Browser focus");
