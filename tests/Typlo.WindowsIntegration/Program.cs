@@ -717,7 +717,7 @@ internal sealed class EditorCheck : Form
         var paths = new AppPaths(Path.Combine(_work, name));
         new SettingsStore(paths.SettingsFile).Save(new AppSettings
         {
-            ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
+            SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
             LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "", ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "",
             SwitchSystemLayout = false, ConvertLastWord = recent, HistoryEnabled = false, AutoCorrectEnabled = false,
         });

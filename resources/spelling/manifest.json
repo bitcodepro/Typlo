@@ -1,0 +1,62 @@
+{
+  "dictionary_repository": "https://github.com/LibreOffice/dictionaries",
+  "dictionary_commit": "4f1df64b2e8e14751aa7c2205d170ca016071315",
+  "engine": "WeCantSpell.Hunspell",
+  "engine_version": "7.0.1",
+  "engine_source": "https://api.github.com/repos/aarondandy/WeCantSpell.Hunspell/tarball/7.0.1",
+  "engine_license_choice": "MPL-1.1",
+  "files": {
+    "en_US.aff": {
+      "bytes": 3205,
+      "sha256": "e746c882dd6f303c2c46e7452804b9201115a6942cfeb15f18f8edf774d2e24e"
+    },
+    "en_US.dic": {
+      "bytes": 551762,
+      "sha256": "f0b1a234bd178bdd01875b2a392a9647f888b8fe879f79c52aae62c2759b3647"
+    },
+    "LICENSE-en_US.txt": {
+      "bytes": 15732,
+      "sha256": "168b4c01cb841f766a72f310b065c04d09cff46376c37a81d799593ce751c371"
+    },
+    "LICENSE-ru_RU.txt": {
+      "bytes": 1886,
+      "sha256": "262af2f6ad70a61e5ee1332ff44fa8ee50edca819cf33207d8ad6ba6a0c9be52"
+    },
+    "LICENSE-uk_UA.txt": {
+      "bytes": 362,
+      "sha256": "664436fee625b4a3e712483947d1711a2f467670f4c389bcf10abca2a564e1dc"
+    },
+    "LICENSE-WeCantSpell.txt": {
+      "bytes": 2006,
+      "sha256": "6d69e66d4533c9b9048db18d3f340b077313dc5d33324066f1b91cfbca15be00"
+    },
+    "MPL-1.1.txt": {
+      "bytes": 25755,
+      "sha256": "f849fc26a7a99981611a3a370e83078deb617d12a45776d6c4cada4d338be469"
+    },
+    "ru_RU.aff": {
+      "bytes": 71236,
+      "sha256": "38ce7d4af78e211e9bafe4bf7e3d6a2c420591136cb738ec6648f8fdf6524cd7"
+    },
+    "ru_RU.dic": {
+      "bytes": 3473191,
+      "sha256": "f6047416a0204adbecf3a451b874ec8a97ee37e2cbc714466ef04d8dbcc0d6fc"
+    },
+    "uk_UA.aff": {
+      "bytes": 211759,
+      "sha256": "2219dd15e9802adebc45722c60943b1472640260491af38dd3e43b07e75585e6"
+    },
+    "uk_UA.dic": {
+      "bytes": 8919324,
+      "sha256": "2e5a9e67be63bdb089b3459addb5d71113319d13768e277bcae20f3cc1ad5a93"
+    },
+    "WeCantSpell.Hunspell-7.0.1-source.tar.gz": {
+      "bytes": 163079,
+      "sha256": "4886369c42dcdd113747566ed341ebed3dbd3833af45e771f9a1d2851e7e7e2f"
+    },
+    "NOTICE.txt": {
+      "bytes": 1892,
+      "sha256": "3b5c80b84268afaf525a3def52cb988843f53acab38f90da0a1f031aa578875a"
+    }
+  }
+}

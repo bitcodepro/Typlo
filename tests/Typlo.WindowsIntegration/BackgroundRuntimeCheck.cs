@@ -74,7 +74,7 @@ internal static class BackgroundRuntimeCheck
         var paths = new AppPaths(Path.Combine(output, "data-" + Guid.NewGuid().ToString("N")));
         new SettingsStore(paths.SettingsFile).Save(new AppSettings
         {
-            ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "",
+            SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "",
             ToggleHotkey = "", ClipboardHotkey = "", UndoHotkey = "", CaseHotkey = "", TranslitHotkey = "",
             ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", LayoutsInitialized = true, StartWithSystem = false, UiLanguage = "en",
             AddWordHotkey = "", LayoutSwitchHotkey = "", AutoCorrectEnabled = false,

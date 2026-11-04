@@ -44,6 +44,7 @@ internal sealed class BackgroundHost : IDisposable
         _updateProbe = diagnostic ? Task.CompletedTask : UpdateProbe.RunAsync(_updates, paths.DataDir, _stop.Token);
         _controller.ShowHistoryRequested += _ => ShowUi(["--history", "--target", ((long)_platform.TrayTargetWindow).ToString(CultureInfo.InvariantCulture)]);
         _controller.ToolsRequested += choices => ShowUi(choices ? ["--choices"] : ["--tools"]);
+        _controller.SpellingRequested += id => ShowUi(["--spelling", id.ToString(CultureInfo.InvariantCulture)]);
         _controller.PersonalWordRequested += (word, language) => ShowUi(["--add-word", word, "--word-language", language ?? ""]);
         _controller.ScreenshotRequested += destination => ShowUi(destination == Core.Imaging.CaptureDestination.File ? ["--capture", _controller.Settings.ScreenshotShape == Core.Imaging.CaptureShape.Freehand ? "freehand" : "rectangle", "--save"] : ["--capture", _controller.Settings.ScreenshotShape == Core.Imaging.CaptureShape.Freehand ? "freehand" : "rectangle"]);
         _commands = new IpcServer(Command, diagnostic ? _runtime.Name + ".commands" : null);
@@ -163,6 +164,9 @@ internal sealed class BackgroundHost : IDisposable
             case "update-start": return BeginInstall();
             case "update-state": return UpdateState();
             case "tools-state": return new(true, Tools: await _controller.GetToolsStatusAsync());
+            case "spelling-selection": return new(true, Spelling: await _controller.GetSpellingSelectionAsync(command.Id));
+            case "spelling-cancel": await _controller.CancelSpellingAsync(command.Id); return new(true);
+            case "spelling-apply": return new(await _controller.ApplySpellingAsync(command.Id, command.Text ?? ""));
             case "backup-export": await _controller.ExportBackupAsync(command.Text ?? ""); return new(true);
             case "backup-preview": return new(true, Backup: await _controller.PreviewBackupAsync(command.Text ?? ""));
             case "backup-restore": await _controller.RestoreBackupAsync(command.Text ?? "", command.Args?.FirstOrDefault() ?? ""); return State();

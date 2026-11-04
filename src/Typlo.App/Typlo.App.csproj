@@ -9,6 +9,7 @@
     <PublishAot Condition="'$(RuntimeIdentifier)' == 'win-x64' and '$(Configuration)' == 'Release'">true</PublishAot>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="WeCantSpell.Hunspell" Version="7.0.1" />
     <PackageReference Include="Avalonia" Version="12.1.3" />
     <PackageReference Include="Avalonia.Desktop" Version="12.1.3" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.3" />
@@ -18,6 +19,7 @@
   </ItemGroup>
   <ItemGroup><EmbeddedResource Include="Assets/Typlo.ico" LogicalName="Typlo.Assets.Typlo.ico" /></ItemGroup>
   <ItemGroup>
+    <Content Include="../../resources/spelling/*" Link="spelling/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <Content Include="../../resources/language-detection/*" Link="language-data/%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
@@ -25,6 +27,7 @@
     <ProjectReference Include="..\Typlo.Core\Typlo.Core.csproj" />
     <InternalsVisibleTo Include="Typlo.Tests" />
     <InternalsVisibleTo Include="Typlo.WindowsIntegration" />
+    <InternalsVisibleTo Include="SpellingProbe" />
   </ItemGroup>
   <ItemGroup Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('linux-'))">
     <Content Include="../../integrations/gnome/*" Link="gnome-extension/%(Filename)%(Extension)"

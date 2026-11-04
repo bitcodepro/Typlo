@@ -41,7 +41,7 @@ internal static class InteractiveInputCheck
                 ToggleHotkey = "Ctrl+Alt+Shift+Space", LayoutSwitchHotkey = "Ctrl+Shift",
                 LayoutHotkeys = [new() { LayoutId = en.Id, Hotkey = "Ctrl+Shift+E" },
                     new() { LayoutId = uk.Id, Hotkey = "Ctrl+Shift+U" }, new() { LayoutId = ru.Id, Hotkey = "Ctrl+Shift+R" }],
-                ClipboardHotkey = "", ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", CaseHotkey = "", TranslitHotkey = "",
+                SpellingHotkey = "", ClipboardHotkey = "", ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", CaseHotkey = "", TranslitHotkey = "",
                 UndoHotkey = "Ctrl+Alt+Shift+Z", AutoCorrectEnabled = true, HistoryEnabled = false,
                 ApplicationLayouts = [new() { ProcessName = "ms-teams", Layouts = [en.Id, uk.Id] }],
             };

@@ -84,6 +84,7 @@ public partial class App : Application
 
         _controller.ShowHistoryRequested += prev => Dispatcher.UIThread.Post(() => ShowHistory(prev));
         _controller.ToolsRequested += choices => Dispatcher.UIThread.Post(() => ShowTools(choices));
+        _controller.SpellingRequested += id => Dispatcher.UIThread.Post(() => ShowSpelling(id));
         _controller.PersonalWordRequested += (word, language) => Dispatcher.UIThread.Post(() => ShowPersonalWord(word, language));
         _screenCapture = new ScreenCaptureService(_controller);
         _controller.ScreenshotRequested += destination => Dispatcher.UIThread.Post(() => _ = _screenCapture.StartAsync(_controller.Settings.ScreenshotShape, destination));
@@ -122,6 +123,8 @@ public partial class App : Application
         else if (args.Contains("--settings"))
             Dispatcher.UIThread.Post(ShowSettings);
         else if (args.Contains("--tools") || args.Contains("--choices")) Dispatcher.UIThread.Post(() => ShowTools(args.Contains("--choices")));
+        else if (Array.IndexOf(args, "--spelling") is var spellingIndex and >= 0 && spellingIndex + 1 < args.Length && long.TryParse(args[spellingIndex + 1], out var spellingId))
+            Dispatcher.UIThread.Post(() => ShowSpelling(spellingId));
         else if (args.Contains("--dictionary"))
             Dispatcher.UIThread.Post(ShowDictionary);
         else if (Array.IndexOf(args, "--convert") is var i and >= 0)

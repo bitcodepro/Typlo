@@ -17,6 +17,7 @@ internal static class Program
     public static int Main(string[] args)
     {
         Args = args;
+        if (args is ["--spelling-worker"]) return SpellingWorker.RunAsync().GetAwaiter().GetResult();
         if (OperatingSystem.IsWindows() && args is [var copyMode, var copyFile] && copyMode is "--selftest-text-copy" or "--selftest-image-copy")
         {
             try

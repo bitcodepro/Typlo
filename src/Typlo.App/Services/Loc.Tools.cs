@@ -6,6 +6,18 @@ public static partial class Loc
     {
         var labels = new Dictionary<string, (string En, string Ru, string Uk)>
         {
+            ["spell.title"] = ("Check spelling", "Проверить орфографию", "Перевірити правопис"),
+            ["spell.selection"] = ("Select text in your editor, then press the spelling shortcut again.", "Выдели текст в редакторе и нажми сочетание проверки орфографии ещё раз.", "Виділи текст у редакторі й натисни сполучення перевірки правопису ще раз."),
+            ["spell.limit"] = ("Select a smaller fragment (up to 20,000 characters).", "Выдели меньший фрагмент (до 20 000 символов).", "Виділи менший фрагмент (до 20 000 символів)."),
+            ["spell.hint"] = ("Offline spelling for selected plain text (up to 20,000 characters). Choose corrections below; the original is kept by default. Apply replaces only the unchanged source selection. Formatting may be removed.", "Проверка выделенного текста офлайн (до 20 000 символов). Выбери исправления ниже; по умолчанию слова сохраняются. Применение заменит только неизменённое исходное выделение. Оформление может быть потеряно.", "Перевірка виділеного тексту офлайн (до 20 000 символів). Вибери виправлення нижче; за замовчуванням слова зберігаються. Застосування замінить лише незмінене початкове виділення. Форматування може бути втрачено."),
+            ["spell.cancel"] = ("Cancel", "Отмена", "Скасувати"),
+            ["spell.apply"] = ("Apply corrections", "Применить исправления", "Застосувати виправлення"),
+            ["spell.keep"] = ("Keep original", "Оставить как есть", "Залишити як є"),
+            ["spell.busy"] = ("Checking spelling…", "Проверяю орфографию…", "Перевіряю правопис…"),
+            ["spell.clean"] = ("No unknown words found.", "Неизвестных слов не найдено.", "Невідомих слів не знайдено."),
+            ["spell.found"] = ("Words to review: {0}. Choose a suggestion or keep the original. At most 300 words are shown.", "Слов для проверки: {0}. Выбери вариант или оставь исходное слово. Показано не более 300 слов.", "Слів для перевірки: {0}. Вибери варіант або залиш початкове слово. Показано не більше 300 слів."),
+            ["spell.changed"] = ("The source selection changed or expired. Select the text and check again.", "Исходное выделение изменилось или устарело. Выдели текст и запусти проверку заново.", "Початкове виділення змінилося або застаріло. Виділи текст і запусти перевірку знову."),
+            ["spell.failed"] = ("Spelling check failed or timed out. Check that the spelling folder was extracted with the application.", "Не удалось проверить орфографию или истекло время ожидания. Проверь, что папка spelling распакована вместе с приложением.", "Не вдалося перевірити правопис або сплив час очікування. Перевір, що папку spelling розпаковано разом із програмою."),
             ["tools.measurements"] = ("Field and measurements", "Поле и замеры", "Поле й виміри"),
             ["tools.backupInvalid"] = ("The backup is invalid, unsupported or changed after preview. Select a valid .typlo file and inspect it again.", "Резервная копия повреждена, не поддерживается или изменилась после просмотра. Выбери корректный файл .typlo и проверь его заново.", "Резервна копія пошкоджена, не підтримується або змінилася після перегляду. Вибери коректний файл .typlo й перевір його знову."),
             ["tools.backupGroup"] = ("Backup and reports", "Резервная копия и отчёты", "Резервна копія та звіти"),

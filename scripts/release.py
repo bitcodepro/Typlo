@@ -138,6 +138,9 @@ def verify_archive(archive, version, rid, commit):
     data_prefix = "Typlo.app/Contents/MacOS/language-data/" if rid.startswith("osx-") else "language-data/"
     vocabulary_files = ("words.sqlite3", "words.manifest.json", "NOTICE.txt", "LICENSE-CC-BY-SA-4.0.txt")
     required.update(data_prefix + name for name in vocabulary_files)
+    spelling_prefix = "Typlo.app/Contents/MacOS/spelling/" if rid.startswith("osx-") else "spelling/"
+    spelling_files = ("manifest.json", *json.loads((ROOT / "resources/spelling/manifest.json").read_text(encoding="utf-8"))["files"])
+    required.update(spelling_prefix + name for name in spelling_files)
     if rid.startswith("linux-"):
         required.update("gnome-extension/" + name for name in GNOME_FILES)
     if rid.startswith("osx-"):
@@ -191,6 +194,10 @@ def verify_archive(archive, version, rid, commit):
             data = read(data_prefix + name, 16 * 1024 * 1024)
             if hashlib.sha256(data).hexdigest() != digest(ROOT / "resources/language-detection" / name):
                 raise ValueError("Vocabulary data or attribution differs from the source: " + name)
+        for name in spelling_files:
+            data = read(spelling_prefix + name, 16 * 1024 * 1024)
+            if hashlib.sha256(data).hexdigest() != digest(ROOT / "resources/spelling" / name):
+                raise ValueError("Spelling data, source or attribution differs from the source: " + name)
         validate_executable(read(executable_path(rid), 8192), rid)
         executable = files[executable_path(rid)]
         mode = executable.external_attr >> 16 if isinstance(bundle, zipfile.ZipFile) else executable.mode
@@ -215,7 +222,7 @@ def verify_packages(directory, version, commit, rids=RIDS):
 
 NOTICES = "THIRD-PARTY-NOTICES.txt"
 # Everything an archive may contain at its top level: no extra folders.
-TOP_LEVEL = {"README.md", "LICENSE", NOTICES, "build-info.json", "Typlo.exe", "Typlo", "Typlo.app", "language-data"}
+TOP_LEVEL = {"README.md", "LICENSE", NOTICES, "build-info.json", "Typlo.exe", "Typlo", "Typlo.app", "language-data", "spelling"}
 WINDOWS_NATIVE_FILES = {"av_libglesv2.dll", "e_sqlite3.dll", "libHarfBuzzSharp.dll", "libSkiaSharp.dll", "uiohook.dll"}
 GNOME_FILES = ("extension.js", "bridge.js", "metadata.json", "install.sh")
 LICENSE_FILE = re.compile(r"(?i)^(license|licence|copying)([._-].*)?(\.txt|\.md)?$")

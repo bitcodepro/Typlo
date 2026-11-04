@@ -49,11 +49,11 @@ public sealed partial class AppController
     }
 
     private async Task<string?> CopyCollapsedRangeAsync(nint window, int count, Func<bool> valid, Func<string, bool>? expected = null,
-        Func<bool>? canRestoreCancelledCopy = null)
+        Func<bool>? canRestoreCancelledCopy = null, int maxCharacters = 2000)
     {
         if (NeedsPasteVerification(window) && _platform.SupportsProtectedCopy)
         {
-            if (count is < 1 or > 2000) return null;
+            if (count < 1 || count > maxCharacters) return null;
             using var guard = ProtectOwnedSelection(window, valid);
             if (await _platform.SelectPreviousCharactersAsync(window, count, valid) != SelectionStatus.Completed)
                 return null;
@@ -66,7 +66,7 @@ public sealed partial class AppController
     }
 
     private async Task<ClipboardPasteState> VerifyPastedRangeAsync(nint window, string original, string result, Func<bool> valid,
-        bool probeRemainingSelection = true)
+        bool probeRemainingSelection = true, int maxCharacters = 2000)
     {
         if (SelectionFocusChanged(window, original)) return ClipboardPasteState.Unknown;
         var focus = _platform.ForegroundChangeVersion;
@@ -88,7 +88,7 @@ public sealed partial class AppController
             }
         }
         var copied = await CopyCollapsedRangeAsync(window, RangeSteps(result), Current,
-            candidate => SameSelection(candidate, result) || RangeSteps(result) == RangeSteps(original) && SameSelection(candidate, original));
+            candidate => SameSelection(candidate, result) || RangeSteps(result) == RangeSteps(original) && SameSelection(candidate, original), maxCharacters: maxCharacters);
         if (copied is not null && Current() && SameSelection(copied, result)) return ClipboardPasteState.Confirmed;
         if (copied is not null && Current() && RangeSteps(result) == RangeSteps(original) && SameSelection(copied, original))
             return ClipboardPasteState.Unchanged;

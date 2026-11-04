@@ -43,6 +43,8 @@ def make_archive(directory, rid, change=None, link=False):
     data_prefix = "Typlo.app/Contents/MacOS/language-data/" if rid.startswith("osx-") else "language-data/"
     files.update({data_prefix + name: (release.ROOT / "resources/language-detection" / name).read_bytes()
                   for name in ("words.sqlite3", "words.manifest.json", "NOTICE.txt", "LICENSE-CC-BY-SA-4.0.txt")})
+    spelling_prefix = "Typlo.app/Contents/MacOS/spelling/" if rid.startswith("osx-") else "spelling/"
+    files.update({spelling_prefix + file.name: file.read_bytes() for file in (release.ROOT / "resources/spelling").iterdir() if file.is_file()})
     if change:
         change(files)
     archive = directory / release.archive_name(VERSION, rid)
@@ -167,6 +169,18 @@ class PackageTests(unittest.TestCase):
         archive = make_archive(folder, "win-x64", lambda files: files.update({"language-data/words.sqlite3": b"wrong data"}))
         with self.assertRaisesRegex(ValueError, "Vocabulary data or attribution"):
             release.verify_archive(archive, VERSION, "win-x64", COMMIT)
+
+    def test_spelling_pack_and_license_files_are_required_and_unchanged(self):
+        cases = [lambda files: files.pop("spelling/uk_UA.dic"),
+                 lambda files: files.pop("spelling/LICENSE-uk_UA.txt"),
+                 lambda files: files.update({"spelling/ru_RU.aff": b"changed"}),
+                 lambda files: files.update({"spelling/WeCantSpell.Hunspell-7.0.1-source.tar.gz": b"changed"})]
+        for index, change in enumerate(cases):
+            folder = self.directory / f"spelling-{index}"
+            folder.mkdir()
+            archive = make_archive(folder, "win-x64", change)
+            with self.subTest(case=index), self.assertRaisesRegex(ValueError, "Missing package entries|Spelling data"):
+                release.verify_archive(archive, VERSION, "win-x64", COMMIT)
 
     def test_rejects_missing_executable_and_data_leaks(self):
         changes = [lambda files: files.pop("Typlo.exe"), lambda files: files.update({"data/history.db": b"private"}), lambda files: files.update({"../escape.txt": b"bad"}), lambda files: files.update({".env": b"bad"}), lambda files: files.update({"libHarfBuzzSharp.pdb": b"symbols"})]

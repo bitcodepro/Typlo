@@ -25,11 +25,14 @@ These are the defaults. **Settings** lets you change them; **Keyboard shortcuts*
 | **Ctrl+Alt+Shift+D** | Check the current field and open timings/memory tools. |
 | **Ctrl+Alt+Shift+L** | Show/cycle dictionary spellings; Ctrl+Alt+Shift+Enter applies, Ctrl+Alt+Shift+Escape cancels. |
 | **Ctrl+Shift+K** | Add the selected, correctly spelled word to your personal dictionary; confirm its language. |
+| **Ctrl+Shift+L** | Check selected text offline in English, Russian and Ukrainian. Review suggestions, then apply. |
 | **Ctrl+Shift+V** | Open clipboard history. Enter pastes; Shift+Enter pastes plain text. |
 | **Win+Shift+S** | Capture a rectangle or freehand area to the clipboard; open the drawing editor. |
 | **Ctrl+Alt+Shift+F** | Capture, annotate and choose where to save a JPEG. |
 
 While Settings is open, Typlo pauses its shortcuts so you can edit them. Ctrl+Shift then follows Windows settings.
+
+Spelling checks use the bundled `spelling/` folder. Extract it with the application. Select up to 20,000 characters, press Ctrl+Shift+L, choose suggestions and apply. Unknown words stay unchanged until you choose a correction. You can select a language manually. Applying replaces plain text and may remove formatting; changed selections are rejected. Dictionaries load in a temporary worker that exits after each check. Text is processed locally, without temporary text files or network requests. See [spelling data and licenses](docs/spelling.md).
 
 ## Languages per application
 
