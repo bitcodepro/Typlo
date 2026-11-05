@@ -35,7 +35,8 @@ public sealed class ShortcutsWindow : Window
         Row(body, Key(settings.AcceptChoiceHotkey), Loc.T("tools.accept"));
         Row(body, Key(settings.CancelChoiceHotkey), Loc.T("tools.cancel"));
         Row(body, Key(settings.AddWordHotkey), Loc.T("dictionary.title"));
-        Row(body, Key(settings.SpellingHotkey), Loc.T("spell.title"));
+        Row(body, Key(settings.SpellingHotkey), Loc.T("spell.quick"));
+        Row(body, Key(settings.SpellingReviewHotkey), Loc.T("spell.title"));
         Row(body, Key(settings.UndoHotkey), Loc.T("shortcuts.undo"));
         Row(body, Key(settings.ClipboardHotkey), Loc.T("shortcuts.history"));
         Row(body, Key(settings.ClipboardHotkey) + " ×2", Loc.T("shortcuts.previous"));

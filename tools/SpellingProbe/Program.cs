@@ -23,6 +23,10 @@ foreach (var (language, text, expected) in new[] { ("en", "speling", "spelling")
     samples.Add(new { language, EndToEndMilliseconds = watch.ElapsedMilliseconds, result.Milliseconds, result.WorkingSet, result.PeakWorkingSet, result.ManagedBytes });
 }
 var after = Memory(host);
+var custom = await SpellingWorker.CheckAsync(new("превет", Corrections: [new("превет", "привет")]), CancellationToken.None, Path.GetFullPath(args[0]));
+if (custom.Issues.Length != 1 || custom.Issues[0].Suggestions[0] != "привет") throw new InvalidOperationException("Custom correction roundtrip failed");
+var excluded = await SpellingWorker.CheckAsync(new("превет", Corrections: [new("превет", "привет")], Excluded: ["превет"]), CancellationToken.None, Path.GetFullPath(args[0]));
+if (excluded.Issues.Length != 0) throw new InvalidOperationException("Exclusion did not override a custom correction");
 GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
 var afterCollection = Memory(host);
 // Cancel an active cold load and independently confirm that its process really exited.

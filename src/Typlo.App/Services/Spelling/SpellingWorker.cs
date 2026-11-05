@@ -11,7 +11,7 @@ internal static class SpellingWorker
         try
         {
             Console.InputEncoding = Console.OutputEncoding = Encoding.UTF8;
-            var input = new char[500_000]; var count = 0;
+            var input = new char[1_500_000]; var count = 0;
             while (count < input.Length)
             {
                 var n = await Console.In.ReadAsync(input.AsMemory(count)); if (n == 0) break; count += n;

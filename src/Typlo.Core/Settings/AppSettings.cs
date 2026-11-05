@@ -23,6 +23,7 @@ public enum SettingsProblemKind
     MultipleCursors,
     DuplicateAppProcess,
     EmptyAppLayouts,
+    InvalidSpellingCorrections,
 }
 
 /// <summary>An exported settings file that is not valid; <see cref="Problems"/> is empty for "not a Typlo file".</summary>
@@ -79,6 +80,8 @@ public sealed class AppSettings
     public string CancelChoiceHotkey { get; set; } = "Ctrl+Alt+Shift+Escape";
     public string AddWordHotkey { get; set; } = "Ctrl+Shift+K";
     public string SpellingHotkey { get; set; } = "Ctrl+Shift+L";
+    public string SpellingReviewHotkey { get; set; } = "Ctrl+Shift+P";
+    public List<SpellingCorrection> SpellingCorrections { get; set; } = [];
 
     /// <summary>Typed triggers replaced by text (";addr" → address). Stored in settings.json, not encrypted.</summary>
     public List<Snippet> Snippets { get; set; } = [];
@@ -155,6 +158,9 @@ public sealed class AppSettings
         }
         foreach (var h in LayoutHotkeys) h.Hotkey ??= "";
         ExcludedApps = (ExcludedApps ?? []).Where(a => !string.IsNullOrWhiteSpace(a)).ToList();
+        SpellingCorrections = (SpellingCorrections ?? []).Where(p => p is not null && p.IsValid)
+            .Select(p => new SpellingCorrection(SpellingCorrection.Key(p.Error), p.Correction.Trim()))
+            .DistinctBy(p => p.Error).Take(SpellingCorrection.MaxPairs).ToList();
         ToggleHotkey ??= "";
         LayoutSwitchHotkey ??= "";
         ClipboardHotkey ??= "";
@@ -163,7 +169,7 @@ public sealed class AppSettings
         CaseHotkey ??= "";
         TranslitHotkey ??= "";
         UndoHotkey ??= "";
-        SpellingHotkey ??= ""; AddWordHotkey ??= ""; ToolsHotkey ??= ""; ChoicesHotkey ??= ""; AcceptChoiceHotkey ??= ""; CancelChoiceHotkey ??= "";
+        SpellingReviewHotkey ??= ""; SpellingHotkey ??= ""; AddWordHotkey ??= ""; ToolsHotkey ??= ""; ChoicesHotkey ??= ""; AcceptChoiceHotkey ??= ""; CancelChoiceHotkey ??= "";
         if (!Enum.IsDefined(ScreenshotShape)) ScreenshotShape = CaptureShape.Rectangle;
         ScreenshotCopyHotkey ??= "";
         ScreenshotSaveHotkey ??= "";
@@ -173,6 +179,9 @@ public sealed class AppSettings
     public IReadOnlyList<SettingsProblem> Validate(IReadOnlyList<global::Typlo.Core.Layouts.KeyboardLayout>? layouts = null)
     {
         var problems = new List<SettingsProblem>();
+        var correctionKeys = new HashSet<string>();
+        if (SpellingCorrections?.Count > SpellingCorrection.MaxPairs || (SpellingCorrections ?? []).Any(p => p is null || !p.IsValid || !correctionKeys.Add(SpellingCorrection.Key(p.Error))))
+            problems.Add(new(SettingsProblemKind.InvalidSpellingCorrections, ""));
         var seen = new HashSet<string>();
         var processes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var rule in ApplicationLayouts ?? [])

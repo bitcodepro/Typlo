@@ -1,13 +1,14 @@
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Typlo.Core.Languages;
+using Typlo.Core.Settings;
 
 namespace Typlo.App.Services;
 
-public sealed record SpellingRequest(string Text, string Language = "auto", string[]? Ignored = null);
+public sealed record SpellingRequest(string Text, string Language = "auto", string[]? Ignored = null, SpellingCorrection[]? Corrections = null, string[]? Excluded = null);
 public sealed record SpellingIssue(int Start, int Length, string Word, string Language, string[] Suggestions);
 public sealed record SpellingResult(SpellingIssue[] Issues, long Milliseconds, long WorkingSet, long PeakWorkingSet, long ManagedBytes);
-public sealed record SpellingSelection(long Id, string Text, string[] Ignored, string? Notice = null, bool CanApply = false);
+public sealed record SpellingSelection(long Id, string Text, string[] Ignored, string? Notice = null, bool CanApply = false, string[]? Excluded = null);
 
 [JsonSerializable(typeof(SpellingRequest))]
 [JsonSerializable(typeof(SpellingResult))]

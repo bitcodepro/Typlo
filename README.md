@@ -25,16 +25,17 @@ These are the defaults. **Settings** lets you change them; **Keyboard shortcuts*
 | **Ctrl+Alt+Shift+D** | Check the current field and open timings/memory tools. |
 | **Ctrl+Alt+Shift+L** | Show/cycle dictionary spellings; Ctrl+Alt+Shift+Enter applies, Ctrl+Alt+Shift+Escape cancels. |
 | **Ctrl+Shift+K** | Add the selected, correctly spelled word to your personal dictionary; confirm its language. |
-| **Ctrl+Shift+L** | Check selected text offline in English, Russian and Ukrainian. Review suggestions, then apply. |
+| **Ctrl+Shift+L** | Correct spelling in selected text offline, without opening a window. |
+| **Ctrl+Shift+P** | Review spelling suggestions, manage personal correction pairs and open your dictionary. |
 | **Ctrl+Shift+V** | Open clipboard history. Enter pastes; Shift+Enter pastes plain text. |
 | **Win+Shift+S** | Capture a rectangle or freehand area to the clipboard; open the drawing editor. |
 | **Ctrl+Alt+Shift+F** | Capture, annotate and choose where to save a JPEG. |
 
 While Settings is open, Typlo pauses its shortcuts so you can edit them. Ctrl+Shift then follows Windows settings.
 
-Spelling checks use the bundled `spelling/` folder. Extract it with the application. Select up to 20,000 characters, press Ctrl+Shift+L, choose suggestions and apply. Unknown words stay unchanged until you choose a correction. You can select a language manually. Applying replaces plain text and may remove formatting; changed selections are rejected. Dictionaries load in a temporary worker that exits after each check. Text is processed locally, without temporary text files or network requests. See [spelling data and licenses](docs/spelling.md).
+Extract the bundled `spelling/` folder with the application. Select text and press **Ctrl+Shift+L** to apply the top spelling corrections in EN/RU/UK automatically. Words without suggestions stay unchanged; Ctrl+Alt+Shift+Z undoes the change. **Ctrl+Shift+P** opens manual review and **My corrections** (`превет → привет`). Checks run locally in a temporary worker. See [details and licenses](docs/spelling.md).
 
-On macOS/Linux, use **Copy corrected text** and paste into the intended field yourself. Direct Apply is disabled when the original input field cannot be safely tracked.
+Direct correction requires a safely tracked source field. On unsupported targets, use Ctrl+Shift+P and **Copy corrected text**. Plain-text correction can remove rich formatting.
 
 ## Languages per application
 

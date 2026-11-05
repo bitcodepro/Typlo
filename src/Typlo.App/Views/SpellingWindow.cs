@@ -5,7 +5,7 @@ using Typlo.App.Services;
 
 namespace Typlo.App.Views;
 
-internal sealed class SpellingWindow : Window
+internal sealed partial class SpellingWindow : Window
 {
     private readonly AppController _controller;
     private readonly long _id;
@@ -20,6 +20,7 @@ internal sealed class SpellingWindow : Window
     private SpellingSelection? _selection;
     private string? _replacement;
     private bool _busy, _closed;
+    public event Action? DictionaryRequested;
     internal SpellingWindow(AppController controller, long id)
     {
         _controller = controller; _id = id;
@@ -39,10 +40,12 @@ internal sealed class SpellingWindow : Window
         };
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         actions.Children.Add(_apply); actions.Children.Add(_copy); actions.Children.Add(cancel); panel.Children.Add(_safety); panel.Children.Add(actions);
-        Content = new ScrollViewer { Content = panel };
+        Content = new TabControl { ItemsSource = new[] {
+            new TabItem { Header = Loc.T("spell.title"), Content = new ScrollViewer { Content = panel } },
+            new TabItem { Header = Loc.T("spell.pairs"), Content = BuildPairs() } } };
         Opened += async (_, _) =>
         {
-            try { _selection = await _controller.GetSpellingSelectionAsync(_id); await CheckAsync(); }
+            try { _selection = await _controller.GetSpellingSelectionAsync(_id); await RefreshPairsAsync(); await CheckAsync(); }
             catch { if (!_closed) _status.Text = Loc.T("spell.failed"); }
         };
         _language.SelectionChanged += async (_, _) => { if (_selection is not null && !_busy) await CheckAsync(); };
@@ -77,7 +80,8 @@ internal sealed class SpellingWindow : Window
             using var operation = UiOperations.Shared.Begin();
             if (operation is null) return;
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token, operation.Token);
-            var result = await SpellingWorker.CheckAsync(new(_selection.Text, new[] { "auto", "en", "ru", "uk" }[_language.SelectedIndex], _selection.Ignored), linked.Token);
+            var pairs = await _controller.GetSpellingCorrectionsAsync();
+            var result = await SpellingWorker.CheckAsync(new(_selection.Text, new[] { "auto", "en", "ru", "uk" }[_language.SelectedIndex], _selection.Ignored, pairs, _selection.Excluded), linked.Token);
             if (_closed) return;
             var choices = new string?[result.Issues.Length];
             void Preview() { _replacement = SpellingText.Apply(_selection.Text, result.Issues, choices); _preview.Text = _replacement; }

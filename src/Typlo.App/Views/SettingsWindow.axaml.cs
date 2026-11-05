@@ -171,7 +171,7 @@ public partial class SettingsWindow : Window
         AddRow(Loc.T("hk.undo"), _undoBox);
         _toolHotkeys.Clear();
         foreach (var (key, label, value) in new[] { ("probe", "tools.title", _draft.ToolsHotkey), ("choices", "tools.choices", _draft.ChoicesHotkey),
-            ("accept", "tools.accept", _draft.AcceptChoiceHotkey), ("cancel", "tools.cancel", _draft.CancelChoiceHotkey), ("spelling", "spell.title", _draft.SpellingHotkey) })
+            ("accept", "tools.accept", _draft.AcceptChoiceHotkey), ("cancel", "tools.cancel", _draft.CancelChoiceHotkey), ("spelling", "spell.quick", _draft.SpellingHotkey), ("review", "spell.title", _draft.SpellingReviewHotkey) })
         { var box = new HotkeyBox { HotkeyText = value }; _toolHotkeys[key] = box; AddRow(Loc.T(label), box); }
         _addWordBox = new HotkeyBox { HotkeyText = _draft.AddWordHotkey };
         AddRow(Loc.T("dictionary.title"), _addWordBox);
@@ -453,6 +453,7 @@ public partial class SettingsWindow : Window
         SettingsProblemKind.MultipleCursors => Loc.T("snippet.multipleCursors", p.Trigger),
         SettingsProblemKind.DuplicateAppProcess => Loc.T("appLayouts.duplicate", p.Trigger),
         SettingsProblemKind.EmptyAppLayouts => Loc.T("appLayouts.invalid"),
+        SettingsProblemKind.InvalidSpellingCorrections => Loc.T("spell.pairInvalid"),
         _ => Loc.T("snippet.emptyText", p.Trigger),
     }));
 
@@ -469,6 +470,7 @@ public partial class SettingsWindow : Window
         _draft.AcceptChoiceHotkey = _toolHotkeys["accept"].HotkeyText; _draft.CancelChoiceHotkey = _toolHotkeys["cancel"].HotkeyText;
         _draft.AddWordHotkey = _addWordBox.HotkeyText;
         _draft.SpellingHotkey = _toolHotkeys["spelling"].HotkeyText;
+        _draft.SpellingReviewHotkey = _toolHotkeys["review"].HotkeyText;
         _draft.ScreenshotShape = (CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex);
         _draft.ScreenshotEditorAfterCopy = CaptureEditorBox.IsChecked == true;
         _draft.ScreenshotCopyHotkey = CaptureCopyHotkeyBox.HotkeyText;

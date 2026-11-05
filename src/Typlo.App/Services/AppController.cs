@@ -25,6 +25,7 @@ public sealed partial class AppController : IDisposable
     private const int LayoutSwitchId = 8;
     private const int AddWordId = 9;
     private const int SpellingId = 24;
+    private const int SpellingReviewId = 25;
     private const int LayoutIdBase = 100;
     // A hotkey is delivered on key-down. Waiting a whole second for its modifiers penalises a held
     // chord; give a normal release a short grace period, then use the platform's safe release path.
@@ -155,6 +156,7 @@ public sealed partial class AppController : IDisposable
             SettingsChanged?.Invoke(); return;
         }
         _ = StopPendingAutomaticWords(); CancelChoices();
+        _ = StopQuickSpellingAsync();
         settings.Normalize();
         LayoutCatalog.Synchronize(settings);
         Settings = settings;
@@ -263,7 +265,8 @@ public sealed partial class AppController : IDisposable
         Register(AcceptChoiceId, Settings.AcceptChoiceHotkey, Loc.T("tools.accept"));
         Register(CancelChoiceId, Settings.CancelChoiceHotkey, Loc.T("tools.cancel"));
         Register(AddWordId, Settings.AddWordHotkey, Loc.T("dictionary.title"));
-        Register(SpellingId, Settings.SpellingHotkey, Loc.T("spell.title"));
+        Register(SpellingId, Settings.SpellingHotkey, Loc.T("spell.quick"));
+        Register(SpellingReviewId, Settings.SpellingReviewHotkey, Loc.T("spell.title"));
         Register(ClipboardId, Settings.ClipboardHotkey, Loc.T("hk.history"));
         Register(CaseId, Settings.CaseHotkey, Loc.T("hk.case"));
         Register(TranslitId, Settings.TranslitHotkey, Loc.T("hk.translit"));
@@ -299,7 +302,8 @@ public sealed partial class AppController : IDisposable
             else if (id == AcceptChoiceId) _ = ApplyChoiceAsync();
             else if (id == CancelChoiceId) CancelChoices();
             else if (id == AddWordId) _ = CapturePersonalWordAsync();
-            else if (id == SpellingId) _ = CaptureSpellingAsync();
+            else if (id == SpellingId) _ = CorrectSpellingAsync();
+            else if (id == SpellingReviewId) _ = CaptureSpellingAsync();
             else if (id == CaseId) _ = ChangeCaseAsync();
             else if (id == TranslitId) _ = TransliterateAsync();
             else if (id == UndoId) _ = UndoLastTransformAsync();
@@ -434,7 +438,7 @@ public sealed partial class AppController : IDisposable
         var originInput = Interlocked.Read(ref _typingVersion);
         if (automaticWord is null) await StopPendingAutomaticWords();
         else if (!AutomaticWordIsCurrent(automaticWord)) return;
-        if (!await EnterManualTextOperationAsync(origin)) { if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Busy; return; }
+        if (!await EnterManualTextOperationAsync(origin, preserveQuickSpelling: automaticWord is not null)) { if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Busy; return; }
         var timing = new TransformTiming(RecordPerformance, timingStart);
         timing.Mark("queue/drain");
         try
@@ -1310,6 +1314,9 @@ public sealed partial class AppController : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _quickSpellingShutdown.Cancel();
+        _quickSpellingShutdown.Dispose();
+        _ = StopQuickSpellingAsync();
         _recentTyping.Reset(Interlocked.Increment(ref _typingVersion));
         _lastTransform = null;
         _spelling = null;

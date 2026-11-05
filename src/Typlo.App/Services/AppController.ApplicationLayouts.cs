@@ -26,8 +26,9 @@ public sealed partial class AppController
     }
     private AutomaticLayoutOperation? _automaticLayoutOperation;
 
-    private async Task<bool> EnterManualTextOperationAsync(nint window, bool waitForGate = false)
+    private async Task<bool> EnterManualTextOperationAsync(nint window, bool waitForGate = false, bool preserveQuickSpelling = false)
     {
+        if (!preserveQuickSpelling) await StopQuickSpellingAsync();
         AutomaticLayoutOperation? automatic;
         lock (_applicationFocusLock)
         {

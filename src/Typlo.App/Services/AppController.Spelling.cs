@@ -26,27 +26,30 @@ public sealed partial class AppController
         if (applying?.Window == source) Volatile.Write(ref applying.Canceled, 1);
     }
 
-    internal async Task CaptureSpellingAsync()
+    internal async Task CaptureSpellingAsync() => await CaptureSpellingCoreAsync(preview: true);
+
+    private async Task<SpellingSession?> CaptureSpellingCoreAsync(bool preview, Func<bool>? additionalValid = null)
     {
         var window = _platform.ForegroundWindow; var input = Interlocked.Read(ref _typingVersion);
         var focus = _platform.ForegroundChangeVersion; var element = _platform.FocusedInputElement;
         bool Valid() => Volatile.Read(ref _disposed) == 0 && !_editingSettings && Volatile.Read(ref _updating) == 0 &&
-            IsTargetActive(window) && !ForegroundChanged(focus) && input == Interlocked.Read(ref _typingVersion) && _platform.FocusedInputElement == element;
+            IsTargetActive(window) && !ForegroundChanged(focus) && input == Interlocked.Read(ref _typingVersion) && _platform.FocusedInputElement == element && (additionalValid?.Invoke() ?? true);
         await StopPendingAutomaticWords();
-        if (!Valid() || !await EnterManualTextOperationAsync(window)) return;
+        if (!Valid() || !await EnterManualTextOperationAsync(window, preserveQuickSpelling: !preview)) return null;
         ClipboardSnapshot? snapshot = null; SpellingSession? session = null;
         try
         {
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
-            if (!Valid()) return;
+            if (!Valid()) return null;
             using var capture = _platform.SuspendCapture(); snapshot = CaptureClipboard();
             var text = await CopySelectionAsync(window, Valid, allowRevalidation: false);
-            if (!Valid()) return;
+            if (!Valid()) return null;
             var notice = string.IsNullOrWhiteSpace(text) ? "spell.selection" : text.Length > SpellingText.MaxCharacters ? "spell.limit" : null;
             text = notice is null ? text! : "";
             var ignored = SpellingText.Tokens(text).Select(t => t.Word).Distinct(StringComparer.OrdinalIgnoreCase)
                 .Where(word => _personal.Lookup(word) != 0 || _personal.IsExcluded(word) || _lexicon.Lookup(word)?.SupplementMask > 0).Take(SpellingText.MaxWords).ToArray();
-            session = new(new(Interlocked.Increment(ref _nextSpelling), text, ignored, notice, CanApplySpelling(element)), window, element, Stopwatch.GetTimestamp());
+            var excluded = ignored.Where(_personal.IsExcluded).ToArray();
+            session = new(new(Interlocked.Increment(ref _nextSpelling), text, ignored, notice, CanApplySpelling(element), excluded), window, element, Stopwatch.GetTimestamp());
         }
         catch (Exception e) when (e is not OutOfMemoryException) { Log.Info("Spelling selection capture stopped: " + e.GetType().Name); }
         finally
@@ -54,10 +57,11 @@ public sealed partial class AppController
             try { if (snapshot is not null) RestoreIfUnchanged(snapshot); }
             finally { ExitManualTextOperation(); }
         }
-        if (session is null || !Valid()) return;
+        if (session is null || !Valid()) return null;
         Interlocked.Exchange(ref _spelling, session);
-        if (!Valid()) { Interlocked.CompareExchange(ref _spelling, null, session); return; }
-        SpellingRequested?.Invoke(session.Selection.Id);
+        if (!Valid()) { Interlocked.CompareExchange(ref _spelling, null, session); return null; }
+        if (preview) SpellingRequested?.Invoke(session.Selection.Id);
+        return session;
     }
     public async Task<SpellingSelection?> GetSpellingSelectionAsync(long id)
     {
@@ -78,6 +82,10 @@ public sealed partial class AppController
     public async Task<bool> ApplySpellingAsync(long id, string replacement)
     {
         if (_remote is not null) return (await _remote.CallAsync(new("spelling-apply", Id: id, Text: replacement), 15_000, allowRejected: true)).Ok;
+        return await ApplySpellingCoreAsync(id, replacement);
+    }
+    private async Task<bool> ApplySpellingCoreAsync(long id, string replacement, Func<bool>? additionalValid = null, Func<bool>? afterWriteValid = null, ulong? expectedClipboard = null)
+    {
         var session = Volatile.Read(ref _spelling);
         if (session?.Selection.Id != id || !session.Selection.CanApply || !CanApplySpelling(session.Element) || session.Selection.Notice is not null || replacement.Length > SpellingText.MaxResultCharacters ||
             Stopwatch.GetElapsedTime(session.Started) >= TimeSpan.FromMinutes(5) || Volatile.Read(ref _disposed) != 0 ||
@@ -86,26 +94,29 @@ public sealed partial class AppController
         if (replacement == session.Selection.Text) return true;
         if (Interlocked.CompareExchange(ref _applyingSpelling, session, null) is not null) return false;
         var input = Interlocked.Read(ref _typingVersion);
-        bool NoInput() => Volatile.Read(ref session.Canceled) == 0 && input == Interlocked.Read(ref _typingVersion) && Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _updating) == 0;
+        var sent = false;
+        bool NoInput() => Volatile.Read(ref session.Canceled) == 0 && input == Interlocked.Read(ref _typingVersion) && Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _updating) == 0 && ((sent ? afterWriteValid ?? additionalValid : additionalValid)?.Invoke() ?? true);
         ClipboardSnapshot? snapshot = null;
         var entered = false;
         try
         {
             await StopPendingAutomaticWords();
-            if (!NoInput() || !await EnterManualTextOperationAsync(session.Window)) return false;
+            if (!NoInput() || !await EnterManualTextOperationAsync(session.Window, preserveQuickSpelling: additionalValid is not null)) return false;
             entered = true;
             // Only this explicit Apply action may reactivate the captured source window.
-            _platform.ActivateWindow(session.Window);
+            if (additionalValid is null) _platform.ActivateWindow(session.Window);
             for (var i = 0; i < 25 && NoInput() && !IsTargetActive(session.Window); i++) await Task.Delay(20);
             var focus = _platform.ForegroundChangeVersion;
             bool Valid() => NoInput() && CanApplySpelling(session.Element) && IsTargetActive(session.Window) && !ForegroundChanged(focus) &&
                 _platform.FocusedInputElement == session.Element;
             await _platform.WaitForModifiersReleasedAsync(ModifierReleaseGrace);
             if (!Valid()) return false;
+            if (expectedClipboard is { } expected && _platform.ClipboardSequence != expected) return false;
             using var capture = _platform.SuspendCapture(); snapshot = CaptureClipboard();
+            if (expectedClipboard is { } afterSnapshot && _platform.ClipboardSequence != afterSnapshot) return false;
             var selected = await CopySelectionAsync(session.Window, Valid, allowRevalidation: false);
             if (!Valid() || selected is null || !string.Equals(selected, session.Selection.Text, StringComparison.Ordinal)) return false;
-            if (!await PasteTextAsync(replacement, session.Window, Valid, selected)) return false;
+            if (!await PasteTextAsync(replacement, session.Window, Valid, selected, () => sent = true)) return false;
             if (!Valid()) { LastTransform = null; return false; }
             if (NeedsPasteVerification(session.Window) && await VerifyPastedRangeAsync(session.Window, selected, replacement, Valid,
                 probeRemainingSelection: !PreferUnicodeReplacement(session.Window, replacement), maxCharacters: SpellingText.MaxResultCharacters) != ClipboardPasteState.Confirmed) { LastTransform = null; return false; }

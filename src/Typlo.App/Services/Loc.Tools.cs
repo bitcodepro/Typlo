@@ -7,6 +7,18 @@ public static partial class Loc
         var labels = new Dictionary<string, (string En, string Ru, string Uk)>
         {
             ["spell.title"] = ("Check spelling", "Проверить орфографию", "Перевірити правопис"),
+            ["spell.quick"] = ("Correct selected text without a window", "Исправить выделенный текст без окна", "Виправити виділений текст без вікна"),
+            ["spell.pairs"] = ("My corrections", "Мои исправления", "Мої виправлення"),
+            ["spell.pairsHint"] = ("Exact word pairs take priority over dictionary suggestions. Each side is one word (2–64 letters, internal apostrophes/hyphens). Exceptions stay protected. Pairs are included in settings backups.", "Пары для отдельных слов имеют приоритет над предложениями словаря. С каждой стороны — одно слово (2–64 буквы, допустимы внутренние апострофы/дефисы). Исключения сохраняются. Пары включаются в резервную копию настроек.", "Пари для окремих слів мають пріоритет над пропозиціями словника. З кожного боку — одне слово (2–64 літери, можливі внутрішні апострофи/дефіси). Винятки зберігаються. Пари входять до резервної копії налаштувань."),
+            ["spell.pairError"] = ("Typed word", "Написанное слово", "Написане слово"),
+            ["spell.pairCorrection"] = ("Replace with", "Заменять на", "Замінювати на"),
+            ["spell.pairNew"] = ("New pair", "Новая пара", "Нова пара"),
+            ["spell.pairSave"] = ("Save pair", "Сохранить пару", "Зберегти пару"),
+            ["spell.pairSaved"] = ("Saved. Used on the next check.", "Сохранено. Применится при следующей проверке.", "Збережено. Застосується під час наступної перевірки."),
+            ["spell.pairInvalid"] = ("Enter two different words, 2–64 letters each, with internal apostrophes/hyphens only.", "Введи два разных слова по 2–64 буквы, допустимы внутренние апострофы/дефисы.", "Введи два різні слова по 2–64 літери, можливі внутрішні апострофи/дефіси."),
+            ["spell.pairDuplicate"] = ("A correction for this word already exists. Select it to edit.", "Исправление для этого слова уже есть. Выбери его для редактирования.", "Виправлення для цього слова вже є. Вибери його для редагування."),
+            ["spell.pairStale"] = ("This pair changed or was removed. Reopen the window.", "Пара была изменена или удалена. Открой окно заново.", "Пару було змінено або видалено. Відкрий вікно знову."),
+            ["spell.pairLimit"] = ("The limit is 1,000 correction pairs.", "Допускается не более 1000 пар исправлений.", "Допускається не більше 1000 пар виправлень."),
             ["spell.copy"] = ("Copy corrected text", "Скопировать результат", "Скопіювати результат"),
             ["spell.copied"] = ("Corrected text copied.", "Результат скопирован.", "Результат скопійовано."),
             ["spell.copyOnly"] = ("Safe replacement is unavailable in this environment. Copy the result and paste it into the intended field yourself.", "В этом окружении безопасная замена недоступна. Скопируй результат и вставь его в нужное поле вручную.", "У цьому середовищі безпечна заміна недоступна. Скопіюй результат і встав його в потрібне поле вручну."),
