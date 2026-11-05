@@ -29,7 +29,7 @@ internal static class ScreenshotMode
             var s = controller.Settings.Clone();
             s.AutoCorrectEnabled = false;
             s.AddWordHotkey = ""; s.LayoutSwitchHotkey = "";
-            s.SpellingHotkey = s.ToolsHotkey = s.ChoicesHotkey = s.AcceptChoiceHotkey = s.CancelChoiceHotkey = "";
+            s.SpellingReviewHotkey = s.SpellingHotkey = s.ToolsHotkey = s.ChoicesHotkey = s.AcceptChoiceHotkey = s.CancelChoiceHotkey = "";
             s.ToggleHotkey = ""; s.ClipboardHotkey = ""; s.CaseHotkey = ""; s.TranslitHotkey = ""; s.UndoHotkey = ""; s.ScreenshotCopyHotkey = ""; s.ScreenshotSaveHotkey = ""; s.StartWithSystem = false;
             controller.ApplySettings(s);
 

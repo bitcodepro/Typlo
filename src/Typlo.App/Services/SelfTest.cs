@@ -535,7 +535,7 @@ internal static partial class SelfTest
     private static Core.Settings.AppSettings Tweak(Core.Settings.AppSettings s)
     {
         // Self-test must not grab the user's real shortcuts or touch autostart.
-        s.SpellingHotkey = s.ToolsHotkey = s.ChoicesHotkey = s.AcceptChoiceHotkey = s.CancelChoiceHotkey = "";
+        s.SpellingReviewHotkey = s.SpellingHotkey = s.ToolsHotkey = s.ChoicesHotkey = s.AcceptChoiceHotkey = s.CancelChoiceHotkey = "";
         s.ToggleHotkey = "";
         s.CaseHotkey = ""; s.TranslitHotkey = ""; s.UndoHotkey = ""; s.AddWordHotkey = ""; s.LayoutSwitchHotkey = "";
         s.AutoCorrectEnabled = false;

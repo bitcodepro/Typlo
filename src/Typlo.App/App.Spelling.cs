@@ -10,6 +10,7 @@ public partial class App
         if (_controller is null) return;
         _spellingWindow?.Close();
         var window = new SpellingWindow(_controller, id); _spellingWindow = window;
+        window.DictionaryRequested += ShowDictionary;
         window.Closed += (_, _) => { if (ReferenceEquals(_spellingWindow, window)) _spellingWindow = null; };
         window.Show(); window.Activate();
     }

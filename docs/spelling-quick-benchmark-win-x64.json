@@ -1,0 +1,59 @@
+{
+  "Before": {
+    "WorkingSet": 26685440,
+    "PrivateBytes": 7241728,
+    "ManagedBytes": 136688
+  },
+  "After": {
+    "WorkingSet": 33550336,
+    "PrivateBytes": 9805824,
+    "ManagedBytes": 712880
+  },
+  "AfterCollection": {
+    "WorkingSet": 34816000,
+    "PrivateBytes": 10481664,
+    "ManagedBytes": 288384
+  },
+  "Samples": [
+    {
+      "language": "en",
+      "EndToEndMilliseconds": 389,
+      "Milliseconds": 178,
+      "WorkingSet": 27947008,
+      "PeakWorkingSet": 27947008,
+      "ManagedBytes": 10448688
+    },
+    {
+      "language": "ru",
+      "EndToEndMilliseconds": 874,
+      "Milliseconds": 818,
+      "WorkingSet": 99123200,
+      "PeakWorkingSet": 99123200,
+      "ManagedBytes": 72110136
+    },
+    {
+      "language": "uk",
+      "EndToEndMilliseconds": 695,
+      "Milliseconds": 649,
+      "WorkingSet": 104144896,
+      "PeakWorkingSet": 104144896,
+      "ManagedBytes": 69860952
+    },
+    {
+      "language": "auto",
+      "EndToEndMilliseconds": 976,
+      "Milliseconds": 926,
+      "WorkingSet": 107421696,
+      "PeakWorkingSet": 107421696,
+      "ManagedBytes": 77447592
+    },
+    {
+      "language": "auto",
+      "EndToEndMilliseconds": 944,
+      "Milliseconds": 896,
+      "WorkingSet": 105357312,
+      "PeakWorkingSet": 105988096,
+      "ManagedBytes": 77464024
+    }
+  ]
+}

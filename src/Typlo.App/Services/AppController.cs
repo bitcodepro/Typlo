@@ -25,6 +25,7 @@ public sealed partial class AppController : IDisposable
     private const int LayoutSwitchId = 8;
     private const int AddWordId = 9;
     private const int SpellingId = 24;
+    private const int SpellingReviewId = 25;
     private const int LayoutIdBase = 100;
     // A hotkey is delivered on key-down. Waiting a whole second for its modifiers penalises a held
     // chord; give a normal release a short grace period, then use the platform's safe release path.
@@ -146,7 +147,26 @@ public sealed partial class AppController : IDisposable
     private IEnumerable<KeyboardLayout> SourceLayouts(KeyboardLayout? preferred) => preferred is { SupportsConversion: true }
         ? new[] { preferred }.Concat(_converter.Layouts).DistinctBy(l => l.Id) : _converter.Layouts;
 
-    public void ApplySettings(AppSettings settings) { lock (_settingsLock) { EnsureConfigurationWritable(); ApplySettingsCore(settings); } }
+    // Settings does not edit correction pairs. Merge the resident's current list under the
+    // same lock as pair mutations; imports/restores deliberately replace the entire list.
+    public void ApplySettings(AppSettings settings, bool preserveSpellingCorrections = false)
+    {
+        lock (_settingsLock)
+        {
+            EnsureConfigurationWritable();
+            if (preserveSpellingCorrections)
+            {
+                if (_remote is not null)
+                {
+                    UpdateRemoteState(_remote.Call(new("settings", Settings: settings, Flag: true)));
+                    SettingsChanged?.Invoke(); return;
+                }
+                settings = settings.Clone();
+                settings.SpellingCorrections = Settings.SpellingCorrections.ToList();
+            }
+            ApplySettingsCore(settings);
+        }
+    }
     private void ApplySettingsCore(AppSettings settings, bool updateHistoryLimits = true, bool publish = true)
     {
         if (_remote is not null)
@@ -155,6 +175,7 @@ public sealed partial class AppController : IDisposable
             SettingsChanged?.Invoke(); return;
         }
         _ = StopPendingAutomaticWords(); CancelChoices();
+        _ = StopQuickSpellingAsync();
         settings.Normalize();
         LayoutCatalog.Synchronize(settings);
         Settings = settings;
@@ -169,7 +190,7 @@ public sealed partial class AppController : IDisposable
         }
         ApplyKeepAwake();
         ApplySnippets();
-        RegisterHotkeys();
+        if (_editingSettings) SuspendHotkeys(); else RegisterHotkeys();
         ConfigureApplicationLayouts();
         if (publish) Volatile.Write(ref _publishedSettings, Settings.Clone());
     }
@@ -207,8 +228,11 @@ public sealed partial class AppController : IDisposable
     private long _settingsSession;
     public void SuspendHotkeys()
     {
-        if (_remote is not null) { _remote.Call(new("suspend-hotkeys", Id: Interlocked.Increment(ref _settingsSession))); return; }
-        _editingSettings = true; _platform.UnregisterAllHotkeys();
+        lock (_settingsLock)
+        {
+            if (_remote is not null) { _remote.Call(new("suspend-hotkeys", Id: Interlocked.Increment(ref _settingsSession))); return; }
+            _editingSettings = true; _platform.UnregisterAllHotkeys();
+        }
     }
 
     /// <summary>Typlo's active hotkeys: pressing one is a command, not input that moves the caret.</summary>
@@ -227,6 +251,10 @@ public sealed partial class AppController : IDisposable
     }
 
     public void RegisterHotkeys()
+    {
+        lock (_settingsLock) RegisterHotkeysCore();
+    }
+    private void RegisterHotkeysCore()
     {
         if (Volatile.Read(ref _updating) != 0) return;
         if (_remote is not null)
@@ -263,7 +291,8 @@ public sealed partial class AppController : IDisposable
         Register(AcceptChoiceId, Settings.AcceptChoiceHotkey, Loc.T("tools.accept"));
         Register(CancelChoiceId, Settings.CancelChoiceHotkey, Loc.T("tools.cancel"));
         Register(AddWordId, Settings.AddWordHotkey, Loc.T("dictionary.title"));
-        Register(SpellingId, Settings.SpellingHotkey, Loc.T("spell.title"));
+        Register(SpellingId, Settings.SpellingHotkey, Loc.T("spell.quick"));
+        Register(SpellingReviewId, Settings.SpellingReviewHotkey, Loc.T("spell.title"));
         Register(ClipboardId, Settings.ClipboardHotkey, Loc.T("hk.history"));
         Register(CaseId, Settings.CaseHotkey, Loc.T("hk.case"));
         Register(TranslitId, Settings.TranslitHotkey, Loc.T("hk.translit"));
@@ -299,7 +328,8 @@ public sealed partial class AppController : IDisposable
             else if (id == AcceptChoiceId) _ = ApplyChoiceAsync();
             else if (id == CancelChoiceId) CancelChoices();
             else if (id == AddWordId) _ = CapturePersonalWordAsync();
-            else if (id == SpellingId) _ = CaptureSpellingAsync();
+            else if (id == SpellingId) _ = CorrectSpellingAsync();
+            else if (id == SpellingReviewId) _ = CaptureSpellingAsync();
             else if (id == CaseId) _ = ChangeCaseAsync();
             else if (id == TranslitId) _ = TransliterateAsync();
             else if (id == UndoId) _ = UndoLastTransformAsync();
@@ -434,7 +464,7 @@ public sealed partial class AppController : IDisposable
         var originInput = Interlocked.Read(ref _typingVersion);
         if (automaticWord is null) await StopPendingAutomaticWords();
         else if (!AutomaticWordIsCurrent(automaticWord)) return;
-        if (!await EnterManualTextOperationAsync(origin)) { if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Busy; return; }
+        if (!await EnterManualTextOperationAsync(origin, preserveQuickSpelling: automaticWord is not null)) { if (automaticWord is not null) automaticWord.Outcome = AutoCorrectionReason.Busy; return; }
         var timing = new TransformTiming(RecordPerformance, timingStart);
         timing.Mark("queue/drain");
         try
@@ -1284,6 +1314,7 @@ public sealed partial class AppController : IDisposable
         Store.UpdateLimits(Limits(Settings), enforce: false);
         FailedHotkeys = reply.FailedHotkeys ?? [];
         PausedUntil = reply.PausedUntil;
+        Volatile.Write(ref _publishedSettings, Settings.Clone());
     }
 
     private int _externalCapture;
@@ -1310,6 +1341,9 @@ public sealed partial class AppController : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _quickSpellingShutdown.Cancel();
+        _quickSpellingShutdown.Dispose();
+        _ = StopQuickSpellingAsync();
         _recentTyping.Reset(Interlocked.Increment(ref _typingVersion));
         _lastTransform = null;
         _spelling = null;

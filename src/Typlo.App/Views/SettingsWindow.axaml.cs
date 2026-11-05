@@ -41,7 +41,6 @@ public partial class SettingsWindow : Window
     public Action? ShowShortcuts { get; set; }
     public Action? ShowDictionary { get; set; }
     public Action<CaptureShape, CaptureDestination>? CaptureScreenshot { get; set; }
-    private bool _saved;
 
     public SettingsWindow() : this(null!) { } // designer
 
@@ -57,7 +56,6 @@ public partial class SettingsWindow : Window
         controller.SuspendHotkeys();
         Closed += async (_, _) =>
         {
-            if (_saved) return;
             // Keep the on-demand UI alive until restoration completes, but release the dispatcher
             // immediately so dismissal, focus changes and other IPC requests can still finish.
             using var operation = UiOperations.Shared.Begin();
@@ -171,7 +169,7 @@ public partial class SettingsWindow : Window
         AddRow(Loc.T("hk.undo"), _undoBox);
         _toolHotkeys.Clear();
         foreach (var (key, label, value) in new[] { ("probe", "tools.title", _draft.ToolsHotkey), ("choices", "tools.choices", _draft.ChoicesHotkey),
-            ("accept", "tools.accept", _draft.AcceptChoiceHotkey), ("cancel", "tools.cancel", _draft.CancelChoiceHotkey), ("spelling", "spell.title", _draft.SpellingHotkey) })
+            ("accept", "tools.accept", _draft.AcceptChoiceHotkey), ("cancel", "tools.cancel", _draft.CancelChoiceHotkey), ("spelling", "spell.quick", _draft.SpellingHotkey), ("review", "spell.title", _draft.SpellingReviewHotkey) })
         { var box = new HotkeyBox { HotkeyText = value }; _toolHotkeys[key] = box; AddRow(Loc.T(label), box); }
         _addWordBox = new HotkeyBox { HotkeyText = _draft.AddWordHotkey };
         AddRow(Loc.T("dictionary.title"), _addWordBox);
@@ -314,7 +312,9 @@ public partial class SettingsWindow : Window
         });
         if (file?.TryGetLocalPath() is not { } path) return;
         Collect();
-        new SettingsStore(path).Export(_draft, path);
+        var exported = _draft.Clone();
+        exported.SpellingCorrections = (await _controller.GetSpellingCorrectionsAsync()).ToList();
+        new SettingsStore(path).Export(exported, path);
         ExportStatus.Text = Loc.T("settings.exported");
     }
 
@@ -336,7 +336,6 @@ public partial class SettingsWindow : Window
         }
         try { _controller.ApplySettings(imported); }
         catch (Exception e) { Log.Error("Applying imported settings failed", e); ExportStatus.Text = Loc.T("settings.importFailed"); return; }
-        _saved = true;
         Close();
         Reopen?.Invoke();
     }
@@ -434,14 +433,10 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        try { _controller.ApplySettings(_draft); }
+        try { _controller.ApplySettings(_draft, preserveSpellingCorrections: true); }
         catch (Exception e) { Log.Error("Saving settings failed", e); SaveStatus.Text = Loc.T("settings.saveFailed"); return; }
-        _saved = true;
-        if (_controller.FailedHotkeys.Count > 0)
-        {
-            SaveStatus.Text = Loc.T("settings.failed", string.Join("; ", _controller.FailedHotkeys));
-            return;
-        }
+        // Registration remains paused until Closed, including after Save/Import.
+        // FailedHotkeys still describes the previous registration while editing.
         Close();
     }
 
@@ -453,6 +448,7 @@ public partial class SettingsWindow : Window
         SettingsProblemKind.MultipleCursors => Loc.T("snippet.multipleCursors", p.Trigger),
         SettingsProblemKind.DuplicateAppProcess => Loc.T("appLayouts.duplicate", p.Trigger),
         SettingsProblemKind.EmptyAppLayouts => Loc.T("appLayouts.invalid"),
+        SettingsProblemKind.InvalidSpellingCorrections => Loc.T("spell.pairInvalid"),
         _ => Loc.T("snippet.emptyText", p.Trigger),
     }));
 
@@ -469,6 +465,7 @@ public partial class SettingsWindow : Window
         _draft.AcceptChoiceHotkey = _toolHotkeys["accept"].HotkeyText; _draft.CancelChoiceHotkey = _toolHotkeys["cancel"].HotkeyText;
         _draft.AddWordHotkey = _addWordBox.HotkeyText;
         _draft.SpellingHotkey = _toolHotkeys["spelling"].HotkeyText;
+        _draft.SpellingReviewHotkey = _toolHotkeys["review"].HotkeyText;
         _draft.ScreenshotShape = (CaptureShape)Math.Max(0, CaptureShapeBox.SelectedIndex);
         _draft.ScreenshotEditorAfterCopy = CaptureEditorBox.IsChecked == true;
         _draft.ScreenshotCopyHotkey = CaptureCopyHotkeyBox.HotkeyText;

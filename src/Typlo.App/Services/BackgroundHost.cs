@@ -85,7 +85,7 @@ internal sealed class BackgroundHost : IDisposable
     }
     private Task<RuntimeReply> DispatchAsync(RuntimeRequest command)
     {
-        if (command.Command is "auto-status" or "dictionary-check" or "personal-query" or "personal-edit" or "personal-add" or "personal-add-missing" or "personal-word-status" or "personal-import" or "personal-export" or "personal-word" or "excluded-word" or "backup-export" or "backup-preview" or "backup-restore" or "tools-state")
+        if (command.Command is "spelling-pair" or "auto-status" or "dictionary-check" or "personal-query" or "personal-edit" or "personal-add" or "personal-add-missing" or "personal-word-status" or "personal-import" or "personal-export" or "personal-word" or "excluded-word" or "backup-export" or "backup-preview" or "backup-restore" or "tools-state")
             return DispatchDictionaryAsync(command);
         if (_diagnostic && command.Command == "register-hotkeys" && File.Exists(Path.Combine(_paths.DataDir, "hold-hotkey-restore")))
             return HoldHotkeyRestoreAsync(command);
@@ -94,6 +94,7 @@ internal sealed class BackgroundHost : IDisposable
     private async Task<RuntimeReply> DispatchDictionaryAsync(RuntimeRequest command)
     {
         try { return await DispatchCore(command); }
+        catch (ArgumentException e) when (command.Command == "spelling-pair") { return new(false, e.Message); }
         catch (Exception e) when (command.Command.StartsWith("backup-", StringComparison.Ordinal) &&
             (e is System.Text.Json.JsonException or InvalidDataException or Typlo.Core.Settings.SettingsImportException or ArgumentException ||
              e is Microsoft.Data.Sqlite.SqliteException { SqliteErrorCode: 11 or 26 }))
@@ -167,6 +168,9 @@ internal sealed class BackgroundHost : IDisposable
             case "spelling-selection": return new(true, Spelling: await _controller.GetSpellingSelectionAsync(command.Id));
             case "spelling-cancel": await _controller.CancelSpellingAsync(command.Id); return new(true);
             case "spelling-apply": return new(await _controller.ApplySpellingAsync(command.Id, command.Text ?? ""));
+            case "spelling-pair":
+                await _controller.SetSpellingCorrectionAsync(command.Text ?? "", command.Args?.ElementAtOrDefault(0) ?? "", command.Args?.ElementAtOrDefault(1) is { Length: > 0 } original ? original : null, command.Flag);
+                return State();
             case "backup-export": await _controller.ExportBackupAsync(command.Text ?? ""); return new(true);
             case "backup-preview": return new(true, Backup: await _controller.PreviewBackupAsync(command.Text ?? ""));
             case "backup-restore": await _controller.RestoreBackupAsync(command.Text ?? "", command.Args?.FirstOrDefault() ?? ""); return State();
@@ -199,7 +203,7 @@ internal sealed class BackgroundHost : IDisposable
             case "personal-word":
                 if (command.Text is null || command.Args is not [var language]) return new(false, Loc.T("dictionary.invalid"));
                 await _controller.SetPersonalWordAsync(command.Text, language, command.Flag); return new(true);
-            case "settings": if (command.Settings is null) return new(false, "Missing settings"); _controller.ApplySettings(command.Settings); return State();
+            case "settings": if (command.Settings is null) return new(false, "Missing settings"); _controller.ApplySettings(command.Settings, command.Flag); return State();
             case "refresh-layouts": _controller.RefreshKeyboardLayouts(); return State();
             case "suspend-hotkeys":
                 if (command.Id < _settingsSession) return State();

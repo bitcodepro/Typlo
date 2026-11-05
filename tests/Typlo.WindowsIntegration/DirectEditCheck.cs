@@ -228,7 +228,7 @@ internal static class DirectEditCheck
                 var paths = new AppPaths(Path.Combine(work, "controller"));
                 new SettingsStore(paths.SettingsFile).Save(new AppSettings
                 {
-                    SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
+                    SpellingReviewHotkey = "", SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
                     LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "",
                     ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "", HistoryEnabled = false,
                     SwitchSystemLayout = false, ConvertLastWord = true,
@@ -263,7 +263,7 @@ internal static class DirectEditCheck
                 var paths = new AppPaths(Path.Combine(work, "slow-" + phase + "-controller"));
                 new SettingsStore(paths.SettingsFile).Save(new AppSettings
                 {
-                    SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
+                    SpellingReviewHotkey = "", SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
                     LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "",
                     ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "", HistoryEnabled = false,
                     SwitchSystemLayout = false, ConvertLastWord = true,
@@ -413,7 +413,7 @@ internal static class DirectEditCheck
                 var paths = new AppPaths(Path.Combine(work, "application-cycle"));
                 new SettingsStore(paths.SettingsFile).Save(new AppSettings
                 {
-                    SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
+                    SpellingReviewHotkey = "", SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
                     LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "",
                     ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "", HistoryEnabled = false,
                     SwitchSystemLayout = false,
@@ -445,7 +445,7 @@ internal static class DirectEditCheck
                 var paths = new AppPaths(Path.Combine(work, "automatic-dictionary-controller"));
                 new SettingsStore(paths.SettingsFile).Save(new AppSettings
                 {
-                    SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
+                    SpellingReviewHotkey = "", SpellingHotkey = "", ToolsHotkey = "", ChoicesHotkey = "", AcceptChoiceHotkey = "", CancelChoiceHotkey = "", AddWordHotkey = "",
                     LayoutsInitialized = true, ToggleHotkey = "", CaseHotkey = "", TranslitHotkey = "", UndoHotkey = "",
                     ScreenshotCopyHotkey = "", ScreenshotSaveHotkey = "", ClipboardHotkey = "", HistoryEnabled = false,
                     SwitchSystemLayout = false, AutoCorrectEnabled = true,
