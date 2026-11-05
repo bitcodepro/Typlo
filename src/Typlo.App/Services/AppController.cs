@@ -147,7 +147,26 @@ public sealed partial class AppController : IDisposable
     private IEnumerable<KeyboardLayout> SourceLayouts(KeyboardLayout? preferred) => preferred is { SupportsConversion: true }
         ? new[] { preferred }.Concat(_converter.Layouts).DistinctBy(l => l.Id) : _converter.Layouts;
 
-    public void ApplySettings(AppSettings settings) { lock (_settingsLock) { EnsureConfigurationWritable(); ApplySettingsCore(settings); } }
+    // Settings does not edit correction pairs. Merge the resident's current list under the
+    // same lock as pair mutations; imports/restores deliberately replace the entire list.
+    public void ApplySettings(AppSettings settings, bool preserveSpellingCorrections = false)
+    {
+        lock (_settingsLock)
+        {
+            EnsureConfigurationWritable();
+            if (preserveSpellingCorrections)
+            {
+                if (_remote is not null)
+                {
+                    UpdateRemoteState(_remote.Call(new("settings", Settings: settings, Flag: true)));
+                    SettingsChanged?.Invoke(); return;
+                }
+                settings = settings.Clone();
+                settings.SpellingCorrections = Settings.SpellingCorrections.ToList();
+            }
+            ApplySettingsCore(settings);
+        }
+    }
     private void ApplySettingsCore(AppSettings settings, bool updateHistoryLimits = true, bool publish = true)
     {
         if (_remote is not null)
@@ -171,7 +190,7 @@ public sealed partial class AppController : IDisposable
         }
         ApplyKeepAwake();
         ApplySnippets();
-        RegisterHotkeys();
+        if (_editingSettings) SuspendHotkeys(); else RegisterHotkeys();
         ConfigureApplicationLayouts();
         if (publish) Volatile.Write(ref _publishedSettings, Settings.Clone());
     }
@@ -209,8 +228,11 @@ public sealed partial class AppController : IDisposable
     private long _settingsSession;
     public void SuspendHotkeys()
     {
-        if (_remote is not null) { _remote.Call(new("suspend-hotkeys", Id: Interlocked.Increment(ref _settingsSession))); return; }
-        _editingSettings = true; _platform.UnregisterAllHotkeys();
+        lock (_settingsLock)
+        {
+            if (_remote is not null) { _remote.Call(new("suspend-hotkeys", Id: Interlocked.Increment(ref _settingsSession))); return; }
+            _editingSettings = true; _platform.UnregisterAllHotkeys();
+        }
     }
 
     /// <summary>Typlo's active hotkeys: pressing one is a command, not input that moves the caret.</summary>
@@ -229,6 +251,10 @@ public sealed partial class AppController : IDisposable
     }
 
     public void RegisterHotkeys()
+    {
+        lock (_settingsLock) RegisterHotkeysCore();
+    }
+    private void RegisterHotkeysCore()
     {
         if (Volatile.Read(ref _updating) != 0) return;
         if (_remote is not null)
@@ -1288,6 +1314,7 @@ public sealed partial class AppController : IDisposable
         Store.UpdateLimits(Limits(Settings), enforce: false);
         FailedHotkeys = reply.FailedHotkeys ?? [];
         PausedUntil = reply.PausedUntil;
+        Volatile.Write(ref _publishedSettings, Settings.Clone());
     }
 
     private int _externalCapture;

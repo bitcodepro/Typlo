@@ -203,7 +203,7 @@ internal sealed class BackgroundHost : IDisposable
             case "personal-word":
                 if (command.Text is null || command.Args is not [var language]) return new(false, Loc.T("dictionary.invalid"));
                 await _controller.SetPersonalWordAsync(command.Text, language, command.Flag); return new(true);
-            case "settings": if (command.Settings is null) return new(false, "Missing settings"); _controller.ApplySettings(command.Settings); return State();
+            case "settings": if (command.Settings is null) return new(false, "Missing settings"); _controller.ApplySettings(command.Settings, command.Flag); return State();
             case "refresh-layouts": _controller.RefreshKeyboardLayouts(); return State();
             case "suspend-hotkeys":
                 if (command.Id < _settingsSession) return State();

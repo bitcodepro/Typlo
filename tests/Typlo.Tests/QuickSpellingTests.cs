@@ -1,5 +1,7 @@
 using Typlo.App.Services;
+using Typlo.Core;
 using Typlo.Core.Settings;
+using Typlo.Core.Storage;
 
 namespace Typlo.Tests;
 
@@ -97,6 +99,58 @@ public sealed partial class AppControllerTests
         await Assert.ThrowsAsync<ArgumentException>(() => _controller.SetSpellingCorrectionAsync("превет", "привет", "превет"));
         Assert.Empty(await _controller.GetSpellingCorrectionsAsync());
     }
+    [Theory]
+    [InlineData(false, "add")]
+    [InlineData(false, "edit")]
+    [InlineData(false, "remove")]
+    [InlineData(true, "add")]
+    [InlineData(true, "edit")]
+    [InlineData(true, "remove")]
+    public async Task SettingsSavePreservesLatestPairsAndKeepsHotkeysSuspended(bool remote, string change)
+    {
+        await _controller.SetSpellingCorrectionAsync("превет", "привет");
+        var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
+        using var server = remote ? RemoteServer(name) : null;
+        using var ui = remote ? AppController.CreateRemote(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name)) : null;
+        var editor = ui ?? _controller;
+        var staleDraft = editor.Settings.Clone();
+        _controller.SuspendHotkeys();
+        if (change == "add") await _controller.SetSpellingCorrectionAsync("helo", "hello");
+        else if (change == "edit") await _controller.SetSpellingCorrectionAsync("превет", "привіт", "превет");
+        else await _controller.SetSpellingCorrectionAsync("превет", "", "превет", remove: true);
+        Assert.Equal(0, _platform.RegisteredHotkeyCount);
+        var latest = await _controller.GetSpellingCorrectionsAsync();
+        staleDraft.ClipboardHotkey = "F18";
+        editor.ApplySettings(staleDraft, preserveSpellingCorrections: true);
+        Assert.Equal(latest, await _controller.GetSpellingCorrectionsAsync());
+        Assert.Equal(latest, editor.PublishedSettings.SpellingCorrections);
+        Assert.Equal(latest, new SettingsStore(new AppPaths(_dir).SettingsFile).Load().SpellingCorrections);
+        Assert.Equal("F18", _controller.Settings.ClipboardHotkey);
+        Assert.Equal(0, _platform.RegisteredHotkeyCount);
+        await _controller.RestoreHotkeysAsync();
+        Assert.True(_platform.RegisteredHotkeyCount > 0);
+    }
+    [Fact]
+    public async Task ExplicitSettingsReplacementCanStillReplaceCorrectionPairs()
+    {
+        await _controller.SetSpellingCorrectionAsync("превет", "привет");
+        var imported = _controller.Settings.Clone(); imported.SpellingCorrections = [new("helo", "hello")];
+        _controller.ApplySettings(imported);
+        Assert.Equal(new SpellingCorrection("helo", "hello"), Assert.Single(await _controller.GetSpellingCorrectionsAsync()));
+    }
+    [Fact]
+    public async Task RemotePairMutationsRefreshThePublishedUiList()
+    {
+        var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
+        using var server = RemoteServer(name);
+        using var ui = AppController.CreateRemote(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name));
+        await ui.SetSpellingCorrectionAsync("helo", "hello");
+        Assert.Equal(new SpellingCorrection("helo", "hello"), Assert.Single(await ui.GetSpellingCorrectionsAsync()));
+        await ui.SetSpellingCorrectionAsync("helo", "help", "helo");
+        Assert.Equal("help", Assert.Single(await ui.GetSpellingCorrectionsAsync()).Correction);
+        await ui.SetSpellingCorrectionAsync("helo", "", "helo", remove: true);
+        Assert.Empty(await ui.GetSpellingCorrectionsAsync());
+    }
     [Fact]
     public async Task CorrectionsAndBothShortcutsSurviveFullBackupRestore()
     {
@@ -150,6 +204,18 @@ public sealed partial class AppControllerTests
 
 public sealed class PersonalCorrectionTests
 {
+    [Theory]
+    [InlineData("helo-world", "hello-world", "HELO-WORLD", "HELLO-WORLD")]
+    [InlineData("helo-world", "hello-world", "Helo-world", "Hello-world")]
+    [InlineData("helo-world", "hello-world", "helo-world", "hello-world")]
+    [InlineData("dont's", "don't", "DONT'S", "DON'T")]
+    [InlineData("пів’яблка", "пів’яблука", "ПІВ’ЯБЛКА", "ПІВ’ЯБЛУКА")]
+    [InlineData("півʼяблка", "півʼяблука", "ПІВʼЯБЛКА", "ПІВʼЯБЛУКА")]
+    public void PersonalPairsPreserveLetterCaseAcrossHyphensAndApostrophes(string error, string correction, string text, string expected)
+    {
+        var result = new SpellingEngine("missing-spelling-directory").Check(new(text, Corrections: [new(error, correction)]));
+        Assert.Equal(expected, Assert.Single(result.Issues).Suggestions[0]);
+    }
     [Fact]
     public void PersonalCorrectionWorksWithoutDictionaryFilesAndPreservesCase()
     {

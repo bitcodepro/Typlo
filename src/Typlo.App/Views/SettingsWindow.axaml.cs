@@ -41,7 +41,6 @@ public partial class SettingsWindow : Window
     public Action? ShowShortcuts { get; set; }
     public Action? ShowDictionary { get; set; }
     public Action<CaptureShape, CaptureDestination>? CaptureScreenshot { get; set; }
-    private bool _saved;
 
     public SettingsWindow() : this(null!) { } // designer
 
@@ -57,7 +56,6 @@ public partial class SettingsWindow : Window
         controller.SuspendHotkeys();
         Closed += async (_, _) =>
         {
-            if (_saved) return;
             // Keep the on-demand UI alive until restoration completes, but release the dispatcher
             // immediately so dismissal, focus changes and other IPC requests can still finish.
             using var operation = UiOperations.Shared.Begin();
@@ -314,7 +312,9 @@ public partial class SettingsWindow : Window
         });
         if (file?.TryGetLocalPath() is not { } path) return;
         Collect();
-        new SettingsStore(path).Export(_draft, path);
+        var exported = _draft.Clone();
+        exported.SpellingCorrections = (await _controller.GetSpellingCorrectionsAsync()).ToList();
+        new SettingsStore(path).Export(exported, path);
         ExportStatus.Text = Loc.T("settings.exported");
     }
 
@@ -336,7 +336,6 @@ public partial class SettingsWindow : Window
         }
         try { _controller.ApplySettings(imported); }
         catch (Exception e) { Log.Error("Applying imported settings failed", e); ExportStatus.Text = Loc.T("settings.importFailed"); return; }
-        _saved = true;
         Close();
         Reopen?.Invoke();
     }
@@ -434,14 +433,10 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        try { _controller.ApplySettings(_draft); }
+        try { _controller.ApplySettings(_draft, preserveSpellingCorrections: true); }
         catch (Exception e) { Log.Error("Saving settings failed", e); SaveStatus.Text = Loc.T("settings.saveFailed"); return; }
-        _saved = true;
-        if (_controller.FailedHotkeys.Count > 0)
-        {
-            SaveStatus.Text = Loc.T("settings.failed", string.Join("; ", _controller.FailedHotkeys));
-            return;
-        }
+        // Registration remains paused until Closed, including after Save/Import.
+        // FailedHotkeys still describes the previous registration while editing.
         Close();
     }
 

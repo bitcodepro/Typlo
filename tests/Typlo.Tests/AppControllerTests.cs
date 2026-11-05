@@ -1859,7 +1859,8 @@ public sealed partial class AppControllerTests : IDisposable
     {
         switch (request.Command)
         {
-            case "settings": _controller.ApplySettings(request.Settings!); break;
+            case "settings": _controller.ApplySettings(request.Settings!, request.Flag); break;
+            case "spelling-pair": await _controller.SetSpellingCorrectionAsync(request.Text!, request.Args![0], request.Args[1].Length == 0 ? null : request.Args[1], request.Flag); break;
             case "paste": await _controller.PasteAsync(request.Id, (nint)request.Window, request.Text != "copy", request.Flag); break;
             case "capture-begin": if (!await _controller.BeginExternalCaptureAsync()) return new(false); break;
             case "capture-end": _controller.EndExternalCapture(); break;
@@ -2000,6 +2001,7 @@ public sealed partial class AppControllerTests : IDisposable
         public PlatformCapabilities Capabilities { get; } = new(true, true, true, true);
         public event Action<int>? HotkeyPressed;
         private readonly Dictionary<Hotkey, int> _hotkeys = [];
+        public int RegisteredHotkeyCount => _hotkeys.Count;
         public bool OwnerKnown = true;
         public bool WaitForTransientFocus;
         public int Activations;

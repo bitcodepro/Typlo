@@ -97,7 +97,7 @@ internal sealed class SpellingEngine(string directory)
     }
     internal static long Metric(Func<long> read)
     { try { return read(); } catch (Exception e) when (e is NotSupportedException or System.ComponentModel.Win32Exception or InvalidOperationException) { return -1; } }
-    private static string CaseLike(string source, string result) => source.All(char.IsUpper) ? result.ToUpperInvariant() :
+    private static string CaseLike(string source, string result) => source.Where(c => char.IsUpper(c) || char.IsLower(c)).All(char.IsUpper) ? result.ToUpperInvariant() :
         char.IsUpper(source[0]) ? char.ToUpperInvariant(result[0]) + result[1..] : result;
 
     private static int Distance(string source, string target)
