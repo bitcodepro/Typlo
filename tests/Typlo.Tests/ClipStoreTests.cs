@@ -88,6 +88,58 @@ public sealed class ClipStoreTests : IDisposable
         store.SetPinned(pinned, true);
         Assert.Equal(previous, store.PreviousId());
     }
+    [Fact]
+    public void UseRecencyIsStrictlyIncreasingWithoutChangingDisplayOrder()
+    {
+        using var store = Open();
+        var future = DateTimeOffset.UtcNow.AddDays(1);
+        var a = store.Add(ClipContent.FromText("A"), future)!.Value;
+        var b = store.Add(ClipContent.FromText("B"), future.AddSeconds(1))!.Value;
+        var last = store.List()[0].LastUsed;
+        for (var i = 0; i < 20; i++)
+        {
+            var next = i % 2 == 0 ? a : b;
+            Assert.Equal(next, store.PreviousId()); store.Touch(next, moveToTop: false);
+            Assert.Equal(new[] { b, a }, store.List().Select(e => e.Id));
+            var used = store.List().Single(e => e.Id == next).LastUsed;
+            Assert.True(used > last); last = used;
+        }
+        var c = store.Add(ClipContent.FromText("C"))!.Value;
+        Assert.Equal(c, store.List()[0].Id); Assert.Equal(b, store.PreviousId());
+    }
+    [Fact]
+    public async Task HistoryOrderMigrationPreservesEntriesAndUsageAcrossReopening()
+    {
+        long a, b;
+        using (var store = Open())
+        {
+            var time = DateTimeOffset.Parse("2020-01-01T00:00:00Z");
+            a = store.Add(ClipContent.FromText("A", html: "<b>A</b>"), time)!.Value;
+            b = store.Add(ClipContent.FromText("B"), time.AddSeconds(1))!.Value;
+        }
+        using (var raw = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Db};Pooling=False"))
+        {
+            raw.Open(); using var command = raw.CreateCommand();
+            command.CommandText = "DROP INDEX ix_clips_display_order; ALTER TABLE clips DROP COLUMN display_used;";
+            command.ExecuteNonQuery();
+        }
+        var readers = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => Task.Run(() =>
+        {
+            using var store = Open(); return store.List().Select(e => e.Id).ToArray();
+        })));
+        Assert.All(readers, ids => Assert.Equal(new[] { b, a }, ids));
+        using (var store = Open())
+        {
+            Assert.Equal(new[] { b, a }, store.List().Select(e => e.Id));
+            Assert.Equal("<b>A</b>", store.Get(a)!.Html); Assert.Equal("B", store.Get(b)!.Text);
+            store.Touch(a, moveToTop: false);
+        }
+        using (var store = Open())
+        {
+            Assert.Equal(new[] { b, a }, store.List().Select(e => e.Id));
+            Assert.Equal(b, store.PreviousId());
+        }
+    }
 
     [Fact]
     public void UiConnectionNoticesExternalCommitsWithoutLoadingHistory()

@@ -121,9 +121,20 @@ public sealed class ClipStore : IDisposable
               payload BLOB NOT NULL);
             CREATE INDEX IF NOT EXISTS ix_clips_last_used ON clips(last_used);
             """);
-        // v0.1.5: encrypted HTML/RTF formatting; older databases get the column added.
-        using (var columns = Cmd("SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name='extra'"))
-            if ((long)columns.ExecuteScalar()! == 0) Exec("ALTER TABLE clips ADD COLUMN extra BLOB");
+        // Separate visible order from usage recency. Migrate atomically, including when
+        // the resident and an on-demand UI open the old database at the same time.
+        Exec("BEGIN IMMEDIATE");
+        try
+        {
+            // v0.1.5: encrypted HTML/RTF formatting.
+            using (var columns = Cmd("SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name='extra'"))
+                if ((long)columns.ExecuteScalar()! == 0) Exec("ALTER TABLE clips ADD COLUMN extra BLOB");
+            using (var columns = Cmd("SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name='display_used'"))
+                if ((long)columns.ExecuteScalar()! == 0)
+                    Exec("ALTER TABLE clips ADD COLUMN display_used INTEGER NOT NULL DEFAULT 0; UPDATE clips SET display_used=last_used;");
+            Exec("CREATE INDEX IF NOT EXISTS ix_clips_display_order ON clips(pinned DESC, display_used DESC, id DESC); COMMIT;");
+        }
+        catch { Exec("ROLLBACK"); throw; }
     }
 
     public void UpdateLimits(StoreLimits limits, bool enforce = true)
@@ -153,6 +164,10 @@ public sealed class ClipStore : IDisposable
     private long AddLocked(ClipContent content, byte[] payload, DateTimeOffset? capturedAt)
     {
         var now = (capturedAt ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds();
+        var created = now;
+        // Commands/copies may occur in one clock tick; use a strictly increasing
+        // recency for live events. Delayed image captures retain their original time.
+        if (capturedAt is null) now = NextUse(now);
         var hash = _crypto.Hash(content.Kind, payload);
         var formatting = content.FormattingBytes();
         object extra = formatting is null ? DBNull.Value : _crypto.Encrypt(formatting);
@@ -162,8 +177,8 @@ public sealed class ClipStore : IDisposable
             {
                 // Same text again: keep the newest formatting if the source offered any, and count its size.
                 using var bump = formatting is null
-                    ? Cmd("UPDATE clips SET last_used=MAX(last_used,$t) WHERE id=$id", ("$t", now), ("$id", existing))
-                    : Cmd("UPDATE clips SET last_used=MAX(last_used,$t), extra=$x, size=$s WHERE id=$id",
+                    ? Cmd("UPDATE clips SET last_used=MAX(last_used,$t), display_used=MAX(display_used,$t) WHERE id=$id", ("$t", now), ("$id", existing))
+                    : Cmd("UPDATE clips SET last_used=MAX(last_used,$t), display_used=MAX(display_used,$t), extra=$x, size=$s WHERE id=$id",
                         ("$t", now), ("$x", extra), ("$s", payload.LongLength + formatting.LongLength), ("$id", existing));
                 bump.ExecuteNonQuery();
                 if (formatting is not null) Enforce();
@@ -176,10 +191,10 @@ public sealed class ClipStore : IDisposable
                 ? _crypto.Encrypt(content.Thumbnail ?? [])
                 : _crypto.EncryptString(Truncate(content.Text!, content.Kind == ClipKind.Files ? 4000 : ClipEntry.PreviewChars));
             using var insert = Cmd("""
-                INSERT INTO clips(kind, created, last_used, pinned, hash, size, width, height, preview, app, payload, extra)
-                VALUES($k, $t, $t, 0, $h, $s, $w, $hh, $p, $a, $d, $x) RETURNING id
+                INSERT INTO clips(kind, created, last_used, display_used, pinned, hash, size, width, height, preview, app, payload, extra)
+                VALUES($k, $c, $t, $t, 0, $h, $s, $w, $hh, $p, $a, $d, $x) RETURNING id
                 """,
-                ("$k", (int)content.Kind), ("$t", now), ("$h", hash), ("$s", payload.LongLength + (formatting?.LongLength ?? 0)),
+                ("$k", (int)content.Kind), ("$c", created), ("$t", now), ("$h", hash), ("$s", payload.LongLength + (formatting?.LongLength ?? 0)),
                 ("$w", content.Width), ("$hh", content.Height), ("$p", preview),
                 ("$a", content.SourceApp is null ? DBNull.Value : _crypto.EncryptString(content.SourceApp)),
                 ("$d", _crypto.Encrypt(payload)), ("$x", extra));
@@ -197,7 +212,7 @@ public sealed class ClipStore : IDisposable
             using var cmd = Cmd("""
                 SELECT id, kind, created, last_used, pinned, size, width, height,
                        CASE WHEN kind=2 AND $thumb=0 THEN NULL ELSE preview END, app, extra IS NOT NULL
-                FROM clips ORDER BY pinned DESC, last_used DESC, id DESC LIMIT $limit
+                FROM clips ORDER BY pinned DESC, display_used DESC, id DESC LIMIT $limit
                 """, ("$thumb", includeThumbnails ? 1 : 0), ("$limit", limit is null ? -1 : Math.Max(0, limit.Value)));
             using var r = cmd.ExecuteReader();
             while (r.Read())
@@ -325,12 +340,18 @@ public sealed class ClipStore : IDisposable
         }
     }
 
-    public void Touch(long id)
+    private long NextUse(long now)
+    {
+        using var latest = Cmd("SELECT COALESCE(MAX(last_used),0) FROM clips");
+        return Math.Max(now, checked((long)latest.ExecuteScalar()! + 1));
+    }
+
+    public void Touch(long id, bool moveToTop = true)
     {
         lock (_lock)
         {
-            using var cmd = Cmd("UPDATE clips SET last_used=$t WHERE id=$id",
-                ("$t", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), ("$id", id));
+            using var cmd = Cmd("UPDATE clips SET last_used=$t, display_used=CASE WHEN $move THEN $t ELSE display_used END WHERE id=$id",
+                ("$t", NextUse(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())), ("$move", moveToTop), ("$id", id));
             cmd.ExecuteNonQuery();
         }
         Changed?.Invoke();
@@ -392,7 +413,7 @@ public sealed class ClipStore : IDisposable
             r.Close();
             if (count <= _limits.MaxItems && total <= _limits.MaxTotalBytes) return;
 
-            using var victim = Cmd("SELECT id FROM clips WHERE pinned=0 ORDER BY last_used ASC, id ASC LIMIT 1");
+            using var victim = Cmd("SELECT id FROM clips WHERE pinned=0 ORDER BY display_used ASC, id ASC LIMIT 1");
             if (victim.ExecuteScalar() is not long id) return; // only pinned left
             using var del = Cmd("DELETE FROM clips WHERE id=$id", ("$id", id));
             del.ExecuteNonQuery();

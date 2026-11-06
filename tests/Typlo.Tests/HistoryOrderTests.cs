@@ -44,13 +44,13 @@ public sealed partial class AppControllerTests
             _ => ClipContent.FromText("older item"),
         };
         var (selected, newest) = SeedHistory(content);
-        var before = _controller.Store.List(includeThumbnails: false).Select(e => (e.Id, e.LastUsed)).ToArray();
+        var before = _controller.Store.List(includeThumbnails: false).Select(e => e.Id).ToArray();
         var changes = 0; _controller.Store.Changed += () => changes++;
         await _controller.PasteAsync(selected, 1);
         Assert.Equal(1, _platform.PasteCount);
         Assert.Equal(move ? selected : newest, _controller.Store.List(includeThumbnails: false)[0].Id);
-        Assert.Equal(move ? 1 : 0, changes);
-        if (!move) Assert.Equal(before, _controller.Store.List(includeThumbnails: false).Select(e => (e.Id, e.LastUsed)).ToArray());
+        Assert.Equal(1, changes);
+        if (!move) Assert.Equal(before, _controller.Store.List(includeThumbnails: false).Select(e => e.Id).ToArray());
         Assert.Equal(2, _controller.Store.Stats().Count);
     }
     [Theory]
@@ -100,6 +100,7 @@ public sealed partial class AppControllerTests
         await _controller.PasteAsync(selected, 1);
         Assert.Equal(0, _platform.PasteCount);
         Assert.Equal(newest, _controller.Store.List()[0].Id);
+        Assert.Equal(selected, _controller.Store.PreviousId());
     }
     [Theory]
     [InlineData(true)]
@@ -134,5 +135,54 @@ public sealed partial class AppControllerTests
         Assert.Equal(selected, _controller.Store.Add(content));
         Assert.Equal(selected, _controller.Store.List()[0].Id);
         Assert.Equal(2, _controller.Store.Stats().Count);
+    }
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task RepeatedPreviousPasteAlternatesIndependentlyOfVisibleOrder(bool move, bool manualFirst)
+    {
+        SetHistoryOrder(move);
+        var (a, b) = SeedHistory(ClipContent.FromText("A"));
+        for (var i = 0; i < 6; i++)
+        {
+            if (manualFirst && i == 0) await _controller.PasteAsync(a, 0, paste: false);
+            else await _controller.PastePreviousAsync(0, paste: false);
+            Assert.Equal(i % 2 == 0 ? "A" : "newest history item", _platform.ClipboardText);
+            if (!move) Assert.Equal(new[] { b, a }, _controller.Store.List().Select(e => e.Id));
+        }
+    }
+    [Fact]
+    public async Task RapidConcurrentPreviousCommandsResolveTheirItemInsideThePasteGate()
+    {
+        SetHistoryOrder(false); SeedHistory(ClipContent.FromText("A"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _platform.BeforeModifiers = async () => { entered.TrySetResult(); await release.Task; };
+        var first = _controller.PastePreviousAsync(1);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var second = _controller.PastePreviousAsync(1); release.TrySetResult();
+        await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal("Anewest history item", _platform.Document.Text);
+    }
+    [Fact]
+    public async Task RemotePreviousPasteTracksManualUseWithoutMovingRows()
+    {
+        SetHistoryOrder(false); var (a, b) = SeedHistory(ClipContent.FromText("A"));
+        var name = "Typlo.Test." + Guid.NewGuid().ToString("N");
+        using var server = RemoteServer(name);
+        using var ui = AppController.CreateRemote(new FakePlatform(), new AppPaths(_dir), new PlainKeyProtector(), new RuntimeClient(name));
+        await ui.PasteAsync(a, 0, paste: false);
+        await ui.PastePreviousAsync(0, paste: false); Assert.Equal("newest history item", _platform.ClipboardText);
+        await ui.PastePreviousAsync(0, paste: false); Assert.Equal("A", _platform.ClipboardText);
+        Assert.Equal(new[] { b, a }, _controller.Store.List().Select(e => e.Id));
+    }
+    [Fact]
+    public async Task PreviousWithOneItemDoesNotRepeatTheCurrentItem()
+    {
+        SetHistoryOrder(false); _controller.Store.Add(ClipContent.FromText("only item"));
+        await _controller.PastePreviousAsync(0, paste: false);
+        Assert.Equal("original clipboard", _platform.ClipboardText);
     }
 }

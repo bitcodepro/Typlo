@@ -1248,17 +1248,23 @@ public sealed partial class AppController : IDisposable
     /// Puts a history item on the clipboard, focuses the previous window and pastes it.
     /// <paramref name="plainText"/> drops the HTML/RTF formatting of text items.
     /// </summary>
-    public async Task PasteAsync(long id, nint targetWindow, bool paste = true, bool plainText = false)
+    public Task PasteAsync(long id, nint targetWindow, bool paste = true, bool plainText = false)
     {
-        if (_remote is not null) { await _remote.CallAsync(new("paste", id, (long)targetWindow, plainText, paste ? "paste" : "copy")); return; }
+        if (_remote is not null) return _remote.CallAsync(new("paste", id, (long)targetWindow, plainText, paste ? "paste" : "copy"));
+        return PasteHistoryAsync(id, targetWindow, paste, plainText);
+    }
+    private async Task PasteHistoryAsync(long? requestedId, nint targetWindow, bool paste, bool plainText = false)
+    {
         var largeImage = false;
         // One clipboard operation at a time: a paste must not interleave with a conversion or snippet.
         if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(3))) return;
         try
         {
+            var selected = requestedId ?? Store.PreviousId();
+            if (selected is not { } id) return;
             var content = Store.Get(id);
             if (content is null) return;
-            void MarkUsed() { if (PublishedSettings.HistoryMoveUsedToTop) Store.Touch(id); }
+            void MarkUsed() => Store.Touch(id, PublishedSettings.HistoryMoveUsedToTop);
             largeImage = content.ImagePng is { Length: >= 1024 * 1024 };
             LastTransform = null;
             _recentTyping.Consume(Interlocked.Read(ref _typingVersion));
@@ -1304,8 +1310,7 @@ public sealed partial class AppController : IDisposable
     public Task PastePreviousAsync(nint targetWindow, bool paste = true)
     {
         if (_remote is not null) return _remote.CallAsync(new("paste-previous", Window: (long)targetWindow, Flag: paste));
-        var previous = Store.PreviousId();
-        return previous is null ? Task.CompletedTask : PasteAsync(previous.Value, targetWindow, paste);
+        return PasteHistoryAsync(null, targetWindow, paste);
     }
 
     private void UpdateRemoteState(RuntimeReply reply)

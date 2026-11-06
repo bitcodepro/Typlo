@@ -1862,6 +1862,7 @@ public sealed partial class AppControllerTests : IDisposable
             case "settings": _controller.ApplySettings(request.Settings!, request.Flag); break;
             case "spelling-pair": await _controller.SetSpellingCorrectionAsync(request.Text!, request.Args![0], request.Args[1].Length == 0 ? null : request.Args[1], request.Flag); break;
             case "paste": await _controller.PasteAsync(request.Id, (nint)request.Window, request.Text != "copy", request.Flag); break;
+            case "paste-previous": await _controller.PastePreviousAsync((nint)request.Window, request.Flag); break;
             case "capture-begin": if (!await _controller.BeginExternalCaptureAsync()) return new(false); break;
             case "capture-end": _controller.EndExternalCapture(); break;
             case "image-write-begin": _controller.BeginExternalClipboardWrite(); break;
