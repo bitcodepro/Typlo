@@ -3,6 +3,9 @@ using Microsoft.Data.Sqlite;
 
 namespace Typlo.Core.Storage;
 
+/// <summary>An order reserved in the history database before asynchronous capture processing.</summary>
+public readonly record struct ClipCaptureOrder(long Sequence, DateTimeOffset CapturedAt);
+
 public enum ClipKind
 {
     Text = 1,
@@ -132,7 +135,12 @@ public sealed class ClipStore : IDisposable
             using (var columns = Cmd("SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name='display_used'"))
                 if ((long)columns.ExecuteScalar()! == 0)
                     Exec("ALTER TABLE clips ADD COLUMN display_used INTEGER NOT NULL DEFAULT 0; UPDATE clips SET display_used=last_used;");
-            Exec("CREATE INDEX IF NOT EXISTS ix_clips_display_order ON clips(pinned DESC, display_used DESC, id DESC); COMMIT;");
+            Exec("""
+                CREATE INDEX IF NOT EXISTS ix_clips_display_order ON clips(pinned DESC, display_used DESC, id DESC);
+                CREATE TABLE IF NOT EXISTS clip_order_clock(id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
+                INSERT OR IGNORE INTO clip_order_clock(id,value) SELECT 1,COALESCE(MAX(last_used),0) FROM clips;
+                COMMIT;
+                """);
         }
         catch { Exec("ROLLBACK"); throw; }
     }
@@ -144,7 +152,24 @@ public sealed class ClipStore : IDisposable
     }
 
     /// <summary>Stores content or bumps an identical existing clip to the top. Returns null if rejected by limits.</summary>
+    /// <param name="capturedAt">Creation timestamp. For delayed work, reserve its order before processing and use AddCaptured.</param>
     public long? Add(ClipContent content, DateTimeOffset? capturedAt = null)
+        => AddCore(content, capturedAt, null);
+
+    /// <summary>Reserve before queueing an image; use the same token when its encoding completes.</summary>
+    public ClipCaptureOrder ReserveCapture(DateTimeOffset? capturedAt = null)
+    {
+        var at = capturedAt ?? DateTimeOffset.UtcNow;
+        lock (_lock) return new(NextUse(at.ToUnixTimeMilliseconds()), at);
+    }
+
+    public long? AddCaptured(ClipContent content, ClipCaptureOrder capture)
+    {
+        if (capture.Sequence <= 0) throw new ArgumentException("Invalid capture order", nameof(capture));
+        return AddCore(content, capture.CapturedAt, capture);
+    }
+
+    private long? AddCore(ClipContent content, DateTimeOffset? capturedAt, ClipCaptureOrder? capture)
     {
         var payload = content.PayloadBytes();
         if (payload.Length == 0) return null;
@@ -156,18 +181,26 @@ public sealed class ClipStore : IDisposable
         if (content.Kind == ClipKind.Image && payload.Length > _limits.MaxImageBytes) return null;
 
         long id;
-        lock (_lock) id = AddLocked(content, payload, capturedAt);
+        lock (_lock)
+        {
+            Exec("BEGIN IMMEDIATE");
+            try
+            {
+                var at = capturedAt ?? DateTimeOffset.UtcNow;
+                var order = capture ?? new ClipCaptureOrder(NextUse(at.ToUnixTimeMilliseconds()), at);
+                id = AddLocked(content, payload, order);
+                Exec("COMMIT");
+            }
+            catch { Exec("ROLLBACK"); throw; }
+        }
         Changed?.Invoke();
         return id;
     }
 
-    private long AddLocked(ClipContent content, byte[] payload, DateTimeOffset? capturedAt)
+    private long AddLocked(ClipContent content, byte[] payload, ClipCaptureOrder capture)
     {
-        var now = (capturedAt ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds();
-        var created = now;
-        // Commands/copies may occur in one clock tick; use a strictly increasing
-        // recency for live events. Delayed image captures retain their original time.
-        if (capturedAt is null) now = NextUse(now);
+        var now = capture.Sequence;
+        var created = capture.CapturedAt.ToUnixTimeMilliseconds();
         var hash = _crypto.Hash(content.Kind, payload);
         var formatting = content.FormattingBytes();
         object extra = formatting is null ? DBNull.Value : _crypto.Encrypt(formatting);
@@ -342,17 +375,24 @@ public sealed class ClipStore : IDisposable
 
     private long NextUse(long now)
     {
-        using var latest = Cmd("SELECT COALESCE(MAX(last_used),0) FROM clips");
-        return Math.Max(now, checked((long)latest.ExecuteScalar()! + 1));
+        // A single SQLite write serializes allocation across all connections and
+        // retains reservations even while images are pending or history is cleared.
+        using var next = Cmd("UPDATE clip_order_clock SET value=MAX(value+1,$now) WHERE id=1 RETURNING value", ("$now", now));
+        return (long)next.ExecuteScalar()!;
     }
 
     public void Touch(long id, bool moveToTop = true)
     {
         lock (_lock)
         {
-            using var cmd = Cmd("UPDATE clips SET last_used=$t, display_used=CASE WHEN $move THEN $t ELSE display_used END WHERE id=$id",
-                ("$t", NextUse(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())), ("$move", moveToTop), ("$id", id));
-            cmd.ExecuteNonQuery();
+            Exec("BEGIN IMMEDIATE");
+            try
+            {
+                using var cmd = Cmd("UPDATE clips SET last_used=$t, display_used=CASE WHEN $move THEN $t ELSE display_used END WHERE id=$id",
+                    ("$t", NextUse(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())), ("$move", moveToTop), ("$id", id));
+                cmd.ExecuteNonQuery(); Exec("COMMIT");
+            }
+            catch { Exec("ROLLBACK"); throw; }
         }
         Changed?.Invoke();
     }

@@ -1220,20 +1220,20 @@ public sealed partial class AppController : IDisposable
         if (!ShouldRecord(raw)) return;
         try
         {
-            if (raw.Files is { Count: > 0 } files) Store.Add(ClipContent.FromFiles(files, raw.SourceApp));
-            else if (raw.Text is not null) Store.Add(ClipContent.FromText(raw.Text, raw.SourceApp, raw.Html, raw.Rtf));
-            else if (raw.Image is { } bytes && bytes.LongLength <= Settings.MaxImageBytes * 4) _images.Post(raw);
+            if (raw.Files is { Count: > 0 } files) Store.AddCaptured(ClipContent.FromFiles(files, raw.SourceApp), Store.ReserveCapture());
+            else if (raw.Text is not null) Store.AddCaptured(ClipContent.FromText(raw.Text, raw.SourceApp, raw.Html, raw.Rtf), Store.ReserveCapture());
+            else if (raw.Image is { } bytes && bytes.LongLength <= Settings.MaxImageBytes * 4) _images.Post(raw, Store.ReserveCapture());
         }
         catch (Exception e) { Log.Error("Storing clip failed", e); }
     }
 
-    private void StoreCapturedImage(RawClip raw, DateTimeOffset capturedAt)
+    private void StoreCapturedImage(RawClip raw, ClipCaptureOrder order)
     {
         if (!ShouldRecord(raw) || raw.Image is not { } bytes) return;
         try
         {
             var img = ImageCodec.Encode(bytes, raw.ImageIsPng);
-            if (ShouldRecord(raw)) Store.Add(ClipContent.FromImage(img.Png, img.Thumbnail, img.Width, img.Height, raw.SourceApp), capturedAt);
+            if (ShouldRecord(raw)) Store.AddCaptured(ClipContent.FromImage(img.Png, img.Thumbnail, img.Width, img.Height, raw.SourceApp), order);
         }
         finally { if (bytes.Length >= 1024 * 1024) _memory.Schedule(); }
     }

@@ -67,12 +67,13 @@ public sealed class ClipStoreTests : IDisposable
     {
         using var store = Open();
         var captured = DateTimeOffset.Parse("2020-01-01T00:00:00Z");
+        var imageOrder = store.ReserveCapture(captured);
         var text = store.Add(ClipContent.FromText("newer text"), captured.AddSeconds(1));
         var image = ClipContent.FromImage([1, 2, 3], [4], 1, 1);
-        var id = store.Add(image, captured)!.Value;
+        var id = store.AddCaptured(image, imageOrder)!.Value;
         Assert.Equal(text, store.List(includeThumbnails: false)[0].Id);
         store.Touch(id);
-        store.Add(image, captured);
+        store.AddCaptured(image, imageOrder);
         Assert.Equal(id, store.List(includeThumbnails: false)[0].Id);
     }
 
@@ -120,7 +121,7 @@ public sealed class ClipStoreTests : IDisposable
         using (var raw = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Db};Pooling=False"))
         {
             raw.Open(); using var command = raw.CreateCommand();
-            command.CommandText = "DROP INDEX ix_clips_display_order; ALTER TABLE clips DROP COLUMN display_used;";
+            command.CommandText = "DROP INDEX ix_clips_display_order; ALTER TABLE clips DROP COLUMN display_used; DROP TABLE clip_order_clock;";
             command.ExecuteNonQuery();
         }
         var readers = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => Task.Run(() =>
@@ -138,6 +139,85 @@ public sealed class ClipStoreTests : IDisposable
         {
             Assert.Equal(new[] { b, a }, store.List().Select(e => e.Id));
             Assert.Equal(b, store.PreviousId());
+        }
+    }
+    [Fact]
+    public async Task TwoConnectionsAllocateTouchOrderInsideTheirWriteTransactions()
+    {
+        using var first = Open(); using var second = Open();
+        var at = DateTimeOffset.UtcNow.AddDays(1);
+        var a = first.Add(ClipContent.FromText("A"), at)!.Value;
+        var b = first.Add(ClipContent.FromText("B"), at)!.Value;
+        await RunBlockedWriters(() => first.Touch(a, false), () => second.Touch(b, false));
+        var rows = first.List();
+        Assert.Equal(2, rows.Select(e => e.LastUsed).Distinct().Count());
+        Assert.Equal(rows.MinBy(e => e.LastUsed)!.Id, first.PreviousId());
+        Assert.Equal(new[] { b, a }, rows.Select(e => e.Id));
+    }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TwoConnectionsInsertOrDeduplicateWithoutReusingTheSequence(bool duplicate)
+    {
+        using var first = Open(); using var second = Open();
+        first.Add(ClipContent.FromText("seed"), DateTimeOffset.UtcNow.AddDays(1));
+        long? a = null, b = null;
+        await RunBlockedWriters(() => a = first.Add(ClipContent.FromText("A")),
+            () => b = second.Add(ClipContent.FromText(duplicate ? "A" : "B")));
+        Assert.Equal(duplicate, a == b);
+        var rows = first.List();
+        Assert.Equal(duplicate ? 2 : 3, rows.Count);
+        Assert.Equal(rows.Count, rows.Select(e => e.LastUsed).Distinct().Count());
+    }
+    private async Task RunBlockedWriters(Action first, Action second)
+    {
+        using var blocker = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Db};Pooling=False"); blocker.Open();
+        using var command = blocker.CreateCommand(); command.CommandText = "BEGIN IMMEDIATE"; command.ExecuteNonQuery();
+        var startedA = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var startedB = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var a = Task.Run(() => { startedA.SetResult(); first(); });
+        var b = Task.Run(() => { startedB.SetResult(); second(); });
+        try
+        {
+            await Task.WhenAll(startedA.Task, startedB.Task).WaitAsync(TimeSpan.FromSeconds(3));
+            // Both stores overlap while a third connection holds the write lock.
+            // WAL readers may proceed, so an unprotected MAX read would see the same value.
+            await Task.Delay(100); Assert.False(a.IsCompleted); Assert.False(b.IsCompleted);
+        }
+        finally
+        {
+            command.CommandText = "COMMIT"; command.ExecuteNonQuery();
+            await Task.WhenAll(a, b).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ImageAndTextCapturedInOneClockTickUseTheSameSequence(bool imageBeforeLastText)
+    {
+        using var store = Open(); var at = DateTimeOffset.UtcNow.AddDays(1);
+        var a = store.Add(ClipContent.FromText("A"), at)!.Value;
+        ClipCaptureOrder imageOrder = default;
+        if (imageBeforeLastText) imageOrder = store.ReserveCapture(at);
+        var b = store.Add(ClipContent.FromText("B"), at)!.Value;
+        if (!imageBeforeLastText) imageOrder = store.ReserveCapture(at);
+        var image = store.AddCaptured(ClipContent.FromImage([1, 2], [3], 1, 1), imageOrder)!.Value;
+        Assert.Equal(imageBeforeLastText ? new[] { b, image, a } : new[] { image, b, a }, store.List().Select(e => e.Id));
+        Assert.Equal(imageBeforeLastText ? image : b, store.PreviousId());
+    }
+    [Fact]
+    public void PendingCaptureSequenceIsNotReusedAfterHistoryIsClearedOrReopened()
+    {
+        ClipCaptureOrder imageOrder;
+        using (var store = Open())
+        {
+            store.Add(ClipContent.FromText("old")); imageOrder = store.ReserveCapture(); store.Clear();
+        }
+        using (var store = Open())
+        {
+            var newer = store.Add(ClipContent.FromText("newer"))!.Value;
+            store.AddCaptured(ClipContent.FromImage([1], [2], 1, 1), imageOrder);
+            Assert.Equal(newer, store.List()[0].Id);
         }
     }
 
