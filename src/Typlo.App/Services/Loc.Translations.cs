@@ -8,6 +8,10 @@ public static partial class Loc
     {
         ["de"] = new()
         {
+            ["settings.historyUseOrder"] = "Nach Verwendung eines Verlaufseintrags",
+            ["settings.historyMoveUsed"] = "Nach oben verschieben",
+            ["settings.historyKeepUsed"] = "Position beibehalten",
+            ["settings.historyOrderHint"] = "Gilt für Einfügen und Kopieren aus dem Verlauf. Angeheftete Einträge bleiben über den anderen.",
             ["history.ctx.view"] = "Anzeigen…",
             ["viewer.title"] = "Typlo — Eintrag",
             ["hk.undo"] = "Letzte Umwandlung rückgängig",
@@ -158,6 +162,10 @@ public static partial class Loc
 
         ["es"] = new()
         {
+            ["settings.historyUseOrder"] = "Después de usar un elemento del historial",
+            ["settings.historyMoveUsed"] = "Mover al principio",
+            ["settings.historyKeepUsed"] = "Mantener su posición",
+            ["settings.historyOrderHint"] = "Se aplica al pegar y copiar desde el historial. Los elementos fijados permanecen encima de los demás.",
             ["history.ctx.view"] = "Ver…",
             ["viewer.title"] = "Typlo — elemento",
             ["hk.undo"] = "Deshacer la última conversión",
@@ -308,6 +316,10 @@ public static partial class Loc
 
         ["pt"] = new()
         {
+            ["settings.historyUseOrder"] = "Depois de usar um item do histórico",
+            ["settings.historyMoveUsed"] = "Mover para o início",
+            ["settings.historyKeepUsed"] = "Manter a posição",
+            ["settings.historyOrderHint"] = "Aplica-se ao colar e copiar do histórico. Os itens fixados permanecem acima dos restantes.",
             ["history.ctx.view"] = "Ver…",
             ["viewer.title"] = "Typlo — item",
             ["hk.undo"] = "Desfazer a última conversão",
@@ -458,6 +470,10 @@ public static partial class Loc
 
         ["fr"] = new()
         {
+            ["settings.historyUseOrder"] = "Après utilisation d’un élément de l’historique",
+            ["settings.historyMoveUsed"] = "Placer en tête",
+            ["settings.historyKeepUsed"] = "Conserver sa position",
+            ["settings.historyOrderHint"] = "S’applique au collage et à la copie depuis l’historique. Les éléments épinglés restent au-dessus des autres.",
             ["history.ctx.view"] = "Afficher…",
             ["viewer.title"] = "Typlo — élément",
             ["hk.undo"] = "Annuler la dernière conversion",
@@ -608,6 +624,10 @@ public static partial class Loc
 
         ["it"] = new()
         {
+            ["settings.historyUseOrder"] = "Dopo aver usato un elemento della cronologia",
+            ["settings.historyMoveUsed"] = "Sposta in cima",
+            ["settings.historyKeepUsed"] = "Mantieni la posizione",
+            ["settings.historyOrderHint"] = "Si applica a incolla e copia dalla cronologia. Gli elementi fissati restano sopra gli altri.",
             ["history.ctx.view"] = "Visualizza…",
             ["viewer.title"] = "Typlo — elemento",
             ["hk.undo"] = "Annulla l’ultima conversione",
@@ -758,6 +778,10 @@ public static partial class Loc
 
         ["zh"] = new()
         {
+            ["settings.historyUseOrder"] = "使用历史记录条目后",
+            ["settings.historyMoveUsed"] = "移到顶部",
+            ["settings.historyKeepUsed"] = "保持原位置",
+            ["settings.historyOrderHint"] = "适用于从历史记录粘贴和复制。固定条目始终位于其他条目上方。",
             ["history.ctx.view"] = "查看…",
             ["viewer.title"] = "Typlo — 条目",
             ["hk.undo"] = "撤销上次转换",
@@ -908,6 +932,10 @@ public static partial class Loc
 
         ["ja"] = new()
         {
+            ["settings.historyUseOrder"] = "履歴の項目を使用した後",
+            ["settings.historyMoveUsed"] = "先頭に移動する",
+            ["settings.historyKeepUsed"] = "元の位置を保つ",
+            ["settings.historyOrderHint"] = "履歴からの貼り付けとコピーに適用されます。ピン留めした項目は他の項目より上に表示されます。",
             ["history.ctx.view"] = "表示…",
             ["viewer.title"] = "Typlo — 項目",
             ["hk.undo"] = "直前の変換を取り消す",

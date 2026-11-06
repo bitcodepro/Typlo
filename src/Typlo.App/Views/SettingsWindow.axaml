@@ -112,6 +112,12 @@
 
         <TextBlock Classes="h" Text="{l:Tr settings.historyHeader}" />
         <CheckBox x:Name="HistoryEnabledBox" Content="{l:Tr settings.historyEnabled}" />
+        <TextBlock Classes="label" Text="{l:Tr settings.historyUseOrder}" Margin="0,8,0,4" />
+        <ComboBox x:Name="HistoryUseOrderBox" HorizontalAlignment="Stretch">
+          <ComboBoxItem Content="{l:Tr settings.historyMoveUsed}" />
+          <ComboBoxItem Content="{l:Tr settings.historyKeepUsed}" />
+        </ComboBox>
+        <TextBlock Classes="hint" Text="{l:Tr settings.historyOrderHint}" TextWrapping="Wrap" Margin="0,4,0,0" />
         <Grid ColumnDefinitions="190,*,Auto" RowDefinitions="Auto,Auto,Auto,Auto" Margin="0,6,0,0">
           <TextBlock Classes="label" Text="{l:Tr settings.openHistory}" />
           <v:HotkeyBox Grid.Column="1" x:Name="ClipboardHotkeyBox" />

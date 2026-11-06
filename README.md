@@ -56,6 +56,7 @@ For PowerShell inside Windows Terminal, choose the **WindowsTerminal** process.
 - **Dictionaries and diagnostics** in Settings: search/edit personal words, import/export JSON, check dictionary health and see why auto-correction skipped a word.
 - **Multiline snippets** with a `{cursor}` marker for the insertion point.
 - **Screenshot drawing tools** and encrypted clipboard history for text, images and files.
+- **Clipboard history order** in Settings: move used items to the top or keep their position. Pinned items stay above the rest.
 
 Current CI previews and public releases ship **Windows x64 only**. macOS/Linux builds and automatic updates are temporarily paused; their source and local build support remain available. Older installed versions remain usable. See the [temporary release policy](docs/ci-release.md#temporary-windows-only-releases).
 See the [feature and platform reference](docs/reference.md) for details and build instructions.

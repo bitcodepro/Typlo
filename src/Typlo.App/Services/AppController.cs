@@ -1258,6 +1258,7 @@ public sealed partial class AppController : IDisposable
         {
             var content = Store.Get(id);
             if (content is null) return;
+            void MarkUsed() { if (PublishedSettings.HistoryMoveUsedToTop) Store.Touch(id); }
             largeImage = content.ImagePng is { Length: >= 1024 * 1024 };
             LastTransform = null;
             _recentTyping.Consume(Interlocked.Read(ref _typingVersion));
@@ -1278,8 +1279,7 @@ public sealed partial class AppController : IDisposable
                     WriteOwnClipboard(() => _platform.SetImage(content.ImagePng!, bgra, w, h));
                     break;
             }
-            Store.Touch(id);
-            if (!paste || targetWindow == 0 || !_platform.Capabilities.SimulateInput) return;
+            if (!paste || targetWindow == 0 || !_platform.Capabilities.SimulateInput) { MarkUsed(); return; }
             _platform.ActivateWindow(targetWindow);
             await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromMilliseconds(500));
             await Task.Delay(60);
@@ -1293,6 +1293,7 @@ public sealed partial class AppController : IDisposable
                 }
             }
             _platform.SendPaste();
+            MarkUsed();
         }
         catch (ClipboardTakenException) { Log.Info("Paste stopped: another app changed the clipboard meanwhile"); }
         catch (Exception e) { Log.Error("Paste failed", e); }
