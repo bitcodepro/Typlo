@@ -106,6 +106,7 @@ public partial class SettingsWindow : Window
             catch { DictionaryStatus.Text = Loc.T("health.Failed"); }
         };
         HistoryEnabledBox.IsChecked = _draft.HistoryEnabled;
+        HistoryUseOrderBox.SelectedIndex = _draft.HistoryMoveUsedToTop ? 0 : 1;
         MaxItemsBox.Value = _draft.MaxItems;
         MaxTotalBox.Value = _draft.MaxTotalMegabytes;
         MaxImageBox.Value = _draft.MaxImageMegabytes;
@@ -486,6 +487,7 @@ public partial class SettingsWindow : Window
         _draft.SnippetsEnabled = SnippetsEnabledBox.IsChecked == true;
         _draft.AutoCorrectEnabled = AutoCorrectBox.IsChecked == true;
         _draft.HistoryEnabled = HistoryEnabledBox.IsChecked == true;
+        _draft.HistoryMoveUsedToTop = HistoryUseOrderBox.SelectedIndex != 1;
         _draft.MaxItems = (int)(MaxItemsBox.Value ?? 500);
         _draft.MaxTotalMegabytes = (int)(MaxTotalBox.Value ?? 200);
         _draft.MaxImageMegabytes = (int)(MaxImageBox.Value ?? 20);

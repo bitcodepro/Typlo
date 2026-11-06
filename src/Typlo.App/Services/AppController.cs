@@ -1220,20 +1220,20 @@ public sealed partial class AppController : IDisposable
         if (!ShouldRecord(raw)) return;
         try
         {
-            if (raw.Files is { Count: > 0 } files) Store.Add(ClipContent.FromFiles(files, raw.SourceApp));
-            else if (raw.Text is not null) Store.Add(ClipContent.FromText(raw.Text, raw.SourceApp, raw.Html, raw.Rtf));
-            else if (raw.Image is { } bytes && bytes.LongLength <= Settings.MaxImageBytes * 4) _images.Post(raw);
+            if (raw.Files is { Count: > 0 } files) Store.AddCaptured(ClipContent.FromFiles(files, raw.SourceApp), Store.ReserveCapture());
+            else if (raw.Text is not null) Store.AddCaptured(ClipContent.FromText(raw.Text, raw.SourceApp, raw.Html, raw.Rtf), Store.ReserveCapture());
+            else if (raw.Image is { } bytes && bytes.LongLength <= Settings.MaxImageBytes * 4) _images.Post(raw, Store.ReserveCapture());
         }
         catch (Exception e) { Log.Error("Storing clip failed", e); }
     }
 
-    private void StoreCapturedImage(RawClip raw, DateTimeOffset capturedAt)
+    private void StoreCapturedImage(RawClip raw, ClipCaptureOrder order)
     {
         if (!ShouldRecord(raw) || raw.Image is not { } bytes) return;
         try
         {
             var img = ImageCodec.Encode(bytes, raw.ImageIsPng);
-            if (ShouldRecord(raw)) Store.Add(ClipContent.FromImage(img.Png, img.Thumbnail, img.Width, img.Height, raw.SourceApp), capturedAt);
+            if (ShouldRecord(raw)) Store.AddCaptured(ClipContent.FromImage(img.Png, img.Thumbnail, img.Width, img.Height, raw.SourceApp), order);
         }
         finally { if (bytes.Length >= 1024 * 1024) _memory.Schedule(); }
     }
@@ -1248,16 +1248,23 @@ public sealed partial class AppController : IDisposable
     /// Puts a history item on the clipboard, focuses the previous window and pastes it.
     /// <paramref name="plainText"/> drops the HTML/RTF formatting of text items.
     /// </summary>
-    public async Task PasteAsync(long id, nint targetWindow, bool paste = true, bool plainText = false)
+    public Task PasteAsync(long id, nint targetWindow, bool paste = true, bool plainText = false)
     {
-        if (_remote is not null) { await _remote.CallAsync(new("paste", id, (long)targetWindow, plainText, paste ? "paste" : "copy")); return; }
+        if (_remote is not null) return _remote.CallAsync(new("paste", id, (long)targetWindow, plainText, paste ? "paste" : "copy"));
+        return PasteHistoryAsync(id, targetWindow, paste, plainText);
+    }
+    private async Task PasteHistoryAsync(long? requestedId, nint targetWindow, bool paste, bool plainText = false)
+    {
         var largeImage = false;
         // One clipboard operation at a time: a paste must not interleave with a conversion or snippet.
         if (!await _convertGate.WaitAsync(TimeSpan.FromSeconds(3))) return;
         try
         {
+            var selected = requestedId ?? Store.PreviousId();
+            if (selected is not { } id) return;
             var content = Store.Get(id);
             if (content is null) return;
+            void MarkUsed() => Store.Touch(id, PublishedSettings.HistoryMoveUsedToTop);
             largeImage = content.ImagePng is { Length: >= 1024 * 1024 };
             LastTransform = null;
             _recentTyping.Consume(Interlocked.Read(ref _typingVersion));
@@ -1278,8 +1285,7 @@ public sealed partial class AppController : IDisposable
                     WriteOwnClipboard(() => _platform.SetImage(content.ImagePng!, bgra, w, h));
                     break;
             }
-            Store.Touch(id);
-            if (!paste || targetWindow == 0 || !_platform.Capabilities.SimulateInput) return;
+            if (!paste || targetWindow == 0 || !_platform.Capabilities.SimulateInput) { MarkUsed(); return; }
             _platform.ActivateWindow(targetWindow);
             await _platform.WaitForModifiersReleasedAsync(TimeSpan.FromMilliseconds(500));
             await Task.Delay(60);
@@ -1293,6 +1299,7 @@ public sealed partial class AppController : IDisposable
                 }
             }
             _platform.SendPaste();
+            MarkUsed();
         }
         catch (ClipboardTakenException) { Log.Info("Paste stopped: another app changed the clipboard meanwhile"); }
         catch (Exception e) { Log.Error("Paste failed", e); }
@@ -1303,8 +1310,7 @@ public sealed partial class AppController : IDisposable
     public Task PastePreviousAsync(nint targetWindow, bool paste = true)
     {
         if (_remote is not null) return _remote.CallAsync(new("paste-previous", Window: (long)targetWindow, Flag: paste));
-        var previous = Store.PreviousId();
-        return previous is null ? Task.CompletedTask : PasteAsync(previous.Value, targetWindow, paste);
+        return PasteHistoryAsync(null, targetWindow, paste);
     }
 
     private void UpdateRemoteState(RuntimeReply reply)

@@ -66,16 +66,17 @@ public sealed partial class RuntimeChannelTests
         using var release = new ManualResetEventSlim();
         var processed = new List<byte>();
         var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using (var worker = new LatestImageWorker((raw, _) =>
+        using (var worker = new LatestImageWorker((raw, order) =>
         {
             var value = raw.Image![0]; processed.Add(value);
+            Assert.Equal(value, order.Sequence);
             if (value == 1) { entered.Set(); release.Wait(TimeSpan.FromSeconds(5)); }
             if (value == 100) finished.TrySetResult();
         }))
         {
-            worker.Post(new RawClip(null, [1], true, "fixture"));
+            worker.Post(new RawClip(null, [1], true, "fixture"), new(1, DateTimeOffset.UtcNow));
             Assert.True(entered.Wait(TimeSpan.FromSeconds(3)));
-            for (byte value = 2; value <= 100; value++) worker.Post(new RawClip(null, [value], true, "fixture"));
+            for (byte value = 2; value <= 100; value++) worker.Post(new RawClip(null, [value], true, "fixture"), new(value, DateTimeOffset.UtcNow));
             release.Set();
             await finished.Task.WaitAsync(TimeSpan.FromSeconds(3));
         }

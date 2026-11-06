@@ -103,6 +103,7 @@ public sealed class AppSettings
     public string ScreenshotSaveHotkey { get; set; } = "Ctrl+Alt+Shift+F";
 
     public bool HistoryEnabled { get; set; } = true;
+    public bool HistoryMoveUsedToTop { get; set; } = true;
     public int MaxItems { get; set; } = 500;
     public int MaxTotalMegabytes { get; set; } = 200;
     public int MaxImageMegabytes { get; set; } = 20;

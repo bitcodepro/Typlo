@@ -36,6 +36,10 @@ public static partial class Loc
 
     private static readonly Dictionary<string, (string En, string Ru, string Uk)> Strings = new()
     {
+        ["settings.historyUseOrder"] = ("After using a history item", "После использования записи истории", "Після використання запису історії"),
+        ["settings.historyMoveUsed"] = ("Move to the top", "Поднимать в начало", "Піднімати на початок"),
+        ["settings.historyKeepUsed"] = ("Keep its position", "Оставлять на месте", "Залишати на місці"),
+        ["settings.historyOrderHint"] = ("Applies to pasting and copying from history. Pinned items stay above unpinned items.", "Для вставки и копирования из истории. Закреплённые записи остаются выше остальных.", "Для вставлення й копіювання з історії. Закріплені записи залишаються вище за інші."),
         // Tray
         ["tray.history"] = ("Clipboard history", "История буфера", "Історія буфера"),
         ["tray.settings"] = ("Settings…", "Настройки…", "Налаштування…"),
