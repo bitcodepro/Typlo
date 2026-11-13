@@ -60,7 +60,7 @@ Pass `--import-history` the original Typlo folder containing `history.db` and `h
 
 ## Windows releases
 
-The Windows workflow tests and lints every PR, push to `main`, and manual run, then builds both x64 executables with a static CRT. Packaging checks PE runtime dependencies, includes resources and dependency licenses, runs `tools/windows-ui-smoke.ps1`, and verifies the updater ZIP with the release executable. A failed gate prevents artifact upload and publication. Artifacts are retained for seven days; PRs receive artifacts only.
+The Windows workflow tests and lints every PR, push to `main`, and manual run, then builds both x64 executables with a static CRT. Packaging checks PE runtime dependencies, includes resources and dependency licenses, runs `tools/windows-ui-smoke.ps1`, and verifies the updater ZIP with the release executable. A failed gate prevents artifact upload and publication. Hosted CI runs UI smoke in a temporary copy with a SHA256-pinned Mesa llvmpipe driver (`tools/windows-software-gl-smoke.ps1`); this test driver is excluded from release archives. Artifacts are retained for seven days; PRs receive artifacts only.
 
 After merge, a `main` push publishes a new Cargo version through a draft release after checking uploaded SHA256 digests. Set the same plain `X.Y.Z` version in `Cargo.toml` and the application's `Cargo.lock` entry before the next release. The first version is `0.1.0`, with tag `v0.1.0`; preview suffixes are unsupported. The portable binary uses `CARGO_PKG_VERSION`, and the updater asset is exactly `typlo-rust-win-x64.zip`.
 

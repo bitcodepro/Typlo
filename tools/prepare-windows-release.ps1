@@ -1,3 +1,4 @@
+param([switch]$SoftwareOpenGL)
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/release-common.ps1"
 $root = Split-Path $PSScriptRoot
@@ -62,7 +63,11 @@ foreach ($package in ($metadata.packages | Sort-Object name,version)) {
 $noticeDirectory = Join-Path $payload 'Third-party-licenses/dependencies'
 [void](New-Item -ItemType Directory -Path $noticeDirectory -Force)
 [IO.File]::WriteAllText((Join-Path $noticeDirectory 'LICENSE.txt'), $notices.ToString())
-& "$PSScriptRoot/windows-ui-smoke.ps1" -Resident "$payload/typlo-rust.exe" -Settings "$payload/typlo-settings.exe"
+if ($SoftwareOpenGL) {
+    & "$PSScriptRoot/windows-software-gl-smoke.ps1" -PayloadDirectory $payload
+} else {
+    & "$PSScriptRoot/windows-ui-smoke.ps1" -Resident "$payload/typlo-rust.exe" -Settings "$payload/typlo-settings.exe"
+}
 & "$PSScriptRoot/package-windows.ps1" -PayloadDirectory $payload -OutputDirectory $output -Version $version
 $assets = @(Get-ChildItem $output -File | Sort-Object Name | ForEach-Object {
     @{ name = $_.Name; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }

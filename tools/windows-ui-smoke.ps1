@@ -184,4 +184,20 @@ public static class TyploUiSmoke {
 '@
 Add-Type -TypeDefinition $native
 $profile = Join-Path ([System.IO.Path]::GetTempPath()) ('TyploUiSmoke-' + [guid]::NewGuid().ToString('N'))
-[TyploUiSmoke]::Verify((Resolve-Path -LiteralPath $Resident).Path, (Resolve-Path -LiteralPath $Settings).Path, $profile)
+try {
+    [TyploUiSmoke]::Verify((Resolve-Path -LiteralPath $Resident).Path, (Resolve-Path -LiteralPath $Settings).Path, $profile)
+} catch {
+    # Preserve renderer/startup errors when the private-desktop process exits.
+    $failure = $_
+    $spec = [Diagnostics.ProcessStartInfo]::new((Resolve-Path -LiteralPath $Settings).Path)
+    $spec.UseShellExecute = $false
+    $spec.RedirectStandardError = $true
+    foreach ($argument in @('--ui-probe', "$profile/diagnostic.txt", $profile, "$profile/diagnostic.png")) { $spec.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::Start($spec)
+    try {
+        $errorRead = $process.StandardError.ReadToEndAsync()
+        if (!$process.WaitForExit(15000)) { $process.Kill($true) }
+        Write-Host ($errorRead.GetAwaiter().GetResult())
+    } finally { $process.Dispose() }
+    throw $failure
+}
