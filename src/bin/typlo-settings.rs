@@ -174,6 +174,57 @@ enum Page {
     Update,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+enum SettingsTab {
+    #[default]
+    General,
+    Text,
+    Shortcuts,
+    Applications,
+    Clipboard,
+    Snippets,
+    #[cfg(windows)]
+    Capture,
+    Dictionary,
+    Backup,
+    #[cfg(windows)]
+    Diagnostics,
+}
+
+impl SettingsTab {
+    const ALL: &'static [Self] = &[
+        Self::General,
+        Self::Text,
+        Self::Shortcuts,
+        Self::Applications,
+        Self::Clipboard,
+        Self::Snippets,
+        #[cfg(windows)]
+        Self::Capture,
+        Self::Dictionary,
+        Self::Backup,
+        #[cfg(windows)]
+        Self::Diagnostics,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::General => tr("rust.tabs.general", "General"),
+            Self::Text => tr("rust.tabs.text", "Text correction"),
+            Self::Shortcuts => tr("rust.tabs.shortcuts", "Shortcuts"),
+            Self::Applications => tr("rust.tabs.apps", "Apps"),
+            Self::Clipboard => tr("rust.tabs.clipboard", "Clipboard"),
+            Self::Snippets => tr("rust.tabs.snippets", "Snippets"),
+            #[cfg(windows)]
+            Self::Capture => tr("rust.tabs.capture", "Screenshots"),
+            Self::Dictionary => tr("rust.tabs.dictionary", "Dictionary"),
+            Self::Backup => tr("rust.tabs.backup", "Backup"),
+            #[cfg(windows)]
+            Self::Diagnostics => tr("rust.tabs.diagnostics", "Diagnostics"),
+        }
+    }
+}
+
 impl Page {
     fn title(self) -> &'static str {
         match self {
@@ -198,6 +249,7 @@ impl Page {
 
 struct Workspace {
     page: Page,
+    tab: SettingsTab,
     settings: Config,
     profile: PathBuf,
     status: String,
@@ -346,11 +398,12 @@ impl Workspace {
         #[cfg(windows)]
         let lan_clipboard = typlo_rust::lan_clipboard_view::Settings::new(&profile);
         #[cfg(windows)]
-        let diagnostics = matches!(page, Page::Tools | Page::Dictionary)
+        let diagnostics = (page == Page::Tools)
             .then(|| typlo_rust::windows::resident_diagnostics(&profile, false))
             .and_then(Result::ok);
         Self {
             page,
+            tab: SettingsTab::default(),
             settings,
             profile,
             status,
@@ -381,7 +434,7 @@ impl Workspace {
     fn navigate(&mut self, ui: &Ui, page: Page) {
         self.page = page;
         #[cfg(windows)]
-        if matches!(page, Page::Tools | Page::Dictionary) {
+        if page == Page::Tools {
             self.refresh_diagnostics(false);
         }
         ui.ctx()
@@ -452,7 +505,67 @@ impl Workspace {
                 "Keep the display on while Typlo is running.",
             ),
         );
-        self.backup(ui, false);
+    }
+
+    fn settings_tabs(&mut self, ui: &mut Ui) {
+        let previous = self.tab;
+        Frame::new()
+            .inner_margin(Margin::symmetric(20, 8))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for &tab in SettingsTab::ALL {
+                        ui.selectable_value(&mut self.tab, tab, tab.label());
+                    }
+                });
+            });
+        #[cfg(windows)]
+        if self.tab == SettingsTab::Diagnostics && self.tab != previous {
+            self.refresh_diagnostics(false);
+        }
+        if self.tab != previous {
+            ui.ctx().request_repaint();
+        }
+        ui.separator();
+    }
+
+    fn settings_content(&mut self, ui: &mut Ui) {
+        match self.tab {
+            SettingsTab::General => self.preferences(ui),
+            SettingsTab::Text => {
+                heading(
+                    ui,
+                    tr("settings.layoutHeader", "Fix the layout of selected text"),
+                );
+                self.conversion_options(ui);
+            }
+            SettingsTab::Shortcuts => {
+                heading(ui, tr("shortcuts.global", "Global shortcuts"));
+                self.hotkeys(ui);
+                if ui
+                    .button(tr("rust.tabs.shortcutReference", "Shortcut reference"))
+                    .clicked()
+                {
+                    self.navigate(ui, Page::Shortcuts);
+                }
+            }
+            SettingsTab::Applications => self.applications(ui),
+            SettingsTab::Clipboard => {
+                self.clipboard_history(ui);
+                #[cfg(windows)]
+                self.lan_clipboard.show(ui, &self.profile);
+            }
+            SettingsTab::Snippets => self.snippets(ui),
+            #[cfg(windows)]
+            SettingsTab::Capture => self.screenshots(ui),
+            SettingsTab::Dictionary => self.dictionary.show(ui),
+            SettingsTab::Backup => {
+                heading(ui, tr("rust.tabs.settingsFile", "Settings file"));
+                self.backup(ui, false);
+                self.backup(ui, true);
+            }
+            #[cfg(windows)]
+            SettingsTab::Diagnostics => self.diagnostics_content(ui),
+        }
     }
 
     fn conversion_options(&mut self, ui: &mut Ui) {
@@ -1284,6 +1397,13 @@ impl Workspace {
         ui.collapsing(
             tr("auto.diagnostics", "Auto-correction diagnostics"),
             |ui| {
+                hint(
+                    ui,
+                    tr(
+                        "rust.tabs.diagnosticsHint",
+                        "Recent attempts after a space. A dash means no replacement was made.",
+                    ),
+                );
                 ui.horizontal_wrapped(|ui| {
                     if ui.button(tr("manage.refresh", "Refresh")).clicked() {
                         self.refresh_diagnostics(false);
@@ -1336,6 +1456,32 @@ impl Workspace {
                         }
                     });
             },
+        );
+    }
+
+    #[cfg(windows)]
+    fn diagnostics_content(&mut self, ui: &mut Ui) {
+        heading(ui, tr("tools.measurements", "Measurements"));
+        self.performance_report(ui);
+        self.automatic_diagnostics(ui);
+        if ui
+            .button(tr("rust.logs.open", "Open diagnostic logs"))
+            .clicked()
+            && let Err(error) = open_diagnostic_logs(&self.profile)
+        {
+            self.status = error.to_string();
+        }
+        hint(
+            ui,
+            tr(
+                "tools.noProbe",
+                "Run the field compatibility shortcut in the target editor to inspect it.",
+            ),
+        );
+        shortcut_row(
+            ui,
+            &self.settings.hotkeys.tools,
+            tr("tools.title", "Typlo tools"),
         );
     }
 
@@ -1450,62 +1596,39 @@ impl eframe::App for Workspace {
                         });
                 });
         }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            Frame::new().inner_margin(Margin::symmetric(20, 6)).show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                match page {
-                    Page::Settings => {
-                        #[cfg(windows)]
-                        self.lan_clipboard.show(ui, &self.profile);
-                        self.preferences(ui);
-                        heading(ui, tr("settings.layoutHeader", "Fix the layout of selected text"));
-                        hint(ui, tr("settings.layoutHint", "Select text and press a shortcut."));
-                        if ui.button(tr("shortcuts.menu", "Keyboard shortcuts…")).clicked() {
-                            self.navigate(ui, Page::Shortcuts);
+        if page == Page::Settings {
+            self.settings_tabs(ui);
+        }
+        let scroll = egui::ScrollArea::vertical();
+        let scroll = if page == Page::Settings {
+            scroll.id_salt(self.tab)
+        } else {
+            scroll.id_salt(page.title())
+        };
+        scroll.show(ui, |ui| {
+            Frame::new()
+                .inner_margin(Margin::symmetric(20, 6))
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    match page {
+                        Page::Settings => self.settings_content(ui),
+                        Page::Shortcuts => self.shortcuts(ui),
+                        Page::Dictionary => self.dictionary.show(ui),
+                        Page::Tools => {
+                            #[cfg(windows)]
+                            self.diagnostics_content(ui);
+                            self.backup(ui, true);
                         }
-                        self.hotkeys(ui);
-                        self.conversion_options(ui);
-                        self.applications(ui);
-                        #[cfg(windows)]
-                        self.screenshots(ui);
-                        #[cfg(not(windows))]
-                        {
-                            heading(ui, tr("capture.title", "Screenshots"));
-                            hint(ui, tr("capture.windowsOnly", "Screenshots are available on Windows."));
-                        }
-                        self.clipboard_history(ui);
-                        self.snippets(ui);
-                    }
-                    Page::Shortcuts => self.shortcuts(ui),
-                    Page::Dictionary => {
-                        self.dictionary.show(ui);
-                        #[cfg(windows)]
-                        self.automatic_diagnostics(ui);
-                    }
-                    Page::Tools => {
-                        heading(ui, tr("tools.measurements", "Measurements"));
-                        #[cfg(windows)]
-                        self.performance_report(ui);
-                        #[cfg(windows)]
-                        if ui.button(tr("rust.logs.open", "Open diagnostic logs")).clicked()
-                            && let Err(error) = open_diagnostic_logs(&self.profile)
-                        {
-                            self.status = error.to_string();
-                        }
-                        hint(ui, tr("tools.noProbe", "Run the field compatibility shortcut in the target editor to inspect it."));
-                        shortcut_row(ui, &self.settings.hotkeys.tools, tr("tools.title", "Typlo tools"));
-                        self.backup(ui, true);
-                    }
-                    Page::Update => {
-                        heading(ui, Page::Update.title());
-                        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-                        self.updates.show(ui);
-                        if ui.button(tr("update.close", "Close")).clicked() {
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        Page::Update => {
+                            heading(ui, Page::Update.title());
+                            #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+                            self.updates.show(ui);
+                            if ui.button(tr("update.close", "Close")).clicked() {
+                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
                         }
                     }
-                }
-            });
+                });
         });
         if self
             .report

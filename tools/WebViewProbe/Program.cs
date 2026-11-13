@@ -35,6 +35,10 @@ internal static class Program
                     """<textarea aria-label="Typlo test editor" id="editor">🙂 ghbdtn TAIL</textarea>""",
                     """const e = document.getElementById('editor'); e.focus(); e.setSelectionRange(3, 9); e.value.slice(e.selectionStart, e.selectionEnd)""",
                     "🙂 привет TAIL");
+                await CheckAsync(browser, window.Handle, args[0], "single-line input",
+                    """<input aria-label="Typlo test editor" id="editor" value="🙂 ghbdtn TAIL">""",
+                    """const e = document.getElementById('editor'); e.focus(); e.setSelectionRange(3, 9); e.value.slice(e.selectionStart, e.selectionEnd)""",
+                    "🙂 привет TAIL");
                 await CheckAsync(browser, window.Handle, args[0], "textarea multiline",
                     "<textarea aria-label=\"Typlo test editor\" id=\"editor\">🙂 ghbdtn TAIL\nsecond line</textarea>",
                     """const e = document.getElementById('editor'); e.focus(); e.setSelectionRange(3, 9); e.value.slice(e.selectionStart, e.selectionEnd)""",
@@ -142,7 +146,7 @@ internal static class Program
         if (await browser.ExecuteScriptAsync(select) != "\"ghbdtn\"")
             throw new InvalidOperationException($"Fixture did not select its sample in {kind}");
         await RunAsync(window, executable, kind, "--uia-snapshot", "ghbdtn");
-        var readSelection = kind.StartsWith("textarea", StringComparison.Ordinal)
+        var readSelection = kind != "contenteditable"
             ? "(() => { const field = document.getElementById('editor'); return [field.selectionStart, field.selectionEnd]; })()"
             : "(() => { const s = getSelection(); return [Math.min(s.anchorOffset, s.focusOffset), Math.max(s.anchorOffset, s.focusOffset)]; })()";
         foreach (var (start, end) in new[] { ("0", "2"), ("3", "3"), ("3", "9") })
