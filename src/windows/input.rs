@@ -645,7 +645,7 @@ impl HookState {
         }
         if vk == VK_CAPITAL {
             if down && !self.caps_down {
-                self.caps = !self.caps;
+                self.caps.toggle();
             }
             self.caps_down = down;
         }

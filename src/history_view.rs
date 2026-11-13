@@ -614,7 +614,7 @@ impl Window {
                 )
                 .clicked()
             {
-                self.received_only = !self.received_only;
+                self.received_only.toggle();
                 self.filter(ui.ctx());
                 self.select_first_match();
                 if self.received_only {
