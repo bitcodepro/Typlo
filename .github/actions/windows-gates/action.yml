@@ -37,14 +37,14 @@ runs:
     - name: Release tooling tests
       shell: pwsh
       run: |
-        ./tools/test-release-tools.ps1
-        ./tools/test-release-queue.ps1
+        & "$env:RUNNER_TEMP/release-controller/test-release-tools.ps1"
+        & "$env:RUNNER_TEMP/release-controller/test-release-queue.ps1"
     - name: Package, runtime dependencies and UI smoke
       shell: pwsh
-      run: ./tools/prepare-windows-release.ps1 -SoftwareOpenGL
+      run: '& "$env:RUNNER_TEMP/release-controller/prepare-windows-release.ps1" -Root $env:GITHUB_WORKSPACE -SoftwareOpenGL'
     - name: Verify ZIP format and manual migration layout
       shell: pwsh
-      run: ./tools/test-windows-package-compat.ps1 -ArchivePath ./dist/typlo-win-x64.zip
+      run: '& "$env:RUNNER_TEMP/release-controller/test-windows-package-compat.ps1" -Root $env:GITHUB_WORKSPACE -ArchivePath ./dist/typlo-win-x64.zip'
     - uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
       if: github.ref == 'refs/heads/main' && steps.build-cache.outputs.cache-hit != 'true'
       with:

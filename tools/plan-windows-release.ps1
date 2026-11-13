@@ -19,7 +19,12 @@ if (!$record) {
 $record | Add-Member -NotePropertyName controller -NotePropertyValue $controller
 $record | ConvertTo-Json -Depth 10 | Set-Content "$env:RUNNER_TEMP/release-plan.json" -Encoding utf8
 Copy-Item $PSScriptRoot "$env:RUNNER_TEMP/release-controller" -Recurse
+Copy-Item "$root/.github/actions/windows-gates" "$env:RUNNER_TEMP/release-action" -Recurse
 [void](Queue-Git $root @('checkout', '--detach', $record.commit))
+# A queued source can predate this infrastructure (another PR merged while it
+# was under review). Keep the reviewed controller recipe outside source history.
+if (Test-Path "$root/.release-ci-action") { throw 'Source collides with reserved controller action directory' }
+Copy-Item "$env:RUNNER_TEMP/release-action" "$root/.release-ci-action" -Recurse
 "pending=true" >> $env:GITHUB_OUTPUT
 "commit=$($record.commit)" >> $env:GITHUB_OUTPUT
 "version=$($record.version)" >> $env:GITHUB_OUTPUT

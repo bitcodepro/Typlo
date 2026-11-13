@@ -1,9 +1,8 @@
-param([switch]$SoftwareOpenGL)
+param([switch]$SoftwareOpenGL, [string]$Root = (Split-Path $PSScriptRoot))
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/release-common.ps1"
-$root = Split-Path $PSScriptRoot
 Set-Location $root
-$version = Get-ReleaseVersion
+$version = Get-ReleaseVersion -Root $root
 $commit = git rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'git failed' }
 $payload = Join-Path $root "package/Typlo-$version"

@@ -24,6 +24,13 @@ uses exact-commit mode; it cannot adopt a same-version release from another SHA.
 The original publisher's verified same-version no-op remains available outside
 the queue. Historical v0.1.0 manifest support remains unchanged.
 
+The reviewed controller tools/action are copied outside the checkout before
+switching to a queued source. Gates build application code and read Cargo inputs
+from the versioned source, while packaging/publishing use the recorded controller
+recipe. This also handles another PR merging between the bootstrap and this
+infrastructure PR, whose source tree does not yet contain the new scripts. The
+temporary action directory is reserved and collisions fail closed.
+
 ## Durable queue and ordering
 
 The durable queue is first-parent main history after the anchor, with verified

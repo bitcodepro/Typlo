@@ -28,7 +28,7 @@ jobs:
       - name: Preview the versioned release checkout (no remote writes)
         shell: pwsh
         run: ./tools/plan-windows-release.ps1 -Preview
-      - uses: ./.github/actions/windows-gates
+      - uses: ./.release-ci-action
       - name: Record verified preview inputs
         shell: pwsh
         run: '& "$env:RUNNER_TEMP/release-controller/finish-windows-release.ps1"'
@@ -71,7 +71,7 @@ jobs:
         if: steps.plan.outputs.owned_draft == 'true' && steps.candidate.outputs.cache-hit != 'true'
         shell: pwsh
         run: throw 'Original candidate cache unavailable. Recover the original verified artifact before retrying; draft assets will not be replaced.'
-      - uses: ./.github/actions/windows-gates
+      - uses: ./.release-ci-action
         if: steps.plan.outputs.pending == 'true' && steps.candidate.outputs.cache-hit != 'true'
       - name: Validate canonical bytes and inputs
         if: steps.plan.outputs.pending == 'true'
