@@ -47,6 +47,16 @@ function Read-ReleaseManifest {
     if ($line -cne "$digest  $archiveName") { throw 'Updater checksum mismatch' }
     return $manifest
 }
+function Test-ReleaseDescriptor {
+    param($Manifest, [string]$Commit, [string]$Version)
+    if ($Manifest.commit -cne $Commit -or $Manifest.version -cne $Version -or $Manifest.schema_version -ne 1 -or $Manifest.platform -cne 'windows-x64') { throw 'Release descriptor identity mismatch' }
+    $names = @('typlo-win-x64.zip', 'typlo-win-x64.zip.sha256')
+    if (@($Manifest.assets).Count -ne 2) { throw 'Unexpected descriptor assets' }
+    foreach ($name in $names) {
+        $entry = @($Manifest.assets | Where-Object { $_.name -ceq $name })
+        if ($entry.Count -ne 1 -or $entry[0].sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid descriptor asset/hash' }
+    }
+}
 function Test-UploadedAssets {
     param($Assets, $Manifest, [string]$ManifestDigest)
     $expected = @($Manifest.assets) + @([pscustomobject]@{ name = 'release-manifest.json'; sha256 = $ManifestDigest })

@@ -167,6 +167,9 @@ $laterManifest.commit = 'b' * 40
 $laterManifest | ConvertTo-Json -Depth 5 | Set-Content $currentManifestPath
 & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit ('b' * 40)
 if ($global:TyploReleaseMock.writes -or $global:TyploReleaseMock.release.assets.Count -ne 3) { throw 'Same-version new-commit no-op mutated historical assets' }
+# Queue publication must never turn a different source into this legacy no-op.
+Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit ('b' * 40) -ExactCommit }
+if ($global:TyploReleaseMock.writes) { throw 'Exact queue mode mutated another source release' }
 $publishedManifestText = Get-Content "$publishedDirectory/release-manifest.json" -Raw
 $publishedManifest = $publishedManifestText | ConvertFrom-Json
 $publishedManifest.commit = 'c' * 40

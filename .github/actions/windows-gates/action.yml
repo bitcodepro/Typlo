@@ -1,0 +1,56 @@
+name: Windows release gates
+description: Test the exact versioned checkout and produce one verified Windows ZIP.
+runs:
+  using: composite
+  steps:
+    - name: Toolchain
+      shell: pwsh
+      run: |
+        rustup show
+        if ($LASTEXITCODE -ne 0) { throw 'rustup failed' }
+        $version = rustc -V
+        if ($LASTEXITCODE -ne 0) { throw 'rustc failed' }
+        "RUST_CACHE_VERSION=$version" >> $env:GITHUB_ENV
+    - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      id: build-cache
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-x64-static-${{ env.RUST_CACHE_VERSION }}-${{ hashFiles('Cargo.lock') }}
+    - name: Test
+      shell: pwsh
+      run: |
+        cargo test --locked --all-features
+        if ($LASTEXITCODE -ne 0) { throw 'cargo test failed' }
+    - name: Clippy
+      shell: pwsh
+      run: |
+        cargo clippy --locked --all-targets --all-features -- -D warnings
+        if ($LASTEXITCODE -ne 0) { throw 'cargo clippy failed' }
+    - name: Release build
+      shell: pwsh
+      run: |
+        cargo build --release --locked --features gui --bins
+        if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
+    - name: Release tooling tests
+      shell: pwsh
+      run: |
+        & "$env:RUNNER_TEMP/release-controller/test-release-tools.ps1"
+        & "$env:RUNNER_TEMP/release-controller/test-release-queue.ps1"
+        & "$env:RUNNER_TEMP/release-controller/test-workflow-artifact-retry.ps1" -WorkflowPath "$env:RUNNER_TEMP/release-controller/windows-workflow.yml"
+    - name: Package, runtime dependencies and UI smoke
+      shell: pwsh
+      run: '& "$env:RUNNER_TEMP/release-controller/prepare-windows-release.ps1" -Root $env:GITHUB_WORKSPACE -SoftwareOpenGL'
+    - name: Verify ZIP format and manual migration layout
+      shell: pwsh
+      run: '& "$env:RUNNER_TEMP/release-controller/test-windows-package-compat.ps1" -Root $env:GITHUB_WORKSPACE -ArchivePath ./dist/typlo-win-x64.zip'
+    - uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      if: github.ref == 'refs/heads/main' && steps.build-cache.outputs.cache-hit != 'true'
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ steps.build-cache.outputs.cache-primary-key }}
