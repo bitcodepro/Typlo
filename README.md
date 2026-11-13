@@ -1,64 +1,64 @@
 # Typlo2.0
 
-Typlo2.0 — версия Typlo на Rust. Исходная версия на C# находится в отдельном репозитории. [Typlo на C#](https://github.com/bitcodepro/Typlo)
+Typlo2.0 is the Rust version of Typlo. [Original C# project](https://github.com/bitcodepro/Typlo)
 
-На Windows запустите `typlo-rust.exe` и откройте настройки из области уведомлений. Держите `typlo-settings.exe` и папку `resources` рядом с фоновым exe. Профиль хранится в `%LOCALAPPDATA%\Typlo-Rust`. Новый профиль открывается на английском. Язык можно выбрать в Settings → Interface language.
+On Windows, run `typlo-rust.exe` and open Settings from the notification area. Keep `typlo-settings.exe` and the `resources` folder beside the executable. The profile lives in `%LOCALAPPDATA%\Typlo-Rust`. New profiles use English. Change it under **Settings → Interface language**.
 
-| Сочетание Windows | Действие |
+| Windows shortcut | Action |
 |---|---|
-| Ctrl+Shift | Переключить раскладку с учётом правила приложения |
-| Ctrl+Alt+Shift+Space | Преобразовать выделение или последние набранные символы |
-| Ctrl+Alt+Shift+Z | Отменить последнюю подтверждённую замену |
-| Ctrl+Alt+Shift+L | Выбрать вариант раскладки по словарю |
-| Ctrl+Shift+K | Добавить выделенное слово в словарь |
-| Ctrl+Shift+L | Исправить орфографию в выделении |
-| Ctrl+Shift+P | Просмотреть исправления и настроить личные пары |
-| Ctrl+Shift+V | История буфера. Повторное нажатие вставляет предыдущий элемент |
-| Win+Shift+S | Снимок области в буфер |
-| Ctrl+Alt+Shift+F | Снимок области с открытием редактора для сохранения JPEG |
-| Ctrl+Shift+[ | Редактор последнего снимка |
-| Alt + перетаскивание левой кнопкой мыши | Рисовать поверх экрана |
+| Ctrl+Shift | Switch layouts using the current app's rule |
+| Ctrl+Alt+Shift+Space | Convert the selection or recently typed characters |
+| Ctrl+Alt+Shift+Z | Undo the last confirmed conversion |
+| Ctrl+Alt+Shift+L | Choose a dictionary-backed layout correction |
+| Ctrl+Shift+K | Add the selected word to the dictionary |
+| Ctrl+Shift+L | Fix spelling in the selection |
+| Ctrl+Shift+P | Review spelling and manage personal correction pairs |
+| Ctrl+Shift+V | Open clipboard history. Press it again to paste the previous item |
+| Win+Shift+S | Copy a screenshot of an area to the clipboard |
+| Ctrl+Alt+Shift+F | Capture an area and open the editor to save it as JPEG |
+| Ctrl+Shift+[ | Open the latest screenshot in the editor |
+| Alt + left mouse drag | Draw on the screen |
 
-Во время рисования клавиши `1`–`9` выбирают толщину от 2 до 40 пикселей. Колесо меняет её по одному пикселю за шаг. Обычная прокрутка или `Ctrl+Alt+Shift+X` очищает рисунок. В настройке **Рисование по экрану** можно изменить сочетание или отключить его.
+While drawing, `1`–`9` select widths from 2 to 40 pixels. The mouse wheel adjusts the width by one pixel per step. Scrolling outside a stroke or pressing `Ctrl+Alt+Shift+X` clears the drawing. **Draw on screen** lets you change or disable the gesture.
 
-Автозамена после пробела, сниппеты и цикл раскладок настраиваются по приложениям. Все сочетания можно изменить в настройках. Если одновременно запущен Typlo на .NET, приложения могут конкурировать за одинаковые сочетания.
+Configure autocorrection after Space, snippets, and layout cycling per app. Change shortcuts in Settings. If you run the C# and Rust versions together, they may compete for the same shortcuts.
 
-На Windows буквы, цифры верхнего ряда и знаки в сочетаниях Typlo обозначают физические позиции US QWERTY. Например, назначенное `Ctrl+N` срабатывает на той же клавише после смены раскладки.
+On Windows, letters, top-row digits, and supported punctuation in shortcuts refer to physical US QWERTY positions. For example, an assigned `Ctrl+N` uses the same key after you switch layouts.
 
-В Windows история открывается рядом с курсором. В меню записи доступны просмотр, вставка, закрепление и удаление. Для форматированного текста есть вставка без оформления, для изображений — распознавание текста. `Ctrl+O` открывает просмотр, `Ctrl+T` распознаёт изображение, а `Ctrl+1`–`Ctrl+9` вставляют запись по номеру.
+Clipboard history opens near the cursor. Its item menu supports viewing, pasting, pinning, and deleting items. You can paste formatted content as plain text and extract text from images. `Ctrl+O` opens the viewer, `Ctrl+T` runs OCR, and `Ctrl+1`–`Ctrl+9` paste items by position.
 
-## Передача записи на другой Windows-компьютер
+## Share clipboard items between Windows computers
 
-1. На обоих компьютерах откройте **Settings → Clipboard history → Clipboard sharing on the local network**. Скопируйте код каждого компьютера, введите его на другом и нажмите **Pair computer**.
-2. Откройте историю через `Ctrl+Shift+V` и нажмите ↗ рядом с нужной записью. Typlo передаёт текст, картинки, файлы и папки. На другом компьютере запись появляется в истории, а файлы доступны через **Open received files**.
+1. On both computers, open **Settings → Clipboard history → Clipboard sharing on the local network**. Copy each computer's code into the other computer and select **Pair computer**.
+2. Open history with `Ctrl+Shift+V` and select ↗ beside the item. Typlo2.0 can send text, images, files, and folders. The receiving computer adds the item to its history. Use **Open received files** to find saved files.
 
-Компьютеры находят друг друга в одной локальной сети. Если поиск блокируется, укажите частный IPv4-адрес вручную. Для приёма разрешите Typlo в брандмауэре Windows для частной сети. Передача использует TCP 49237, поиск — UDP 49237. Можно сопрячь один компьютер. Лимит передачи файлов — 512 МиБ. Сохранённые файлы остаются на диске, пока вы их не удалите.
+The computers discover each other on the local network. If discovery fails, enter a private IPv4 address manually. Allow Typlo2.0 through Windows Firewall on private networks to receive items. Transfers use TCP 49237 and discovery uses UDP 49237. You can pair with one other computer. The file transfer limit is 512 MiB. Received files stay on disk until deleted.
 
-Кнопка **Check connection** показывает результат поиска, подключения и проверки сертификата. В истории фильтр **Received files** показывает полученные файлы и папки, размер сохранённых данных и кнопку открытия папки.
+**Check connection** reports discovery, connectivity, and certificate verification. The **Received files** history filter shows received files and folders, their stored size, and a button to open the folder.
 
-Начиная с Preview 27, отправка показывает прогресс. **Cancel** останавливает передачу, а **Retry** проверяет её ID на втором компьютере перед повтором. Для этого установите Preview 27 на обоих компьютерах. В меню полученного файла есть **Show in File Explorer** и **Delete entry and files…**. Обычное удаление записи оставляет файлы на диске.
+Starting with Preview 27, transfers show progress. **Cancel** stops the transfer and **Retry** checks the transfer ID on the receiving computer before resending. Both computers need Preview 27 or later for this behavior. A received file's menu offers **Show in File Explorer** and **Delete entry and files…**. Deleting only the history entry leaves the files on disk.
 
-Откройте меню сниппетов через `Ctrl+Alt+Shift+S` и начните печатать название или триггер. Название задаётся в настройках сниппета. Звёздочка или `Ctrl+P` закрепляет выбранный сниппет вверху меню.
+Open the snippet menu with `Ctrl+Alt+Shift+S` and type a name or trigger. Set the name in the snippet settings. Select the star or press `Ctrl+P` to pin the selected snippet at the top.
 
-Для шаблона вроде `Привет, {name}! Задача {ticket} готова.{cursor}` включите **Запрашивать параметры** в настройках сниппета. Выберите его из меню, заполните значения и нажмите Enter в последнем поле. Для буквального `{name}` напишите `{{name}}`.
+For a template such as `Hello, {name}! Ticket {ticket} is ready.{cursor}`, enable **Ask for parameters** in the snippet settings. Select the snippet from the menu, fill in the values, and press Enter in the last field. Write `{{name}}` to insert literal `{name}`.
 
-## Linux и macOS
+## Linux and macOS
 
-Запустите `./typlo-rust` и откройте настройки через меню Typlo или командой `./typlo-rust --settings`. Историю можно открыть командой `./typlo-rust --history`. Держите `typlo-settings` и `resources` рядом с фоновым бинарником.
+Run `./typlo-rust` and open Settings from the tray menu or with `./typlo-rust --settings`. Use `./typlo-rust --history` to open history. Keep `typlo-settings` and `resources` beside the main binary.
 
-- В Linux/X11 нужны `libxkbcommon-x11` и AT-SPI для замены текста. Для истории нужен `xclip`. `Ctrl+Shift+V` открывает историю, повторное нажатие вставляет предыдущий элемент в исходное окно. В GNOME раскладки переключает расширение из `integrations/gnome`.
-- В Wayland нужен `wl-clipboard`. Назначьте команды в настройках композитора. `./typlo-rust --convert ru` меняет текст в буфере после того, как вы скопировали его.
-- На macOS требуются разрешения Accessibility и Input Monitoring.
+- On Linux/X11, text replacement requires `libxkbcommon-x11` and AT-SPI. Clipboard history requires `xclip`. `Ctrl+Shift+V` opens history. Press it again to paste the previous item in the original window. For GNOME layout switching, install the extension in `integrations/gnome`.
+- On Wayland, install `wl-clipboard` and assign commands in your compositor settings. Copy text before running `./typlo-rust --convert ru` to convert it in the clipboard.
+- On macOS, grant Accessibility and Input Monitoring permissions.
 
-## Перенос истории Windows
+## Import Windows clipboard history
 
-Передайте `--import-history` путь к каталогу исходного Typlo, где находятся `history.db` и `history.key`. В переносной версии это обычно папка `data` рядом с исходным exe.
+Pass `--import-history` the original Typlo folder containing `history.db` and `history.key`. In a portable installation this is usually the `data` folder beside the original executable.
 
 ```powershell
-.\typlo-rust.exe --import-history "C:\путь\к\Typlo\data"
+.\typlo-rust.exe --import-history "C:\path\to\Typlo\data"
 ```
 
-## Сборка
+## Build
 
 ```powershell
 cargo test --locked --all-features
@@ -66,6 +66,6 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo build --release --locked --features gui --bins
 ```
 
-Для выпуска Windows соберите оба EXE в одной папке с ресурсами. Скрипт `tools/package-windows.ps1` создаёт переносимый ZIP и `typlo-rust-win-x64.zip` для обновлятора, проверяя второй архив кодом самого Typlo перед выдачей. Скрипт `tools/measure-full-windows.ps1` измеряет штатные процессы C# и Rust с включённой историей и отдельно измеряет Rust с сопряжением. Для нативных Edit и RichEdit команда `typlo-rust.exe --measure-native 100` выводит задержки подтверждённой замены и Undo.
+For a Windows package, put both executables in the same folder with the resources. `tools/package-windows.ps1` creates the portable ZIP and the updater archive `typlo-rust-win-x64.zip`, then verifies the updater archive with the application itself. `tools/measure-full-windows.ps1` measures the C# and Rust background processes with history enabled and includes a separate run with Rust clipboard sharing paired. Run `typlo-rust.exe --measure-native 100` for confirmed replacement and Undo timings in native Edit and RichEdit fields.
 
-[Состояние переноса и ограничения](docs/parity.md). [Предварительные замеры ранней сборки](docs/comparison.md).
+[Migration status and known differences](docs/parity.md) · [Early benchmark results](docs/comparison.md)

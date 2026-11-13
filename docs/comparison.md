@@ -1,30 +1,30 @@
-# Typlo v0.5.14 и Typlo Rust
+# Typlo v0.5.14 and Typlo2.0
 
-Замеры проведены 11 ноября 2026 года на Windows x64, Intel Core i7-10750H. База — опубликованный Typlo v0.5.14, SHA-256 архива проверен. GitHub main и релиз соответствовали коммиту a0b9a89269cc61f89ac86144e8a497decd634d4d. Дерево исходников для .NET-бенчмарка совпадает с деревом этого коммита. [Релиз](https://github.com/bitcodepro/Typlo/releases/tag/v0.5.14)
+Measurements were taken on November 11, 2026, on Windows x64 with an Intel Core i7-10750H. The baseline was the published Typlo v0.5.14 archive, verified by SHA-256. The GitHub main branch and release both pointed to commit `a0b9a89269cc61f89ac86144e8a497decd634d4d`. The source tree used for the .NET benchmark matched that commit. [Baseline release](https://github.com/bitcodepro/Typlo/releases/tag/v0.5.14)
 
-Медианы пяти запусков. Фоновый процесс каждого приложения запускался с отдельным тестовым профилем. Память измерялась через 600 мс после сигнала готовности. Настройки GUI в замере памяти закрыты.
+The table shows medians from five runs. Each background process used a separate test profile. Memory was sampled 600 ms after the ready signal, with Settings closed.
 
-| Метрика | Typlo .NET Native AOT | Typlo Rust |
+| Metric | Typlo .NET Native AOT | Typlo Rust |
 |---|---:|---:|
-| 700 000 преобразований с заданной исходной раскладкой | 1036,78 мс | 227,84 мс |
-| Старт фонового процесса до сигнала готовности | 103,95 мс | 36,69 мс |
-| Рабочий набор фонового процесса | 24,68 МиБ | 7,26 МиБ |
-| Private bytes фонового процесса | 8,14 МиБ | 1,24 МиБ |
+| 700,000 conversions with a known source layout | 1,036.78 ms | 227.84 ms |
+| Background startup to ready signal | 103.95 ms | 36.69 ms |
+| Background working set | 24.68 MiB | 7.26 MiB |
+| Background private bytes | 8.14 MiB | 1.24 MiB |
 
-Оба движка вернули контрольную сумму `5e6ddbe5bf5d5e3e` на семи одинаковых входах. Для измеряемого преобразования Rust использует предварительно построенную таблицу и один проход при известной исходной раскладке. Время срабатывания горячей клавиши в реальном стороннем редакторе в этот замер не входит.
+Both engines returned checksum `5e6ddbe5bf5d5e3e` on the same seven inputs. The Rust implementation used a precomputed table and a single pass with a known source layout. These timings cover the conversion engine. Shortcut-to-result latency in external editors requires a separate benchmark.
 
-Резидентные показатели описывают разные по функциональности тестовые процессы. Rust-проба не регистрирует лоток и глобальные сочетания. Диагностическая проба Typlo отключает мониторинг буфера и проверку обновлений, но запускает службы текущего приложения. Эти цифры служат исходной точкой для повторного сравнения после переноса всех функций.
+The background probes ran with different sets of features enabled. The Rust probe omitted the tray and global shortcut registration. The C# diagnostic probe disabled clipboard monitoring and update checks while starting the application's other services. Use these figures as an early baseline.
 
-Фоновый exe Rust занимает 443 904 байта. GUI exe занимает 5 857 792 байта. Проверены первый кадр egui/Glow, Clippy, восемь модульных тестов и замена с Undo между отдельными процессами в стандартном поле Windows Edit.
+At the time of the benchmark, the Rust background executable was 443,904 bytes and the GUI executable was 5,857,792 bytes. The run also verified the first egui/Glow frame, Clippy, eight unit tests, and cross-process conversion and Undo in a standard Windows Edit field.
 
-## Воспроизведение
+## Reproduce the benchmark
 
-Соберите оба движка в Release. Для C# бенчмарка укажите путь к исходникам Typlo на проверяемом коммите:
+Build both engines in release mode. Point the C# benchmark to a checkout of the baseline commit.
 
 ```powershell
 cargo build --release --locked --bin typlo-rust
-dotnet publish .\tools\TyploBench\TyploBench.csproj -c Release -r win-x64 -p:PublishAot=true -p:TyploSource="E:\Temp\polymarket-hl-strategy\Typlo" -o .\target\dotnet-bench
-.\tools\compare-windows.ps1 -TyploReleaseExe "C:\путь\к\распакованному\Typlo.exe" -DotNetBenchmarkExe .\target\dotnet-bench\TyploBench.exe
+dotnet publish .\tools\TyploBench\TyploBench.csproj -c Release -r win-x64 -p:PublishAot=true -p:TyploSource="C:\path\to\Typlo" -o .\target\dotnet-bench
+.\tools\compare-windows.ps1 -TyploReleaseExe "C:\path\to\Typlo.exe" -DotNetBenchmarkExe .\target\dotnet-bench\TyploBench.exe
 ```
 
-Первичные замеры сохранены в [engine.csv](engine.csv) и [resident.csv](resident.csv).
+[Engine samples](engine.csv) · [Background process samples](resident.csv)

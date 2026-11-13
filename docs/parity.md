@@ -1,42 +1,42 @@
-# Сверка Typlo Rust с Typlo v0.5.14
+# Typlo2.0 migration status
 
-База сравнения — C#-версия v0.5.14 на коммите `a0b9a89269cc61f89ac86144e8a497decd634d4d`. Сверены справочник, окна Avalonia, обработка буфера, платформенные адаптеры и настройки. [Справочник исходной версии](https://github.com/bitcodepro/Typlo/blob/a0b9a89269cc61f89ac86144e8a497decd634d4d/docs/reference.md)
+The baseline is Typlo C# v0.5.14 at commit `a0b9a89269cc61f89ac86144e8a497decd634d4d`. The review covered the reference guide, Avalonia windows, clipboard handling, platform adapters, and settings. [Original reference guide](https://github.com/bitcodepro/Typlo/blob/a0b9a89269cc61f89ac86144e8a497decd634d4d/docs/reference.md)
 
-| Область | Состояние переноса |
+| Area | Status |
 | --- | --- |
-| Буфер Windows | История принимает обычный и форматированный текст, файлы и изображения. Учитываются пауза, исключения, лимиты, закрепление и настройка порядка. PNG сохраняется с оригинальными пикселями, DIB преобразуется в PNG до применения лимита хранилища. Превью зашифровано отдельно, оригинал нужен при полном просмотре, вставке и OCR. На живом Windows проверены копирование из редактора Typlo, превью, полный просмотр, вставка в Paint и захват из Paint. |
-| Буфер Linux/macOS | Добавлены миниатюры в списке, полный просмотр текста и файлов, поиск по полному содержимому, меню записи и горячие клавиши по образцу C#. В Settings есть размер истории и очистка с сохранением закреплённых. В Linux добавлено локальное распознавание через установленный Tesseract. В Linux/X11 проверены запись изображения, шифрование, отрисовка миниатюры и вставка предыдущего текста в GTK. Для OCR нужен прогон с реальным Tesseract. |
-| Раскладки, автозамена и сниппеты | Системные раскладки, порядок цикла, привязки по процессам, словари на восьми языках, личные слова и исключения, многострочные сниппеты с `{cursor}`, выбор словарного варианта и Undo. В Windows ранее проверены ручная замена и Undo в Copilot и файле VS Code. В Linux/X11 проверены профили, автозамена, многострочные поля и форматирование, выбор варианта и Undo. Поведение Teams, быстрый физический набор в Copilot и прерывания фокуса требуют дополнительных живых сценариев. |
-| Орфография и инструменты | Режимы автоматического исправления выделения и проверки с окном, Hunspell для EN/RU/UK, личные пары и управление словарём. В Windows есть проверка поля, диагностика автозамены и фазовые замеры. На Linux/X11 проверено тихое исправление выделения. Платформенные отчёты и проверки поля различаются. |
-| Снимки и редактор | Как в C# v0.5.14, захват области поддерживается на Windows. Доступны прямоугольник, произвольная область, отдельные команды в буфер и в JPEG, последний снимок и инструменты рисования. В Rust качество JPEG 100% и яркая рамка без затемнения по предыдущим запросам. Для проверки нескольких мониторов нужен отдельный живой прогон. |
-| Настройки и обновление | Разделы настроек следуют исходному порядку. Интерфейс по умолчанию английский, тема System. Обычный JSON читается и экспортируется в формате C#; полный бэкап Rust также импортирует архив C#. Импорт истории Windows читает старую зашифрованную базу в контексте того же пользователя. Для сквозной проверки обновления через GitHub нужен опубликованный Rust-пакет. |
+| Windows clipboard | History accepts plain and formatted text, files, and images. It respects pauses, exclusions, limits, pins, and sort preferences. PNGs retain their original pixels. DIBs are converted to PNG before applying the storage limit. Thumbnails are encrypted separately. The original is loaded for full-size viewing, pasting, or OCR. Windows checks covered capture from the Typlo editor and Paint, thumbnails, full-size viewing, and pasting into Paint. |
+| Linux and macOS clipboard | History includes thumbnails, full text and file views, full-content search, item menus, and shortcuts. Settings include history size and clearing while keeping pinned items. Linux OCR uses the installed Tesseract executable. Linux/X11 checks covered image storage, encryption, thumbnails, and pasting the previous item into GTK. OCR still needs a live Tesseract test. |
+| Layouts, autocorrection, and snippets | Supports system layouts, cycle order, per-process rules, dictionaries for eight languages, personal words and exclusions, multiline snippets with `{cursor}`, dictionary-backed choices, and Undo. Windows checks covered manual conversion and Undo in VS Code Copilot and its file editor. Linux/X11 checks covered profiles, autocorrection, multiline fields and formatting, layout choices, and Undo. Teams, fast physical typing in Copilot, and interruptions during focus changes need further live checks. |
+| Spelling and tools | Supports automatic spelling fixes and a review window, Hunspell dictionaries for English, Russian, and Ukrainian, personal correction pairs, and dictionary management. Windows includes field compatibility checks, autocorrection diagnostics, and timing by phase. Linux/X11 checks covered silent correction of a selection. Reporting and field checks vary by platform. |
+| Screenshots and editor | Windows supports rectangular and free-form capture, separate clipboard and JPEG actions, reopening the latest screenshot, and drawing tools. JPEGs use 100% quality, and capture displays a bright outline without dimming the screen. Multi-monitor capture still needs a live test. |
+| Settings and updates | Settings follow the original order and default to English and the system theme. Settings JSON supports the C# format in both directions, and full Rust backups can import C# archives. Windows history import can read the old encrypted database in the same user's context. End-to-end GitHub updates require a published Rust package. |
 
-## Оставшиеся различия
+## Known differences
 
-- Проверка macOS arm64 выполняется кросс-сборкой. Для запуска, вставки в исходное окно и проверки поведения меню нужен Mac.
-- Окно истории Unix использует размеры и структуру исходного окна. Привязка к курсору и рабочей области как в Windows, вид меню и некоторые детали оформления требуют отдельных проверок на рабочих столах Linux/macOS. На Wayland доступность глобальных сочетаний и вставки зависит от композитора.
-- Пиксельная сверка всех экранов Avalonia и egui не проведена. Сверка выше относится к функциям и сценариям, перечисленным в таблице.
+- macOS arm64 is cross-compiled. Startup, pasting into the original window, and menu behavior still need verification on a Mac.
+- The Unix history window follows the original dimensions and structure. Cursor placement, work-area handling, and menu appearance need further checks on Linux and macOS. Global shortcuts and pasting on Wayland depend on the compositor.
+- The review covered the functions and scenarios above. A pixel-by-pixel comparison of all Avalonia and egui screens is still pending.
 
-[Ранние сравнительные замеры](comparison.md).
+[Early benchmark results](comparison.md)
 
-## Проверка замены в Windows перед выпуском
+## Windows replacement checks before release
 
-Используйте пустой несохранённый документ или черновик. В Teams и Copilot не отправляйте тестовый текст. Для ручной команды используйте перевод в русский, а для Undo — сочетание Typlo.
+Use a blank unsaved document or draft. Keep test text in the Teams or Copilot draft. For manual conversion, use the shortcut that converts to Russian. For Undo, use the Typlo2.0 shortcut.
 
-| Поле | Что проверить |
+| Field | Checks |
 |---|---|
-| Notepad++ в UTF-8 | Две автозамены подряд, ручная замена последнего слова и многострочного выделения, Undo. После отказа в ANSI повторить команду в UTF-8. |
-| VS Code, редактор файла и отдельное поле GitHub Copilot | В каждом поле набрать `ghbdtn` и пробел, затем повторить с ручной командой и Undo. Убедиться, что исходное слово заменилось, а пробел и соседний текст сохранились. |
-| Teams | Проверить те же команды в пустом черновике, в том числе быстрый ввод следующего слова и переключение поля после команды. |
-| Chrome, адресная строка и поле поиска на странице | В каждом поле проверить автозамену, ручную замену и Undo до запуска поиска. Адресная строка и поле на странице проверяются отдельно. |
+| Notepad++ in UTF-8 | Run two autocorrections in a row. Convert the last word and a multiline selection manually, then verify Undo. After an expected refusal in ANSI mode, retry in UTF-8. |
+| VS Code file editor and GitHub Copilot input | In both fields, type `ghbdtn` followed by a space. Repeat with manual conversion and Undo. Verify that the original word is replaced and the space and surrounding text remain intact. |
+| Teams | Run the same commands in a blank draft. Include typing the next word quickly and switching fields immediately after issuing the command. |
+| Chrome address bar and on-page search field | Verify autocorrection, manual conversion, and Undo separately in both fields before submitting a search. |
 
-Дополнительно проверьте ручную команду сразу после пробела. Если автозамена ещё не вставила результат, ручная команда должна отменить её. Если Typlo отклонил замену до вставки, следующая команда должна отработать при обычном вводе. В инструментах Typlo сверяйте последние попытки и P50/P95 подтверждённых операций отдельно для каждого типа поля. Стенд WebView2 проверяет диапазоны и сохранение пробела в контролируемом поле.
+Run manual conversion immediately after pressing Space. If autocorrection has not yet inserted the result, the manual command should cancel it. When Typlo2.0 declines an edit before pasting, the next command should still work during normal typing. Use the Tools window to inspect recent attempts and P50/P95 timings for confirmed operations in each field type. The WebView2 fixture verifies ranges and spaces in a controlled field.
 
-### Автоматические проверки перед ручным прогоном
+### Automated checks before manual testing
 
-- `typlo-rust.exe --native-self-test` проверяет нативные поля, защищённые поля и Undo.
-- `typlo-rust.exe --measure-native 200` выдаёт JSON с числом подтверждённых замен, P50 и P95. Стенд проверяет весь текст и каретку, включая автозамену с обычным и неразрывным пробелом.
-- `tools/WebViewProbe` прогоняет автозамену, Undo, выделение с пробелом и повторный Undo в двух вариантах textarea и contenteditable. Он использует диапазоны Typlo через UI Automation, а обрезку пробела при вставке воспроизводит внутри тестового поля.
-- `cargo test --locked --features gui --lib measure_large_clipboard_search -- --ignored --nocapture` сравнивает обход по страницам, холодный проход, повторный поиск и поиск после нового копирования по 1500 зашифрованным записям. Замер не включает задержку интерфейса. Кэш живёт в процессе окна истории и ограничен 2 МиБ. При изменении базы обновляется порядок и повторно используются неизменённые данные.
-- `cargo test --locked --features gui --lib measure_drawing_bounds -- --ignored --nocapture` измеряет границы штрихов и отрисовку изменившейся области в GDI-битмапе. Для проверки физического жеста и масштаба нужен отдельный прогон на двух мониторах.
-- Для длительного прогона без пользовательского буфера задайте `$env:TYPLO_SOAK_SECONDS = '7200'` и запустите `cargo test --locked --features gui --lib paired_history_and_screenshot_soak -- --ignored --nocapture`. Тест использует временные профили и локальный TLS-обмен, по очереди передаёт текст, изображения и файлы, сохраняет и перечитывает снимки. Для замера памяти снимайте working set и private bytes процесса тестов через равные интервалы.
+- `typlo-rust.exe --native-self-test` checks native fields, protected fields, and Undo.
+- `typlo-rust.exe --measure-native 200` emits JSON with the confirmed replacement count and P50/P95 timings. It checks the complete text and caret, including autocorrection with ordinary and non-breaking spaces.
+- `tools/WebViewProbe` exercises autocorrection, Undo, selection with a trailing space, and a second Undo in two textarea variants and a contenteditable field. It uses Typlo2.0's UI Automation ranges and reproduces space trimming inside the test field.
+- `cargo test --locked --features gui --lib measure_large_clipboard_search -- --ignored --nocapture` compares paginated scans, cold searches, repeat searches, and searches after copying a new item across 1,500 encrypted entries. Timings exclude interface latency. The history window keeps a 2 MiB cache and reuses unchanged data while refreshing the order after database changes.
+- `cargo test --locked --features gui --lib measure_drawing_bounds -- --ignored --nocapture` measures stroke bounds and repainting the changed region in a GDI bitmap. Test the physical gesture and scaling separately on two monitors.
+- For an endurance run on temporary profiles, set `$env:TYPLO_SOAK_SECONDS = '7200'` and run `cargo test --locked --features gui --lib paired_history_and_screenshot_soak -- --ignored --nocapture`. The test uses local TLS transfers to send text, images, and files in turn, and saves and reloads screenshots. Sample the test process's working set and private bytes at regular intervals to measure memory.
