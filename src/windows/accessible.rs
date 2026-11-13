@@ -694,19 +694,21 @@ fn run_edit(
         let partial_selection =
             chromium || host.is_some_and(ClipboardHost::reports_partial_selection);
         let document_wrapper = control == UIA_DocumentControlTypeId && partial_selection;
-        // ProseMirror exposes the text and caret through UIA, but selecting a
-        // range through that provider can fail to update the editor selection.
-        let keyboard_selection = (chromium || matches!(host, Some(ClipboardHost::ChatGpt)))
+        // Chromium's text provider can report the caret while failing to apply
+        // a UIA selection in contenteditable. Verify a short keyboard selection
+        // against that same provider before issuing any paste.
+        let keyboard_selection = partial_selection
             && matches!(
                 job.command,
                 Command::Typing { word: Some(_), .. } | Command::Undo
             )
-            && unsafe { element.CurrentClassName() }.is_ok_and(|class| {
-                class
-                    .to_string()
-                    .split_whitespace()
-                    .any(|name| name == "ProseMirror")
-            });
+            && (control == UIA_DocumentControlTypeId
+                || unsafe { element.CurrentClassName() }.is_ok_and(|class| {
+                    class
+                        .to_string()
+                        .split_whitespace()
+                        .any(|name| name == "ProseMirror")
+                }));
         let capture = if is_text_control(control) {
             read_text_pattern(&element)
         } else if is_editor_wrapper(control) && (chromium || has_writable_value(&element)?) {
