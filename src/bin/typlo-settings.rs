@@ -1017,8 +1017,6 @@ impl Workspace {
         }
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         self.history_stats(ui);
-        #[cfg(windows)]
-        self.lan_clipboard.show(ui, &self.profile);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if ui
             .button(tr("settings.openHistory", "Open history"))
@@ -1400,6 +1398,8 @@ impl eframe::App for Workspace {
                 ui.set_min_width(ui.available_width());
                 match page {
                     Page::Settings => {
+                        #[cfg(windows)]
+                        self.lan_clipboard.show(ui, &self.profile);
                         self.preferences(ui);
                         heading(ui, tr("settings.layoutHeader", "Fix the layout of selected text"));
                         hint(ui, tr("settings.layoutHint", "Select text and press a shortcut."));

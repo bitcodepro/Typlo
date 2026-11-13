@@ -29,7 +29,7 @@ Clipboard history opens near the cursor. Its item menu supports viewing, pasting
 
 ## Share clipboard items between Windows computers
 
-1. On both computers, open **Settings → Clipboard history → Clipboard sharing on the local network**. Copy each computer's code into the other computer and select **Pair computer**.
+1. On both computers, open **Clipboard sharing with another computer** at the top of **Settings**. Copy each computer's code into the other computer and select **Pair computer**.
 2. Open history with `Ctrl+Shift+V` and select ↗ beside the item. Typlo2.0 can send text, images, files, and folders. The receiving computer adds the item to its history. Use **Open received files** to find saved files.
 
 The computers discover each other on the local network. If discovery fails, enter a private IPv4 address manually. Allow Typlo2.0 through Windows Firewall on private networks to receive items. Transfers use TCP 49237 and discovery uses UDP 49237. You can pair with one other computer. The file transfer limit is 512 MiB. Received files stay on disk until deleted.

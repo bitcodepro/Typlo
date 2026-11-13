@@ -902,8 +902,9 @@ fn fixture_printable(key: &KBDLLHOOKSTRUCT) -> bool {
         WINDOW.get_or_init(|| std::env::var("TYPLO_TEST_EDITOR_WINDOW").ok()?.parse().ok());
     target.is_some_and(|hwnd| hwnd != 0 && hwnd == unsafe { GetForegroundWindow() } as usize)
         && key.dwExtraInfo == 0
-        && matches!(key.vkCode, 0x20 | 0x41..=0x5a)
-        && system_modifiers() == 0
+        && (is_cycle_modifier(key.vkCode as u16)
+            || (matches!(key.vkCode, 0x20 | 0x41..=0x5a | 0xba..=0xe2)
+                && system_modifiers() == 0))
 }
 
 #[cfg(not(debug_assertions))]

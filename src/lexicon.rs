@@ -247,10 +247,20 @@ impl Vocabulary {
                 continue;
             }
             let score = self.score(personal, &result, target)?;
-            let weak_cyrillic = score >= 110
+            // A dot inside a long word can be a Cyrillic letter on the same key.
+            let misplaced_dot = typed.len() >= 8
+                && typed.split_once('.').is_some_and(|(before, after)| {
+                    !before.is_empty()
+                        && !after.is_empty()
+                        && before
+                            .bytes()
+                            .chain(after.bytes())
+                            .all(|byte| byte.is_ascii_alphabetic())
+                });
+            let weak_cyrillic = score >= if misplaced_dot { 100 } else { 110 }
                 && current == 0
                 && typed.len() >= 4
-                && typed.bytes().all(|byte| byte.is_ascii_alphabetic())
+                && (misplaced_dot || typed.bytes().all(|byte| byte.is_ascii_alphabetic()))
                 && result
                     .chars()
                     .all(|c| ('\u{0400}'..='\u{04ff}').contains(&c));
@@ -421,6 +431,9 @@ mod tests {
         for (typed, source, result, target) in [
             ("ghbdtn", Language::En, "привет", Language::Ru),
             ("rfr", Language::En, "как", Language::Ru),
+            ("yt", Language::En, "не", Language::Ru),
+            ("gjlrk.xbnm", Language::En, "подключить", Language::Ru),
+            ("rjvgm.nth", Language::En, "компьютер", Language::Ru),
             ("yfgbib", Language::En, "напиши", Language::Ru),
             ("nfcrf", Language::En, "таска", Language::Ru),
             ("ыйд", Language::Ru, "sql", Language::En),
@@ -441,6 +454,18 @@ mod tests {
                 "{typed}"
             );
         }
+        assert_eq!(
+            corpus
+                .suggest(
+                    &empty,
+                    "rjvg.nth",
+                    Language::En,
+                    &[Language::En, Language::Ru],
+                    true
+                )
+                .unwrap(),
+            None,
+        );
         assert!(corpus.scores("bonjour").unwrap()[3] > 0);
         assert!(technical("index.ts"));
         assert!(technical("C:\\folder"));

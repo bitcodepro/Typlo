@@ -1799,7 +1799,11 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                     && target.foreground as usize == wparam
                 {
                     editor.expected = Some(target);
-                    let process = process_name(target.pid).unwrap_or_default();
+                    let process = if resident.settings.applications.is_empty() {
+                        String::new()
+                    } else {
+                        process_name(target.pid).unwrap_or_default()
+                    };
                     let cycle = resident.settings.cycle_for(&process);
                     let _ = switch_cycle(&editor, target, cycle, active_language(target));
                 }
@@ -2530,6 +2534,12 @@ fn active_language(target: Target) -> Option<Language> {
 }
 
 fn installed_layouts() -> Vec<HKL> {
+    let mut layouts = loaded_layouts();
+    keyboard_profiles::retain_enabled(&mut layouts);
+    layouts
+}
+
+fn loaded_layouts() -> Vec<HKL> {
     let count = unsafe { GetKeyboardLayoutList(0, null_mut()) };
     if !(1..=128).contains(&count) {
         return Vec::new();
@@ -2538,7 +2548,6 @@ fn installed_layouts() -> Vec<HKL> {
     let actual = unsafe { GetKeyboardLayoutList(count, layouts.as_mut_ptr()) }.max(0) as usize;
     layouts.truncate(actual);
     layouts.retain(|handle| !handle.is_null());
-    keyboard_profiles::retain_enabled(&mut layouts);
     layouts
 }
 
@@ -2660,7 +2669,9 @@ fn switch_cycle(
     cycle: &[Language],
     source: Option<Language>,
 ) -> io::Result<()> {
-    let installed = installed_layouts();
+    // The resident cycle contains the enabled profiles from the last settings
+    // load. Check for unloaded handles without querying input profiles here.
+    let installed = loaded_layouts();
     let available: Vec<_> = cycle
         .iter()
         .copied()
@@ -2674,22 +2685,32 @@ fn switch_cycle(
         [only] => Some(*only),
         _ => layout::next_language(&available, source),
     };
-    if let Some(language) = next
+    if let Some(layout) = next
+        .filter(|language| Some(*language) != source)
+        .and_then(|language| {
+            installed
+                .into_iter()
+                .find(|handle| layout_matches(*handle, language))
+        })
         && editor.target()? == target
     {
-        switch_layout(target, language);
+        post_layout(target, layout);
     }
     Ok(())
 }
 
 fn switch_layout(target: Target, language: Language) {
     if let Some(layout) = installed_layouts()
-        .iter()
-        .find(|layout| layout_matches(**layout, language))
+        .into_iter()
+        .find(|layout| layout_matches(*layout, language))
     {
-        unsafe {
-            PostMessageW(target.edit, WM_INPUTLANGCHANGEREQUEST, 0, *layout as LPARAM);
-        }
+        post_layout(target, layout);
+    }
+}
+
+fn post_layout(target: Target, layout: HKL) {
+    unsafe {
+        PostMessageW(target.edit, WM_INPUTLANGCHANGEREQUEST, 0, layout as LPARAM);
     }
 }
 
