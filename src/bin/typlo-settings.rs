@@ -2073,9 +2073,12 @@ mod layout_tests {
             let mut workspace = Workspace::new(profile.clone(), None, Page::Settings);
             workspace.tab = SettingsTab::Backup;
             let context = egui::Context::default();
-            let render = |workspace: &mut Workspace, events| {
+            let mut time = 0.;
+            let mut render = |workspace: &mut Workspace, events| {
+                time += 0.25;
                 context.run_ui(
                     egui::RawInput {
+                        time: Some(time),
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
                             egui::vec2(800., 640.),
