@@ -694,7 +694,7 @@ impl Window {
                         .x
                         + 12.;
                     let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.query)
+                        history_search_input(&mut self.query)
                             .id(field)
                             .desired_width(
                                 (ui.available_width() - count_width - ui.spacing().item_spacing.x)
@@ -890,7 +890,11 @@ impl Window {
         let mut offsets = Vec::with_capacity(count + 1);
         offsets.push(0.);
         for entry in self.items() {
-            let height = if entry.kind == Kind::Image { 145. } else { 92. };
+            let height = match entry.kind {
+                Kind::Text => 46.,
+                Kind::Files => 65.,
+                Kind::Image => 145.,
+            };
             offsets.push(offsets.last().copied().unwrap_or_default() + height);
         }
         let mut choice = None;
@@ -936,7 +940,7 @@ impl Window {
                     );
                 }
                 let x = row.left() + 8.;
-                let y = row.top() + 7.;
+                let y = row.top() + if entry.kind == Kind::Text { 5. } else { 7. };
                 if index < 9 {
                     let badge = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(20., 20.));
                     ui.painter().rect_filled(badge, 5, palette.badge);
@@ -1052,7 +1056,12 @@ impl Window {
                                 })
                                 .collect::<Vec<_>>()
                                 .join("\n");
-                            ui.label(RichText::new(label).size(13.5));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(label.replace('\n', " · ")).size(13.5),
+                                )
+                                .truncate(),
+                            );
                             if count == 1 {
                                 tr("history.file", "File").to_owned()
                             } else {
@@ -1064,10 +1073,8 @@ impl Window {
                                 .preview
                                 .lines()
                                 .map(str::trim_end)
-                                .filter(|line| !line.is_empty())
-                                .take(4)
-                                .collect::<Vec<_>>()
-                                .join("\n")
+                                .find(|line| !line.is_empty())
+                                .unwrap_or_default()
                                 .replace('\t', " ");
                             let mut galley = egui::text::LayoutJob::simple(
                                 text,
@@ -1075,7 +1082,7 @@ impl Window {
                                 ui.visuals().text_color(),
                                 ui.available_width(),
                             );
-                            galley.wrap.max_rows = 4;
+                            galley.wrap.max_rows = 1;
                             ui.label(galley);
                             size
                         }
@@ -1103,7 +1110,10 @@ impl Window {
                     .flatten()
                     .collect::<Vec<_>>()
                     .join("  ·  ");
-                    ui.label(RichText::new(meta).size(11.).color(palette.muted));
+                    ui.add(
+                        egui::Label::new(RichText::new(meta).size(11.).color(palette.muted))
+                            .truncate(),
+                    );
                 });
                 response.context_menu(|menu| {
                     let formatted = if entry.kind == Kind::Text {
@@ -1859,9 +1869,48 @@ fn popup_position(cursor: POINT, area: RECT, width: i32, height: i32) -> [i32; 2
     ]
 }
 
+fn history_search_input(query: &mut String) -> egui::TextEdit<'_> {
+    // Enter belongs to the selected history row, even while search has focus.
+    egui::TextEdit::singleline(query).return_key(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focused_search_leaves_both_paste_shortcuts_for_history() {
+        use egui::{Event, Key, Modifiers, RawInput};
+
+        let ctx = egui::Context::default();
+        let mut query = String::from("fixture");
+        let field = egui::Id::new("history-search-test");
+        let _ = ctx.run_ui(RawInput::default(), |ui| {
+            ui.add(history_search_input(&mut query).id(field))
+                .request_focus();
+        });
+        for modifiers in [Modifiers::NONE, Modifiers::SHIFT] {
+            let input = RawInput {
+                modifiers,
+                events: vec![Event::Key {
+                    key: Key::Enter,
+                    physical_key: Some(Key::Enter),
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                assert!(
+                    ui.add(history_search_input(&mut query).id(field))
+                        .has_focus()
+                );
+                assert!(ui.input_mut(|input| input.consume_key(modifiers, Key::Enter)));
+            });
+        }
+        assert_eq!(query, "fixture");
+    }
 
     fn search_limits() -> Limits {
         Limits {

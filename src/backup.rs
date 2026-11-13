@@ -273,13 +273,21 @@ mod tests {
             "layouts": ["win:04090409", "win:04190419"],
             "layoutHotkeys": [{"layoutId": "win:04190419", "hotkey": "Ctrl+Alt+Shift+2"}],
             "applicationLayouts": [{"processName": "Code", "layouts": ["win:04090409"], "autoCorrection": false}],
-            "snippets": [{"trigger": ";hello", "text": "Hello\n{cursor}"}],
-            "maxItems": 321, "screenshotShape": 1,
+            "snippets": [
+                {"trigger": ";hello", "text": "Hello\n{cursor}"},
+                {"trigger": "жруддщ", "text": "Another snippet"}
+            ],
+            "maxItems": 321, "screenshotShape": 1, "screenshotEditorAfterCopy": true,
         })).unwrap();
         std::fs::write(&source, payload).unwrap();
         let imported = Backup::read(&source).unwrap();
         assert!(imported.settings_only());
-        let settings = imported.restore(&profile).unwrap();
+        let mut settings = imported.restore(&profile).unwrap();
+        assert_eq!(settings.snippets.len(), 2);
+        settings.snippets[1].name = "Named snippet".into();
+        settings.snippets[1].text = "Hello {name}\n{cursor}".into();
+        settings.snippets[1].parameters = true;
+        config::save(&profile, &settings).unwrap();
         assert_eq!(settings.ui_theme, config::UiTheme::System);
         assert_eq!(settings.history_items, 321);
         assert_eq!(settings.applications[0].auto_correct, Some(false));
@@ -302,7 +310,26 @@ mod tests {
         assert_eq!(json["layoutHotkeys"][0]["layoutId"], "win:04190419");
         assert_eq!(json["spellingCorrections"][0]["correction"], "hello");
         let round_trip = Backup::read(&export).unwrap().restore(&profile).unwrap();
-        assert_eq!(round_trip.snippets[0].text, "Hello\n{cursor}");
+        assert_eq!(
+            serde_json::to_value(&round_trip.snippets).unwrap(),
+            serde_json::to_value(&settings.snippets).unwrap()
+        );
         assert_eq!(round_trip.capture_shape, config::CaptureShape::Free);
+        assert!(round_trip.capture_editor_after_copy);
+
+        let full = folder.path().join("full.typlo");
+        Backup::export(&profile, &full).unwrap();
+        let restored_profile = folder.path().join("restored");
+        let restored = Backup::read(&full)
+            .unwrap()
+            .restore(&restored_profile)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored).unwrap(),
+            serde_json::to_value(&round_trip).unwrap()
+        );
+        let restored_dictionary = Dictionary::new(&restored_profile);
+        assert!(restored_dictionary.contains("typlofixture", "en").unwrap());
+        assert!(restored_dictionary.is_excluded("github").unwrap());
     }
 }

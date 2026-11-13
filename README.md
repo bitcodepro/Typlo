@@ -42,6 +42,8 @@ Open the snippet menu with `Ctrl+Alt+Shift+S` and type a name or trigger. Set th
 
 For a template such as `Hello, {name}! Ticket {ticket} is ready.{cursor}`, enable **Ask for parameters** in the snippet settings. Select the snippet from the menu, fill in the values, and press Enter in the last field. Write `{{name}}` to insert literal `{name}`.
 
+Use **Settings → Import settings** to load a C# settings JSON or a Typlo2.0 export. **Export settings** saves settings, snippets, and spelling correction pairs as JSON. Use **Backup** in **Typlo tools** to also include personal dictionary words and autocorrection exceptions.
+
 ## Linux and macOS
 
 Run `./typlo-rust` and open Settings from the tray menu or with `./typlo-rust --settings`. Use `./typlo-rust --history` to open history. Keep `typlo-settings` and `resources` beside the main binary.

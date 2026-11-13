@@ -965,6 +965,13 @@ impl Workspace {
                     ui.selectable_value(&mut self.settings.capture_shape, value, shape(value));
                 }
             });
+        ui.checkbox(
+            &mut self.settings.capture_editor_after_copy,
+            tr(
+                "capture.editorAfterCopy",
+                "Open the editor after copying a screenshot",
+            ),
+        );
         ui.horizontal(|ui| {
             for (label, mode) in [
                 (tr("capture.copy", "Copy screenshot"), "clipboard"),
@@ -1173,7 +1180,12 @@ impl Workspace {
         if let Some(backup) = &self.pending_backup {
             let (snippets, words, exclusions, pairs) = backup.summary();
             let summary = if backup.settings_only() {
-                format!("{}: {snippets}", tr("settings.snippets", "Snippets"))
+                tr(
+                    "rust.backup.settingsSummary",
+                    "Snippets: {0} · Correction pairs: {1}",
+                )
+                .replace("{0}", &snippets.to_string())
+                .replace("{1}", &pairs.to_string())
             } else {
                 tr(
                     "rust.backup.summary",
@@ -1690,7 +1702,7 @@ fn edit_hotkey(ui: &mut Ui, id: impl std::hash::Hash, shortcut: &mut String) -> 
 #[cfg(windows)]
 fn settings_file(save: bool, full: bool) -> std::io::Result<Option<PathBuf>> {
     if full {
-        choose_file(save, "Typlo-backup", "typlo", None)
+        choose_file(save, "Typlo-backup", "typlo", (!save).then_some("json"))
     } else {
         choose_file(save, "typlo-settings", "json", (!save).then_some("typlo"))
     }

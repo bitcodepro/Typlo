@@ -1,6 +1,9 @@
 use crate::layout::{self, Language};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, io};
+use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
+    io,
+};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Snippet {
@@ -151,6 +154,8 @@ impl Snippets {
 
     pub fn compile_for(snippets: &[Snippet], layouts: &[Language]) -> io::Result<Self> {
         let mut compiled = Self::default();
+        let mut exact = HashSet::new();
+        let mut translated = HashMap::new();
         for snippet in snippets {
             let trigger = snippet.trigger.trim();
             if !(2..=64).contains(&trigger.len())
@@ -169,7 +174,6 @@ impl Snippets {
                 .filter(|language| language.convertible())
                 .map(|target| layout::convert(trigger, source, target, true).to_lowercase())
                 .collect();
-            aliases.push(trigger.to_lowercase());
             aliases.sort_unstable();
             aliases.dedup();
             let template = if snippet.parameter_names()?.is_empty() {
@@ -177,13 +181,29 @@ impl Snippets {
             } else {
                 None
             };
-            for alias in aliases {
-                compiled.lengths.push(alias.len());
-                if compiled.entries.insert(alias, template.clone()).is_some() {
-                    return Err(invalid("Snippet triggers overlap across keyboard layouts"));
+            let literal = trigger.to_lowercase();
+            if !exact.insert(literal.clone()) {
+                return Err(invalid("Duplicate snippet trigger"));
+            }
+            compiled.entries.insert(literal.clone(), template.clone());
+            for alias in aliases.into_iter().filter(|alias| *alias != literal) {
+                match translated.entry(alias) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(template.clone());
+                    }
+                    Entry::Occupied(mut entry) => {
+                        entry.insert(None);
+                    }
                 }
             }
         }
+        // Explicit triggers win. An ambiguous generated alias cannot choose a snippet.
+        for (alias, template) in translated {
+            compiled.entries.entry(alias).or_insert(template);
+        }
+        compiled
+            .lengths
+            .extend(compiled.entries.keys().map(String::len));
         compiled.lengths.sort_unstable_by(|a, b| b.cmp(a));
         compiled.lengths.dedup();
         Ok(compiled)
@@ -273,5 +293,28 @@ mod tests {
         let (trigger, template) = compiled.matches("go ЖФВ").unwrap();
         assert_eq!(trigger, "ЖФВ");
         assert_eq!(template.text, "address");
+    }
+
+    #[test]
+    fn explicit_triggers_win_over_layout_aliases() {
+        let snippets = [
+            Snippet {
+                trigger: "ad".into(),
+                text: "Latin".into(),
+                ..Default::default()
+            },
+            Snippet {
+                trigger: "фв".into(),
+                text: "Cyrillic".into(),
+                ..Default::default()
+            },
+        ];
+        for mut ordered in [snippets.clone(), snippets] {
+            let compiled = Snippets::compile(&ordered).unwrap();
+            assert_eq!(compiled.matches("ad").unwrap().1.text, "Latin");
+            assert_eq!(compiled.matches("фв").unwrap().1.text, "Cyrillic");
+            ordered[1].trigger = "AD".into();
+            assert!(Snippets::compile(&ordered).is_err());
+        }
     }
 }

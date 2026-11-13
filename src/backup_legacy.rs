@@ -92,6 +92,7 @@ const SETTINGS_FIELDS: &[(&str, &str)] = &[
     ("snippetsEnabled", "snippets_enabled"),
     ("autoCorrectEnabled", "auto_correct"),
     ("snippets", "snippets"),
+    ("screenshotEditorAfterCopy", "capture_editor_after_copy"),
     ("excludedApps", "history_excluded_apps"),
     ("historyEnabled", "history_enabled"),
     ("historyMoveUsedToTop", "history_move_to_top"),
@@ -104,6 +105,9 @@ const SETTINGS_FIELDS: &[(&str, &str)] = &[
     ("drawingShortcut", "drawing_shortcut"),
 ];
 const HOTKEY_FIELDS: &[(&str, &str)] = &[
+    ("englishHotkey", "english"),
+    ("russianHotkey", "russian"),
+    ("ukrainianHotkey", "ukrainian"),
     ("snippetMenuHotkey", "snippet_menu"),
     ("clearDrawingHotkey", "clear_drawing"),
     ("toggleHotkey", "convert"),
@@ -138,6 +142,9 @@ pub(super) fn convert_settings(old: &Value) -> io::Result<(Config, Pairs)> {
         return Err(invalid("Unknown Typlo settings version"));
     }
     let mut migrated = select_fields(old, SETTINGS_FIELDS);
+    if migrated["snippets"].is_null() {
+        migrated.as_object_mut().unwrap().remove("snippets");
+    }
     let layouts = parse_layouts(&old["layouts"])?;
     let layouts = if layouts.is_empty() {
         config::available_layouts()
@@ -187,6 +194,25 @@ pub(super) fn convert_settings(old: &Value) -> io::Result<(Config, Pairs)> {
         })
         .collect::<io::Result<_>>()?;
     let mut settings: Config = serde_json::from_value(migrated).map_err(io::Error::other)?;
+    #[cfg(windows)]
+    if old.get("snippetMenuHotkey").is_none() {
+        use crate::hotkeys::Chord;
+        let picker = Chord::parse(&settings.hotkeys.snippet_menu);
+        if HOTKEY_FIELDS
+            .iter()
+            .filter(|(key, _)| *key != "snippetMenuHotkey")
+            .filter_map(|(key, _)| old[*key].as_str())
+            .chain(
+                settings
+                    .layout_hotkeys
+                    .iter()
+                    .map(|item| item.hotkey.as_str()),
+            )
+            .any(|shortcut| picker.is_some() && Chord::parse(shortcut) == picker)
+        {
+            settings.hotkeys.snippet_menu.clear();
+        }
+    }
     settings.history_items = settings.history_items.clamp(1, 10_000);
     settings.history_total_mib = settings.history_total_mib.clamp(1, 4096);
     settings.history_image_mib = settings.history_image_mib.clamp(1, 128);
