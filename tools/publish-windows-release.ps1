@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory)][string]$Repository,
-    [Parameter(Mandatory)][ValidatePattern('^[a-f0-9]{40}$')][string]$Commit
+    [Parameter(Mandatory)][ValidatePattern('^[a-f0-9]{40}$')][string]$Commit,
+    [string]$Root = (Split-Path $PSScriptRoot),
+    [switch]$ExactCommit
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/release-common.ps1"
@@ -14,9 +16,9 @@ function Get-RemoteRelease {
     param([long]$Id)
     return (Invoke-GitHub @('api', "repos/$Repository/releases/$Id") | ConvertFrom-Json)
 }
-$version = Get-ReleaseVersion
+$version = Get-ReleaseVersion -Root $Root
 $tag = "v$version"
-$directory = Join-Path (Split-Path $PSScriptRoot) 'dist'
+$directory = Join-Path $Root 'dist'
 $manifest = Read-ReleaseManifest -Directory $directory -Commit $Commit -Version $version
 $pages = Invoke-GitHub @('api', '--paginate', '--slurp', "repos/$Repository/releases?per_page=100") | ConvertFrom-Json
 $releases = @($pages | ForEach-Object { foreach ($release in $_) { $release } })
@@ -33,6 +35,7 @@ if ($existing.Count) {
     $release = Get-RemoteRelease $existing[0].id
     if ($release.tag_name -cne $tag -or $release.prerelease) { throw 'Release identity/type mismatch' }
     if (!$release.draft) {
+        if ($ExactCommit -and $tagCommit -cne $Commit) { throw 'Queued release belongs to another commit' }
         if ($refs.Count -ne 1 -or !$release.published_at -or $release.target_commitish -cne $tagCommit) { throw 'Published release provenance mismatch' }
         # A rebuild can have different ZIP timestamps. Validate the original assets instead.
         $temporary = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N'))
