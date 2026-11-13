@@ -50,10 +50,11 @@ if ($existing.Count) {
         }
     }
     # Exact commit, never a moving branch. No tag-trigger workflow is needed.
-    [void](Invoke-GitHub @('release', 'create', $tag, '--repo', $Repository, '--target', $Commit, '--draft', '--title', "Typlo $version", '--notes', "Windows x64 release from commit $Commit."))
-    $release = Invoke-GitHub @('api', "repos/$Repository/releases/tags/$tag") | ConvertFrom-Json
+    # Drafts without a published tag are not available through releases/tags.
+    # Keep the ID returned by creation for all subsequent draft operations.
+    $release = Invoke-GitHub @('api', '--method', 'POST', "repos/$Repository/releases", '-f', "tag_name=$tag", '-f', "target_commitish=$Commit", '-F', 'draft=true', '-F', 'prerelease=false', '-f', "name=Typlo $version", '-f', "body=Windows x64 release from commit $Commit.") | ConvertFrom-Json
 }
-if (!$release.draft -or $release.target_commitish -cne $Commit) { throw 'Draft ownership mismatch' }
+if ($release.id -le 0 -or $release.tag_name -cne $tag -or !$release.draft -or $release.prerelease -or $release.target_commitish -cne $Commit) { throw 'Draft ownership mismatch' }
 $manifestDigest = (Get-FileHash "$directory/release-manifest.json" -Algorithm SHA256).Hash.ToLowerInvariant()
 $expected = @($manifest.assets) + @([pscustomobject]@{ name = 'release-manifest.json'; sha256 = $manifestDigest })
 foreach ($asset in $release.assets) {
@@ -62,10 +63,12 @@ foreach ($asset in $release.assets) {
 }
 foreach ($asset in $expected) {
     if (@($release.assets | Where-Object name -CEQ $asset.name).Count) { continue }
-    [void](Invoke-GitHub @('release', 'upload', $tag, (Join-Path $directory $asset.name), '--repo', $Repository))
+    # Use the release ID directly; do not resolve an unpublished draft by tag.
+    $upload = "https://uploads.github.com/repos/$Repository/releases/$($release.id)/assets?name=$([Uri]::EscapeDataString($asset.name))"
+    [void](Invoke-GitHub @('api', '--method', 'POST', $upload, '--input', (Join-Path $directory $asset.name), '-H', 'Content-Type: application/octet-stream'))
 }
 $release = Get-RemoteRelease $release.id
-if (!$release.draft -or $release.prerelease -or $release.target_commitish -cne $Commit) { throw 'Draft provenance changed while uploading' }
+if ($release.tag_name -cne $tag -or !$release.draft -or $release.prerelease -or $release.target_commitish -cne $Commit) { throw 'Draft provenance changed while uploading' }
 Test-UploadedAssets -Assets $release.assets -Manifest $manifest -ManifestDigest $manifestDigest
 # Recheck the tag if GitHub created it while preparing the draft.
 $refs = @(Invoke-GitHub @('api', "repos/$Repository/git/matching-refs/tags/$tag") | ConvertFrom-Json | Where-Object { $_.ref -ceq "refs/tags/$tag" })
