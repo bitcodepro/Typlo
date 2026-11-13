@@ -66,20 +66,34 @@ function gh {
         if ($global:TyploReleaseMock.tag) { return '[{"ref":"refs/tags/v0.1.0"}]' }; return '[]'
     }
     if ($key -eq 'api repos/example/repo/commits/v0.1.0 --jq .sha') { return $global:TyploReleaseMock.tag }
-    if ($key -match '^api repos/example/repo/releases/') { return ($global:TyploReleaseMock.release | ConvertTo-Json -Depth 15 -Compress) }
+    # Real unpublished drafts can be listed/read by ID while tag lookup is 404.
+    if ($key -match '^api repos/example/repo/releases/tags/') {
+        $global:LASTEXITCODE = 1
+        return 'HTTP 404 Not Found'
+    }
+    if ($key -eq 'api repos/example/repo/releases/1') { return ($global:TyploReleaseMock.release | ConvertTo-Json -Depth 15 -Compress) }
     if ($key -match '^release download ') {
         $target = $Arguments[[array]::IndexOf($Arguments, '--dir') + 1]
         Copy-Item "$global:TyploReleaseMockDirectory/*" $target
         return
     }
-    if ($key -match '^release create ') {
+    if ($key -match '^api --method POST repos/example/repo/releases ') {
         $global:TyploReleaseMock.writes++
         $global:TyploReleaseMock.release = [pscustomobject]@{ id = 1; tag_name = 'v0.1.0'; target_commitish = ('a' * 40); draft = $true; prerelease = $false; assets = @(); published_at = $null }
-        return
+        return ($global:TyploReleaseMock.release | ConvertTo-Json -Depth 15 -Compress)
     }
-    if ($key -match '^release upload ') {
+    if ($key -match '^release upload ') { throw 'Tag-based upload must not be used for drafts' }
+    if ($key -match '^api --method POST https://uploads.github.com/repos/example/repo/releases/1/assets\?name=') {
         $global:TyploReleaseMock.writes++
-        $file = Get-Item $Arguments[3]
+        $file = Get-Item $Arguments[[array]::IndexOf($Arguments, '--input') + 1]
+        if ($Arguments[-1] -cne 'Content-Type: application/octet-stream') { throw 'Expected raw binary upload' }
+        $uri = [Uri]$Arguments[3]
+        if ($uri.Query -cne ('?name=' + [Uri]::EscapeDataString($file.Name))) { throw 'Upload asset name mismatch' }
+        if (@($global:TyploReleaseMock.release.assets | Where-Object name -CEQ $file.Name).Count) { throw 'Existing asset upload attempted' }
+        if ($global:TyploReleaseMock.failUpload -ceq $file.Name) {
+            $global:LASTEXITCODE = 1
+            return 'Simulated interrupted upload'
+        }
         $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($global:TyploReleaseMock.badDigest) { $hash = '0' * 64 }
         $global:TyploReleaseMock.release.assets += [pscustomobject]@{ name = $file.Name; digest = "sha256:$hash"; state = 'uploaded' }
@@ -106,17 +120,40 @@ $partial = $global:TyploReleaseMock.release | ConvertTo-Json -Depth 15 | Convert
 $partial.draft = $true
 $partial.published_at = $null
 $partial.assets = @($partial.assets[0])
-$global:TyploReleaseMock = @{ releases = @($partial); release = $partial; tag = $commit; writes = 0; published = $false }
+$global:TyploReleaseMock = @{ releases = @($partial); release = $partial; tag = $null; writes = 0; published = $false }
 & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit
 if (!$global:TyploReleaseMock.published -or $global:TyploReleaseMock.writes -ne 4) { throw 'Partial draft resume failed' }
 $global:TyploReleaseMock.writes = 0
 $global:TyploReleaseMock.tag = 'b' * 40
 Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit }
 if ($global:TyploReleaseMock.writes) { throw 'Conflicting tag mutated release' }
+# An older draft without a tag must never be adopted by a newer main SHA.
+$partial.draft = $true
+$partial.target_commitish = 'b' * 40
+$global:TyploReleaseMock = @{ releases = @($partial); release = $partial; tag = $null; writes = 0; published = $false }
+Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit }
+if ($global:TyploReleaseMock.writes) { throw 'Foreign draft mutated release' }
+# Retry the same artifacts after a partial upload, with no published tag.
+$global:TyploReleaseMock = @{ releases = @(); tag = $null; writes = 0; published = $false; failUpload = 'typlo-rust-win-x64.zip' }
+Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit }
+if ($global:TyploReleaseMock.published -or @($global:TyploReleaseMock.release.assets).Count -ne 1) { throw 'Interrupted draft state incorrect' }
+$global:TyploReleaseMock.releases = @($global:TyploReleaseMock.release)
+$global:TyploReleaseMock.failUpload = $null
+$global:TyploReleaseMock.writes = 0
+& "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit
+if (!$global:TyploReleaseMock.published -or $global:TyploReleaseMock.writes -ne 4) { throw 'Interrupted draft retry failed' }
+# A same-name asset with different bytes must fail before any upload/overwrite.
+$conflict = $global:TyploReleaseMock.release | ConvertTo-Json -Depth 15 | ConvertFrom-Json
+$conflict.draft = $true
+$conflict.assets[0].digest = 'sha256:' + ('0' * 64)
+$global:TyploReleaseMock = @{ releases = @($conflict); release = $conflict; tag = $null; writes = 0; published = $false }
+Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit }
+if ($global:TyploReleaseMock.writes) { throw 'Conflicting asset mutated release' }
 $global:TyploReleaseMock = @{ releases = @(); tag = $null; writes = 0; published = $false; badDigest = $true }
 Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit }
 if ($global:TyploReleaseMock.published) { throw 'Bad digest was published' }
 Write-Host 'PASS draft publication, published rerun, conflicting SHA and bad remote digest (mock GitHub)'
+Write-Host 'PASS draft-by-ID creation/upload, tag endpoint 404, interrupted retry, foreign draft and no overwrite'
 Assert-Rejected { & "$PSScriptRoot/package-windows.ps1" -PayloadDirectory $fixture -OutputDirectory "$fixture/output" -Version '0.1.0-rc1' }
 Assert-Rejected { & "$PSScriptRoot/package-windows.ps1" -PayloadDirectory $fixture -OutputDirectory "$fixture/output" -Version '0.1.0' }
 Write-Host 'PASS packaging refuses preview versions and nested archive directories'
