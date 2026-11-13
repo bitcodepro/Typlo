@@ -39,6 +39,7 @@ runs:
       run: |
         & "$env:RUNNER_TEMP/release-controller/test-release-tools.ps1"
         & "$env:RUNNER_TEMP/release-controller/test-release-queue.ps1"
+        & "$env:RUNNER_TEMP/release-controller/test-workflow-artifact-retry.ps1" -WorkflowPath "$env:RUNNER_TEMP/release-controller/windows-workflow.yml"
     - name: Package, runtime dependencies and UI smoke
       shell: pwsh
       run: '& "$env:RUNNER_TEMP/release-controller/prepare-windows-release.ps1" -Root $env:GITHUB_WORKSPACE -SoftwareOpenGL'

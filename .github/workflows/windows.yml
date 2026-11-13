@@ -34,7 +34,7 @@ jobs:
         run: '& "$env:RUNNER_TEMP/release-controller/finish-windows-release.ps1"'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: windows-preview-${{ github.sha }}
+          name: windows-preview-${{ github.sha }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-candidate
           if-no-files-found: error
           retention-days: 7
@@ -80,7 +80,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: steps.plan.outputs.pending == 'true'
         with:
-          name: windows-release-${{ steps.plan.outputs.commit }}
+          name: windows-release-${{ steps.plan.outputs.commit }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-candidate
           if-no-files-found: error
           retention-days: 7

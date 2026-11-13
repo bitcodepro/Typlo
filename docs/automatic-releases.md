@@ -69,6 +69,10 @@ Linux/macOS release packages are not provided by this Windows workflow.
 After all gates, the exact candidate (Cargo inputs, ZIP, checksums and manifest)
 is saved under its release commit in the main-scoped cache, backed up as a
 seven-day artifact, and cache persistence is checked before release writes.
+Artifact names include `github.run_attempt` for preview and publication. Retrying
+a failed job in the same workflow run creates a separate backup and preserves
+the original artifact; neither backup is overwritten. The candidate cache key
+and release identity remain tied to the source/release commit, not the attempt.
 Retries restore and validate those canonical bytes rather than replace assets
 with a potentially different rebuild. Only the serialized main worker saves this
 candidate cache. A cache hit reuses a previously gated candidate and verifies its

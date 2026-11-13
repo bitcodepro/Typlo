@@ -19,6 +19,7 @@ if (!$record) {
 $record | Add-Member -NotePropertyName controller -NotePropertyValue $controller
 $record | ConvertTo-Json -Depth 10 | Set-Content "$env:RUNNER_TEMP/release-plan.json" -Encoding utf8
 Copy-Item $PSScriptRoot "$env:RUNNER_TEMP/release-controller" -Recurse
+Copy-Item "$root/.github/workflows/windows.yml" "$env:RUNNER_TEMP/release-controller/windows-workflow.yml"
 Copy-Item "$root/.github/actions/windows-gates" "$env:RUNNER_TEMP/release-action" -Recurse
 [void](Queue-Git $root @('checkout', '--detach', $record.commit))
 # A queued source can predate this infrastructure (another PR merged while it
