@@ -1242,8 +1242,8 @@ impl Workspace {
         }
     }
 
-    fn backup(&mut self, ui: &mut Ui, heading_enabled: bool) {
-        if heading_enabled {
+    fn backup(&mut self, ui: &mut Ui, full: bool) {
+        if full {
             heading(ui, tr("rust.backup.heading", "Backup"));
         }
         #[cfg(windows)]
@@ -1253,8 +1253,8 @@ impl Workspace {
                 (false, tr("settings.import", "Import settings…")),
             ] {
                 if ui.button(label).clicked() {
-                    match settings_file(save, heading_enabled) {
-                        Ok(Some(path)) => self.backup_selected(path, save, heading_enabled),
+                    match settings_file(save, full) {
+                        Ok(Some(path)) => self.backup_selected(path, save, full),
                         Ok(None) => {}
                         Err(error) => self.status = error.to_string(),
                     }
@@ -1264,13 +1264,11 @@ impl Workspace {
         #[cfg(not(windows))]
         ui.horizontal_wrapped(|ui| {
             ui.add(
-                typlo_rust::appearance::text_input(&mut self.backup_path).hint_text(
-                    if heading_enabled {
-                        tr("rust.backup.path", "Path to .typlo file")
-                    } else {
-                        "typlo-settings.json"
-                    },
-                ),
+                typlo_rust::appearance::text_input(&mut self.backup_path).hint_text(if full {
+                    tr("rust.backup.path", "Path to .typlo file")
+                } else {
+                    "typlo-settings.json"
+                }),
             );
             let path = PathBuf::from(self.backup_path.trim());
             for (save, label) in [
@@ -1281,10 +1279,13 @@ impl Workspace {
                     .add_enabled(!path.as_os_str().is_empty(), egui::Button::new(label))
                     .clicked()
                 {
-                    self.backup_selected(path.clone(), save, heading_enabled);
+                    self.backup_selected(path.clone(), save, full);
                 }
             }
         });
+    }
+
+    fn confirm_backup_restore(&mut self, ui: &Ui) {
         if let Some(backup) = &self.pending_backup {
             let (snippets, words, exclusions, pairs) = backup.summary();
             let summary = if backup.settings_only() {
@@ -1309,7 +1310,7 @@ impl Workspace {
             } else {
                 tr("tools.restore", "Restore backup")
             };
-            let response = egui::Modal::new(ui.id().with("restore-backup")).show(ui.ctx(), |ui| {
+            let response = egui::Modal::new(egui::Id::new("restore-backup")).show(ui.ctx(), |ui| {
                 ui.heading(title);
                 ui.label(summary);
                 ui.horizontal(|ui| {
@@ -1630,6 +1631,7 @@ impl eframe::App for Workspace {
                     }
                 });
         });
+        self.confirm_backup_restore(ui);
         if self
             .report
             .as_mut()
@@ -2035,6 +2037,126 @@ fn available_choices() -> Vec<Language> {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+
+    #[test]
+    fn backup_tab_shows_one_confirmation_for_each_import_format() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = folder.path().join("source");
+        let profile = folder.path().join("destination");
+        let imported = Config {
+            history_items: 321,
+            ..Config::default()
+        };
+        config::save(&source, &imported).unwrap();
+        typlo_rust::dictionary::Dictionary::new(&source)
+            .set_correction("teh", "the")
+            .unwrap();
+        let json = folder.path().join("settings.json");
+        let full_backup = folder.path().join("backup.typlo");
+        Backup::export_settings(&source, &imported, &json).unwrap();
+        Backup::export(&source, &full_backup).unwrap();
+
+        for (path, full) in [(json, false), (full_backup, true)] {
+            let original = Config {
+                history_items: 123,
+                ..Config::default()
+            };
+            config::save(&profile, &original).unwrap();
+            let dictionary = typlo_rust::dictionary::Dictionary::new(&profile);
+            dictionary
+                .add(
+                    &[typlo_rust::dictionary::Entry::new("example", "").unwrap()],
+                    &mut typlo_rust::lexicon::Vocabulary::installed().unwrap(),
+                )
+                .unwrap();
+            dictionary.set_correction("teh", "the").unwrap();
+            let mut workspace = Workspace::new(profile.clone(), None, Page::Settings);
+            workspace.tab = SettingsTab::Backup;
+            let context = egui::Context::default();
+            let render = |workspace: &mut Workspace, events| {
+                context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(800., 640.),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        workspace.settings_content(ui);
+                        workspace.confirm_backup_restore(ui);
+                    },
+                )
+            };
+            for restore in [false, true] {
+                workspace.backup_selected(path.clone(), false, full);
+                assert_eq!(
+                    workspace.pending_backup.as_ref().unwrap().settings_only(),
+                    !full
+                );
+                let label = if restore {
+                    tr("tools.restore", "Restore backup")
+                } else {
+                    tr("settings.cancel", "Cancel")
+                };
+                // The initial pass sizes the modal before it is painted.
+                render(&mut workspace, vec![]);
+                let frame = render(&mut workspace, vec![]);
+                let backdrop_count = frame
+                    .shapes
+                    .iter()
+                    .filter(|shape| {
+                        matches!(&shape.shape, egui::Shape::Rect(rect)
+                        if rect.fill == Color32::from_black_alpha(100)
+                            && rect.rect.width() >= 799.
+                            && rect.rect.height() >= 639.)
+                    })
+                    .count();
+                assert_eq!(backdrop_count, 1);
+                let button = frame
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == label => {
+                            Some(text.pos + text.galley.size() * 0.5)
+                        }
+                        _ => None,
+                    })
+                    .expect("confirmation button");
+                for pressed in [true, false] {
+                    render(
+                        &mut workspace,
+                        vec![
+                            egui::Event::PointerMoved(button),
+                            egui::Event::PointerButton {
+                                pos: button,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                }
+                assert!(workspace.pending_backup.is_none());
+                let expected = if restore {
+                    imported.history_items
+                } else {
+                    original.history_items
+                };
+                assert_eq!(workspace.settings.history_items, expected);
+                assert_eq!(config::load(&profile).unwrap().history_items, expected);
+                assert_eq!(
+                    dictionary.correction("teh").unwrap().as_deref(),
+                    Some("the")
+                );
+                assert_eq!(
+                    dictionary.is_excluded("example").unwrap(),
+                    !restore || !full
+                );
+            }
+        }
+    }
 
     #[test]
     fn settings_fields_and_localized_actions_fit_the_available_width() {
