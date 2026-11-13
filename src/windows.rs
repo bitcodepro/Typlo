@@ -126,6 +126,7 @@ struct WinEdit {
     deadline: Option<Instant>,
     sequence: Option<usize>,
     recent: Option<String>,
+    lease: Option<input::SelectionLease>,
 }
 
 impl WinEdit {
@@ -264,6 +265,7 @@ impl Editor for WinEdit {
     type Target = Target;
 
     fn begin_operation(&mut self) {
+        self.lease = None;
         self.deadline = Some(Instant::now() + Duration::from_millis(250));
     }
 
@@ -339,22 +341,67 @@ impl Editor for WinEdit {
         {
             return Err(unsupported_editor());
         }
-        if range != expected.selection {
-            self.send(target.edit, EM_SETSEL, range.start, range.end as LPARAM)?;
-            let selected = self.snapshot()?;
-            if selected.document != expected.document || selected.selection != range {
-                return Err(io::Error::other("Editor changed while selecting the range"));
-            }
-        }
-        if self.target()? != target || self.selection(target)? != range {
-            return Err(io::Error::other("Target selection changed"));
-        }
         let mut text = Vec::with_capacity(replacement.len() + 1);
         text.extend_from_slice(replacement);
         text.push(0);
-        self.target()?;
-        self.send(target.edit, EM_REPLACESEL, 1, text.as_ptr() as LPARAM)?;
+        let lease = self
+            .sequence
+            .map(|sequence| input::SelectionLease::start(sequence, target, None))
+            .transpose()?;
+        let moved = range != expected.selection;
+        let ready = (|| {
+            if moved {
+                self.send(target.edit, EM_SETSEL, range.start, range.end as LPARAM)?;
+                let selected = self.snapshot()?;
+                if selected.document != expected.document || selected.selection != range {
+                    return Err(io::Error::other("Editor changed while selecting the range"));
+                }
+            }
+            if self.target()? != target || self.selection(target)? != range {
+                return Err(io::Error::other("Target selection changed"));
+            }
+            if lease
+                .as_ref()
+                .is_some_and(|lease| !lease.begin_native_commit())
+            {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            Ok(())
+        })();
+        if let Err(error) = ready {
+            if moved {
+                self.restore_native_selection(expected, range);
+            }
+            return Err(error);
+        }
+        self.lease = lease;
+        if let Err(error) = self.send(target.edit, EM_REPLACESEL, 1, text.as_ptr() as LPARAM) {
+            if moved {
+                self.restore_native_selection(expected, range);
+            }
+            return Err(error);
+        }
         Ok(())
+    }
+}
+
+impl WinEdit {
+    fn restore_native_selection(&self, before: &Snapshot<Target>, temporary: Range<usize>) {
+        let mut editor = Self {
+            expected: Some(before.target),
+            deadline: Some(Instant::now() + Duration::from_millis(40)),
+            ..Default::default()
+        };
+        if editor.snapshot().is_ok_and(|current| {
+            current.document == before.document && current.selection == temporary
+        }) {
+            let _ = editor.send(
+                before.target.edit,
+                EM_SETSEL,
+                before.selection.start,
+                before.selection.end as LPARAM,
+            );
+        }
     }
 }
 
@@ -2984,16 +3031,44 @@ fn check_native_fixture(mode: &str, window: HWND, editor: &mut WinEdit) -> io::R
             Err(io::Error::other("Unsafe editor was accepted"))
         };
     }
-    send(window, EM_SETSEL, 2, 8)?;
-    let mut session = Session::default();
-    if session.convert(editor, &Language::ALL, Some(Language::En))? != Some(Language::Ru)
-        || editor.snapshot()?.document != "🙂приветTAIL".encode_utf16().collect::<Vec<_>>()
-        || !session.undo(editor)?
-        || editor.snapshot()?.document != "🙂ghbdtnTAIL".encode_utf16().collect::<Vec<_>>()
-    {
-        return Err(io::Error::other(
-            "Native replacement or Undo returned unexpected text",
-        ));
+    for (prefix, original, result, suffix) in [
+        ("🙂", "ghbdtn", "привет", "TAIL"),
+        ("", "rfr", "как", ""),
+        ("keep ", "gjlrk.xbnm ", "подключить ", "NEXT"),
+        ("keep ", "ghbdtn\u{a0}", "привет\u{a0}", "🙂"),
+    ] {
+        let before = format!("{prefix}{original}{suffix}");
+        let after = format!("{prefix}{result}{suffix}");
+        let text = wide(&before);
+        let start = prefix.encode_utf16().count();
+        let end = start + original.encode_utf16().count();
+        let caret = start + result.encode_utf16().count();
+        send(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)?;
+        send(window, EM_SETSEL, start, end as LPARAM)?;
+        let mut session = Session::default();
+        let check =
+            |editor: &mut WinEdit, text: &str, selection: Range<usize>| -> io::Result<bool> {
+                let snapshot = editor.snapshot()?;
+                Ok(snapshot.selection == selection
+                    && snapshot.document.iter().copied().eq(text.encode_utf16()))
+            };
+        if session.convert_to(editor, Language::Ru, Some(Language::En))? != Some(Language::Ru)
+            || !check(editor, &after, caret..caret)?
+        {
+            return Err(io::Error::other(
+                "Native replacement changed the wrong text or caret",
+            ));
+        }
+        send(window, EM_SETSEL, start, start as LPARAM)?;
+        if session.undo(editor)? || !check(editor, &after, start..start)? {
+            return Err(io::Error::other("Undo edited text after the caret moved"));
+        }
+        send(window, EM_SETSEL, caret, caret as LPARAM)?;
+        if !session.undo(editor)? || !check(editor, &before, end..end)? || session.undo(editor)? {
+            return Err(io::Error::other(
+                "Undo did not restore the exact original text and caret",
+            ));
+        }
     }
     Ok(())
 }

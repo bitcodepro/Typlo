@@ -44,6 +44,7 @@ struct BufferedEdit {
     control: usize,
     focus_epoch: usize,
     keys: Vec<INPUT>,
+    held: HashSet<(u16, u16)>,
     committed: Option<bool>,
     canceled: Option<Arc<AtomicBool>>,
 }
@@ -79,6 +80,23 @@ impl BufferedEdit {
             .as_ref()
             .is_some_and(|flag| flag.load(Ordering::Acquire))
     }
+
+    fn can_verify(&self, current_sequence: usize) -> bool {
+        self.sequence == current_sequence
+            && self
+                .committed
+                .unwrap_or_else(|| self.keys.is_empty() && !self.is_canceled())
+    }
+
+    fn buffer_key(&mut self, vk: u16, scan: u16, flags: u32) -> bool {
+        if flags & KEYEVENTF_KEYUP == 0 {
+            self.held.insert((vk, scan));
+        } else if !self.held.remove(&(vk, scan)) {
+            return false;
+        }
+        self.keys.push(keyboard_input(vk, scan, flags, edit_tag(2)));
+        true
+    }
 }
 
 // Only held while a programmatic selection could receive the user's next key.
@@ -108,6 +126,7 @@ impl SelectionLease {
             control: target.edit as usize,
             focus_epoch: FOCUS_EPOCH.load(Ordering::Acquire),
             keys: Vec::new(),
+            held: HashSet::new(),
             committed: None,
             canceled,
         });
@@ -142,6 +161,13 @@ impl SelectionLease {
                     && edit.sequence == sequence()
                     && (edit.committed == Some(true) || !edit.is_canceled())
             })
+    }
+
+    pub fn can_verify(&self) -> bool {
+        EDIT.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|edit| edit.can_verify(sequence()))
     }
 
     pub fn wait_for_paste(&self) -> bool {
@@ -316,7 +342,7 @@ fn edit_key(key: KBDLLHOOKSTRUCT, down: bool) -> Option<bool> {
             edit.foreground == foreground
                 && edit.control == control
                 && edit.sequence == sequence()
-                && (key.dwExtraInfo == edit_tag(4) || edit.keys.is_empty())
+                && (key.dwExtraInfo == edit_tag(4) || edit.can_verify(sequence()))
         });
         return Some(!allowed);
     }
@@ -377,8 +403,11 @@ fn edit_key(key: KBDLLHOOKSTRUCT, down: bool) -> Option<bool> {
     } else {
         0
     } | if down { 0 } else { KEYEVENTF_KEYUP };
-    edit.keys
-        .push(keyboard_input(vk, key.scanCode as u16, flags, edit_tag(2)));
+    if !edit.buffer_key(vk, key.scanCode as u16, flags) {
+        // The shortcut's key was pressed before the lease started. Release it
+        // immediately so it cannot cancel the edit or leave a modifier held.
+        return None;
+    }
     drop(state);
     if !injected {
         HOOK.with_borrow_mut(|state| {
@@ -1321,6 +1350,7 @@ mod tests {
             control: 2,
             focus_epoch: 3,
             keys: Vec::new(),
+            held: HashSet::new(),
             committed: None,
             canceled: None,
         };
@@ -1365,6 +1395,7 @@ mod tests {
             control: 2,
             focus_epoch: 3,
             keys: Vec::new(),
+            held: HashSet::new(),
             committed: None,
             canceled: Some(Arc::clone(&flag)),
         };
@@ -1391,6 +1422,7 @@ mod tests {
                 } else {
                     vec![INPUT::default()]
                 },
+                held: HashSet::new(),
                 committed: None,
                 canceled: Some(canceled),
             };
@@ -1404,6 +1436,51 @@ mod tests {
                 attempt & 63 == 0
             );
         }
+    }
+
+    #[test]
+    fn buffered_input_blocks_writes_but_allows_verification_of_a_committed_edit() {
+        let canceled = Arc::new(AtomicBool::new(false));
+        let mut edit = BufferedEdit {
+            sequence: 10,
+            foreground: 1,
+            control: 20,
+            focus_epoch: 30,
+            keys: Vec::new(),
+            held: HashSet::new(),
+            committed: None,
+            canceled: Some(canceled.clone()),
+        };
+        assert!(edit.can_commit(10, 1, 20, 30));
+        assert!(edit.can_verify(10));
+        edit.keys.push(keyboard_input(VK_BACK, 0, 0, 0));
+        assert!(!edit.can_commit(10, 1, 20, 30));
+        assert!(!edit.can_verify(10));
+        edit.committed = Some(true);
+        canceled.store(true, Ordering::Release);
+        assert!(edit.can_verify(10));
+        assert!(!edit.can_verify(11));
+        edit.committed = Some(false);
+        assert!(!edit.can_verify(10));
+    }
+
+    #[test]
+    fn only_releases_of_buffered_presses_join_the_buffer() {
+        let mut edit = BufferedEdit {
+            sequence: 0,
+            foreground: 0,
+            control: 0,
+            focus_epoch: 0,
+            keys: Vec::new(),
+            held: HashSet::new(),
+            committed: None,
+            canceled: None,
+        };
+        assert!(edit.buffer_key(VK_LSHIFT, 0x2a, 0));
+        assert!(!edit.buffer_key(VK_RSHIFT, 0x36, KEYEVENTF_KEYUP));
+        assert!(edit.buffer_key(VK_LSHIFT, 0x2a, KEYEVENTF_KEYUP));
+        assert!(!edit.buffer_key(VK_LSHIFT, 0x2a, KEYEVENTF_KEYUP));
+        assert_eq!(edit.keys.len(), 2);
     }
 
     #[test]

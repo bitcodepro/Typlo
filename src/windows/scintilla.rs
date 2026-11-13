@@ -280,7 +280,9 @@ impl Edits {
         };
         let before = view.state()?;
         timing.phase("verified Scintilla document and selection");
-        let lease = input::SelectionLease::start(job.sequence, job.target, job.canceled.clone())?;
+        // Keep the clipboard guard alive until verification and restore it
+        // before replaying any input buffered during the write.
+        let lease;
         let mut clipboard = Clipboard {
             owner: job.owner,
             saved: None,
@@ -383,6 +385,7 @@ impl Edits {
         if original == replacement || replacement.is_empty() {
             return Ok(None);
         }
+        lease = input::SelectionLease::start(job.sequence, job.target, job.canceled.clone())?;
         let after = view.replace(
             &mut clipboard,
             &lease,

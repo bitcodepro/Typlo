@@ -97,8 +97,15 @@ public static class TyploUiSmoke {
         string residentCopy = Path.Combine(install, Path.GetFileName(resident));
         File.Copy(settings, settingsCopy);
         File.Copy(resident, residentCopy);
-        string softwareGl = Path.Combine(Path.GetDirectoryName(settings), "opengl32.dll");
-        if (File.Exists(softwareGl)) File.Copy(softwareGl, Path.Combine(install, "opengl32.dll"));
+        string source = Path.GetDirectoryName(settings);
+        string softwareGl = Path.Combine(source, "opengl32.dll");
+        string gallium = Path.Combine(source, "libgallium_wgl.dll");
+        if (File.Exists(softwareGl) != File.Exists(gallium))
+            throw new InvalidOperationException("The software OpenGL runtime requires both opengl32.dll and libgallium_wgl.dll");
+        if (File.Exists(softwareGl)) {
+            File.Copy(softwareGl, Path.Combine(install, Path.GetFileName(softwareGl)));
+            File.Copy(gallium, Path.Combine(install, Path.GetFileName(gallium)));
+        }
 
         string desktopName = "TyploPortable_" + Guid.NewGuid().ToString("N");
         IntPtr desktop = CreateDesktopW(desktopName, IntPtr.Zero, IntPtr.Zero, 0, 0x1ff, IntPtr.Zero);

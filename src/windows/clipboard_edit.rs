@@ -82,7 +82,7 @@ impl Fallback {
         }
         let deadline = Instant::now() + accessible::MODIFIER_RELEASE_TIMEOUT;
         while accessible::modifiers_down() {
-            validate()?;
+            editor.target()?;
             if Instant::now() >= deadline {
                 return Err(io::ErrorKind::TimedOut.into());
             }
@@ -94,16 +94,13 @@ impl Fallback {
         timing.phase("modifiers and clipboard snapshot");
         lease = input::SelectionLease::start(sequence, target, canceled)?;
         let mut range = Range {
+            editor,
             target,
             valid: &validate,
             lease: &lease,
             movement: Cell::new(0),
             collapse: false,
         };
-        validate()?;
-        if !lease.still_quiet() || !clipboard.unchanged() {
-            return Err(interrupted());
-        }
         let expected = if undoing {
             undo.as_ref().map(|edit| edit.replacement.as_str())
         } else {
@@ -189,7 +186,7 @@ impl Fallback {
         // Recopy the replacement together with preceding context. This
         // detects editors that inserted the payload beside the old range.
         thread::sleep(Duration::from_millis(15));
-        if !lease.still_quiet() || !clipboard.still_owns() {
+        if !lease.can_verify() || !clipboard.still_owns() {
             return Err(interrupted());
         }
         range.select_left(replacement_width + CONTEXT)?;
@@ -223,6 +220,7 @@ impl Fallback {
 }
 
 struct Range<'a> {
+    editor: &'a WinEdit,
     target: Target,
     valid: &'a dyn Fn() -> io::Result<()>,
     lease: &'a input::SelectionLease,
@@ -244,7 +242,7 @@ impl Range<'_> {
         let deadline = Instant::now() + Duration::from_secs(5);
         self.movement.set(self.movement.get().saturating_add(count));
         while count > 0 {
-            if !self.lease.still_quiet() || Instant::now() >= deadline {
+            if !self.lease.can_verify() || Instant::now() >= deadline {
                 return Err(interrupted());
             }
             let batch = count.min(KEY_BATCH);
@@ -377,8 +375,7 @@ fn try_copy(
     range: &Range<'_>,
     duration: Duration,
 ) -> io::Result<Option<String>> {
-    (range.valid)()?;
-    if !range.lease.still_quiet() || !clipboard.unchanged() {
+    if !range.lease.can_verify() || !clipboard.unchanged() {
         return Err(interrupted());
     }
     range.movement.set(0);
@@ -386,12 +383,15 @@ fn try_copy(
     range.keys(Some(VK_CONTROL), u16::from(b'C'), 1)?;
     let deadline = Instant::now() + duration;
     loop {
-        (range.valid)()?;
-        if !range.lease.still_quiet() {
+        if !range.lease.can_verify() {
             return Err(interrupted());
         }
+        range.editor.target()?;
         match clipboard.copied_text(before, |owner| copy_from_target(owner, range.target)) {
-            Ok(Some(text)) => return Ok(Some(text)),
+            Ok(Some(text)) => {
+                (range.valid)()?;
+                return Ok(Some(text));
+            }
             Ok(None) => {}
             Err(error) if error.raw_os_error() == Some(5) => {}
             Err(error) => return Err(error),

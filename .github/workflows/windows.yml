@@ -54,6 +54,27 @@ jobs:
       - name: Release tooling tests
         shell: pwsh
         run: ./tools/test-release-tools.ps1
+      - name: Native editor replacement and Undo
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "target/x86_64-pc-windows-msvc/release/typlo-rust.exe").Path
+          $probeDir = Join-Path $env:RUNNER_TEMP "typlo-native-probe"
+          New-Item -ItemType Directory -Path "$probeDir/resources" | Out-Null
+          Copy-Item -LiteralPath $exe -Destination $probeDir
+          Copy-Item -LiteralPath resources/language-detection -Destination "$probeDir/resources" -Recurse
+          $exe = Join-Path $probeDir "typlo-rust.exe"
+          $probe = Start-Process -FilePath $exe -ArgumentList '--native-self-test' -WorkingDirectory $PWD.Path `
+            -WindowStyle Hidden -PassThru -RedirectStandardError "$probeDir/stderr.txt" `
+            -RedirectStandardOutput "$probeDir/stdout.txt"
+          if (!$probe.WaitForExit(30000)) {
+            $probe.Kill($true)
+            throw 'Native editor self-test timed out'
+          }
+          Get-Content "$probeDir/stdout.txt"
+          if ($probe.ExitCode -ne 0) {
+            Get-Content "$probeDir/stderr.txt"
+            throw 'Native editor self-test failed'
+          }
       - name: Package one Windows ZIP and verify
         shell: pwsh
         run: ./tools/prepare-windows-release.ps1 -SoftwareOpenGL
