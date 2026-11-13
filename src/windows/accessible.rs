@@ -56,7 +56,10 @@ pub(super) enum Command {
         review: bool,
     },
     Tools(Action),
-    PrepareSnippetMenu(Vec<crate::snippets::Snippet>),
+    PrepareSnippetMenu {
+        snippets: Vec<crate::snippets::Snippet>,
+        can_insert: bool,
+    },
     InsertMenuSnippet {
         capture: Captured,
         template: Template,
@@ -908,42 +911,45 @@ fn run_edit(
                 None
             }
         }
-        Command::PrepareSnippetMenu(snippets) => {
+        Command::PrepareSnippetMenu {
+            snippets,
+            can_insert,
+        } => {
             use super::snippet_menu::{self, Origin, Prepared, Selection};
             let native_anchor = snippet_menu::caret_anchor(target);
             let (selection, anchor) = match editor.native.snapshot() {
                 Ok(snapshot) => (
-                    Selection::Native {
+                    Some(Selection::Native {
                         document: snapshot.document,
                         selection: snapshot.selection,
-                    },
+                    }),
                     native_anchor,
                 ),
-                Err(error) if error.kind() == io::ErrorKind::Unsupported => {
-                    let snapshot = editor.snapshot()?;
-                    let (identity, element) = editor.focused()?;
-                    if identity != snapshot.target {
-                        return Err(changed());
-                    }
-                    let anchor = native_anchor.or_else(|| snippet_caret(&element));
-                    (
-                        Selection::Accessible(Captured {
+                Err(_) => {
+                    let mut anchor = native_anchor;
+                    let selection = editor.focused().ok().and_then(|(identity, element)| {
+                        anchor = snippet_caret(&element).or(anchor);
+                        let (document, selection) = read_text_pattern(&element).ok()?;
+                        if editor.focused().ok()?.0 != identity {
+                            return None;
+                        }
+                        Some(Selection::Accessible(Captured {
                             runtime: identity.runtime,
                             provider: identity.provider,
-                            document: snapshot.document,
-                            selection: snapshot.selection,
-                        }),
-                        anchor,
-                    )
+                            document,
+                            selection,
+                        }))
+                    });
+                    (selection, anchor)
                 }
-                Err(error) => return Err(error),
             };
             editor.native.target()?;
             snippet_menu::publish(
                 owner,
                 Prepared {
                     origin: Origin::new(target),
-                    selection,
+                    selection: selection.filter(|_| can_insert),
+                    insertion_disabled: !can_insert,
                     sequence: job.sequence,
                     anchor: anchor.unwrap_or_else(snippet_menu::pointer_anchor),
                     snippets,

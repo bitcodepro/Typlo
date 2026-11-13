@@ -1302,24 +1302,21 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                     }
                     let target = WinEdit::default().target()?;
                     let process = process_name(target.pid).unwrap_or_default();
-                    if resident.settings.snippets_for(&process)
-                        && !resident.settings.snippets.is_empty()
-                    {
-                        return resident.accessible_edit(
-                            window,
-                            accessible::Request {
-                                target,
-                                sequence: input::sequence(),
-                                command: accessible::Command::PrepareSnippetMenu(
-                                    resident.settings.snippets.clone(),
-                                ),
-                                cycle: Vec::new(),
-                                switch_layout: false,
-                                recent: None,
+                    let can_insert = resident.settings.snippets_for(&process);
+                    return resident.accessible_edit(
+                        window,
+                        accessible::Request {
+                            target,
+                            sequence: input::sequence(),
+                            command: accessible::Command::PrepareSnippetMenu {
+                                snippets: resident.settings.snippets.clone(),
+                                can_insert,
                             },
-                        );
-                    }
-                    return Ok(());
+                            cycle: Vec::new(),
+                            switch_layout: false,
+                            recent: None,
+                        },
+                    );
                 }
                 if wparam == Action::History as usize {
                     return resident.open_history();
