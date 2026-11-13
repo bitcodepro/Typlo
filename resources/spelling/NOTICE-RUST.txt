@@ -1,0 +1,11 @@
+Typlo Rust distributes the EN, RU and UK Hunspell dictionary files from
+Typlo v0.5.14. The corresponding editable dictionary sources are the .aff
+and .dic files beside this notice. See the dictionary license files and
+the pinned LibreOffice dictionaries commit in manifest.json.
+
+Typlo Rust uses Spellbook 0.4.2 as its spell-checking engine. The
+WeCantSpell engine mentioned in Typlo's original NOTICE and manifest is
+not included in Typlo Rust. Spellbook is licensed under MPL 2.0.
+The corresponding source is available at
+https://crates.io/api/v1/crates/spellbook/0.4.2/download
+and its license appears in LICENSE-Spellbook.txt.

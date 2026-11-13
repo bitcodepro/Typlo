@@ -1,0 +1,90 @@
+{
+  "schema": 3,
+  "sha256": "4aa4bdaa5f06eb6a20871784dfcc7dc319c86014916ec8a36c70acb0c2381d35",
+  "content_sha256": "c2a670d96ca1dc251e2c8bec3c397764d6cf1dc093f4cfce3eb5bb21e63f42e7",
+  "bytes": 7458816,
+  "words": 292803,
+  "language_entries": 391153,
+  "ambiguous_words": 52747,
+  "supplement": {
+    "sha256": "115cb6469a09f136d1aecc47ab2603733e423162d1aa599310804e06692078b4",
+    "unique_words": 1143,
+    "families": 124
+  },
+  "sqlite_builder_version": "3.53.1",
+  "unicode_version": "15.0.0",
+  "languages": {
+    "en": {
+      "source_rows": 50000,
+      "retained_words": 48623,
+      "rejected_rows": 1377,
+      "source_total_count": 725119374,
+      "supplemental_words": 6,
+      "supplemental_only_words": 5,
+      "combined_words": 48628
+    },
+    "ru": {
+      "source_rows": 50000,
+      "retained_words": 48721,
+      "rejected_rows": 1279,
+      "source_total_count": 144780175,
+      "supplemental_words": 659,
+      "supplemental_only_words": 659,
+      "combined_words": 49380
+    },
+    "uk": {
+      "source_rows": 50000,
+      "retained_words": 44728,
+      "rejected_rows": 5272,
+      "source_total_count": 4736584,
+      "supplemental_words": 634,
+      "supplemental_only_words": 631,
+      "combined_words": 45359
+    },
+    "fr": {
+      "source_rows": 50000,
+      "retained_words": 49439,
+      "rejected_rows": 561,
+      "source_total_count": 312994233,
+      "supplemental_words": 0,
+      "supplemental_only_words": 0,
+      "combined_words": 49439
+    },
+    "es": {
+      "source_rows": 50000,
+      "retained_words": 49711,
+      "rejected_rows": 289,
+      "source_total_count": 413264052,
+      "supplemental_words": 0,
+      "supplemental_only_words": 0,
+      "combined_words": 49711
+    },
+    "it": {
+      "source_rows": 50000,
+      "retained_words": 49245,
+      "rejected_rows": 755,
+      "source_total_count": 241736295,
+      "supplemental_words": 0,
+      "supplemental_only_words": 0,
+      "combined_words": 49245
+    },
+    "de": {
+      "source_rows": 50000,
+      "retained_words": 49718,
+      "rejected_rows": 282,
+      "source_total_count": 151705378,
+      "supplemental_words": 0,
+      "supplemental_only_words": 0,
+      "combined_words": 49718
+    },
+    "pt": {
+      "source_rows": 50000,
+      "retained_words": 49673,
+      "rejected_rows": 327,
+      "source_total_count": 212103058,
+      "supplemental_words": 0,
+      "supplemental_only_words": 0,
+      "combined_words": 49673
+    }
+  }
+}

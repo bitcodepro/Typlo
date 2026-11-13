@@ -1,0 +1,35 @@
+Typlo offline spelling components
+
+Typlo's own code is MIT licensed. These third-party components retain the
+licenses listed below; they are not relicensed as MIT.
+
+WeCantSpell.Hunspell 7.0.1 (unmodified)
+https://github.com/aarondandy/WeCantSpell.Hunspell/tree/7.0.1
+This distribution elects Mozilla Public License 1.1 from the upstream
+MPL/GPL/LGPL alternatives. See LICENSE-WeCantSpell.txt and MPL-1.1.txt.
+The complete library source for this version is supplied alongside this notice
+as WeCantSpell.Hunspell-7.0.1-source.tar.gz. That source is available under
+MPL 1.1, including the rights to copy, modify and redistribute it under that
+license. Typlo's integration is separate; the library itself is unmodified.
+
+Russian ru_RU.aff / ru_RU.dic (unmodified)
+Copyright (c) 1997-2008, Alexander I. Lebedev; modifications by contributors.
+See LICENSE-ru_RU.txt for copyright, redistribution conditions and disclaimer.
+
+Ukrainian uk_UA.aff / uk_UA.dic (unmodified Hunspell distribution)
+Andriy Rysin and contributors. This Hunspell distribution is MPL 1.1 licensed.
+The editable dictionary source is supplied as uk_UA.aff and uk_UA.dic.
+See LICENSE-uk_UA.txt and MPL-1.1.txt. The upstream main VESUM dataset is
+separately licensed; it is not included here.
+
+English en_US.aff / en_US.dic (unmodified)
+SCOWL/Ispell-derived dictionary. See LICENSE-en_US.txt for the full copyright,
+permission, source attribution and disclaimer notices.
+
+Dictionary files and their upstream README/license notices were taken from
+https://github.com/LibreOffice/dictionaries/tree/4f1df64b2e8e14751aa7c2205d170ca016071315
+Only the specified Hunspell dictionary files are included, not unrelated
+thesaurus, grammar, hyphenation or extension components.
+
+manifest.json records the pinned origin, version, byte size and SHA-256 hashes.
+Keep this notice, the license files and corresponding source with distributions.
