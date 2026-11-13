@@ -1,7 +1,7 @@
-param([Parameter(Mandatory)][string]$ArchivePath)
+param([Parameter(Mandatory)][string]$ArchivePath, [string]$Root = (Split-Path $PSScriptRoot))
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/release-common.ps1"
-$version = Get-ReleaseVersion
+$version = Get-ReleaseVersion -Root $Root
 $candidate = (Resolve-Path -LiteralPath $ArchivePath).Path
 $candidateHash = (Get-FileHash $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('TyploLegacyPackage-' + [guid]::NewGuid().ToString('N'))

@@ -1,9 +1,8 @@
-param([switch]$SoftwareOpenGL)
+param([switch]$SoftwareOpenGL, [string]$Root = (Split-Path $PSScriptRoot))
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/release-common.ps1"
-$root = Split-Path $PSScriptRoot
 Set-Location $root
-$version = Get-ReleaseVersion
+$version = Get-ReleaseVersion -Root $root
 $commit = git rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'git failed' }
 $payload = Join-Path $root "package/Typlo-$version"
@@ -13,7 +12,8 @@ if ((Test-Path $payload) -or (Test-Path $output)) { throw 'Package/output direct
 Copy-Item resources $payload -Recurse
 Copy-Item README.md,LICENSE $payload
 foreach ($name in @('typlo-rust.exe', 'typlo-settings.exe')) {
-    Copy-Item "target/x86_64-pc-windows-msvc/release/$name" $payload
+    $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
+    Copy-Item (Join-Path $target "x86_64-pc-windows-msvc/release/$name") $payload
 }
 # Static CRT is required: updater deliberately does not accept arbitrary runtime DLLs.
 $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
