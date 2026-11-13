@@ -701,14 +701,7 @@ fn run_edit(
             && matches!(
                 job.command,
                 Command::Typing { word: Some(_), .. } | Command::Undo
-            )
-            && (control == UIA_DocumentControlTypeId
-                || unsafe { element.CurrentClassName() }.is_ok_and(|class| {
-                    class
-                        .to_string()
-                        .split_whitespace()
-                        .any(|name| name == "ProseMirror")
-                }));
+            );
         let capture = if is_text_control(control) {
             read_text_pattern(&element)
         } else if is_editor_wrapper(control) && (chromium || has_writable_value(&element)?) {
