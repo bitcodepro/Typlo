@@ -64,6 +64,10 @@ pub(super) enum Command {
         capture: Captured,
         template: Template,
     },
+    InsertScintillaSnippet {
+        capture: super::scintilla::SnippetSelection,
+        template: Template,
+    },
     ApplyChoice {
         capture: Captured,
         range: Range<usize>,
@@ -917,30 +921,41 @@ fn run_edit(
         } => {
             use super::snippet_menu::{self, Origin, Prepared, Selection};
             let native_anchor = snippet_menu::caret_anchor(target);
-            let (selection, anchor) = match editor.native.snapshot() {
-                Ok(snapshot) => (
-                    Some(Selection::Native {
-                        document: snapshot.document,
-                        selection: snapshot.selection,
-                    }),
-                    native_anchor,
-                ),
-                Err(_) => {
-                    let mut anchor = native_anchor;
-                    let selection = editor.focused().ok().and_then(|(identity, element)| {
-                        anchor = snippet_caret(&element).or(anchor);
-                        let (document, selection) = read_text_pattern(&element).ok()?;
-                        if editor.focused().ok()?.0 != identity {
-                            return None;
-                        }
-                        Some(Selection::Accessible(Captured {
-                            runtime: identity.runtime,
-                            provider: identity.provider,
-                            document,
-                            selection,
-                        }))
-                    });
-                    (selection, anchor)
+            let (selection, anchor) = if super::scintilla::is_editor(target) {
+                super::scintilla::capture_snippet(owner, target, job.sequence)
+                    .map(|(capture, anchor)| {
+                        (
+                            Some(Selection::Scintilla(capture)),
+                            anchor.or(native_anchor),
+                        )
+                    })
+                    .unwrap_or((None, native_anchor))
+            } else {
+                match editor.native.snapshot() {
+                    Ok(snapshot) => (
+                        Some(Selection::Native {
+                            document: snapshot.document,
+                            selection: snapshot.selection,
+                        }),
+                        native_anchor,
+                    ),
+                    Err(_) => {
+                        let mut anchor = native_anchor;
+                        let selection = editor.focused().ok().and_then(|(identity, element)| {
+                            anchor = snippet_caret(&element).or(anchor);
+                            let (document, selection) = read_text_pattern(&element).ok()?;
+                            if editor.focused().ok()?.0 != identity {
+                                return None;
+                            }
+                            Some(Selection::Accessible(Captured {
+                                runtime: identity.runtime,
+                                provider: identity.provider,
+                                document,
+                                selection,
+                            }))
+                        });
+                        (selection, anchor)
+                    }
                 }
             };
             editor.native.target()?;
@@ -968,6 +983,10 @@ fn run_edit(
                 selection: capture.selection,
             };
             session.insert_snippet(&mut editor, expected, &web_template(template)?)?;
+            None
+        }
+        Command::InsertScintillaSnippet { capture, template } => {
+            super::scintilla::insert_snippet(owner, target, job.sequence, capture, &template)?;
             None
         }
         Command::Typing {

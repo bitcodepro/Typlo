@@ -548,20 +548,23 @@ impl Workspace {
                 .inner_margin(10.)
                 .show(ui, |ui| {
                     ui.push_id(index, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                typlo_rust::appearance::text_input(&mut rule.process)
-                                    .desired_width((ui.available_width() - 112.).max(100.))
-                                    .hint_text(tr("appLayouts.process", "Process name")),
-                            );
+                        let buttons: &[_] = if cfg!(windows) {
+                            &[tr("appLayouts.choose", "Choose…"), "✕"]
+                        } else {
+                            &["✕"]
+                        };
+                        let (_, clicked) = field_with_actions(
+                            ui,
+                            typlo_rust::appearance::text_input(&mut rule.process)
+                                .hint_text(tr("appLayouts.process", "Process name")),
+                            buttons,
+                        );
+                        match clicked {
                             #[cfg(windows)]
-                            if ui.button(tr("appLayouts.choose", "Choose…")).clicked() {
-                                choose = Some(index);
-                            }
-                            if ui.button("✕").clicked() {
-                                remove = Some(index);
-                            }
-                        });
+                            Some(0) => choose = Some(index),
+                            Some(_) => remove = Some(index),
+                            None => {}
+                        }
                         ui.checkbox(&mut rule.enabled, tr("appLayouts.enabled", "Enabled"));
                         tri_state(
                             ui,
@@ -587,7 +590,7 @@ impl Workspace {
                         }
                         let mut reorder = None;
                         for (position, layout) in order.iter().copied().enumerate() {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 let mut enabled = rule.cycle.contains(&layout);
                                 if ui.checkbox(&mut enabled, layout.name()).changed() {
                                     if enabled {
@@ -747,20 +750,19 @@ impl Workspace {
                             .hint_text(tr("rust.snippet.name", "Name (optional)"))
                             .desired_width(f32::INFINITY),
                     );
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            typlo_rust::appearance::text_input(&mut snippet.trigger)
-                                .hint_text(";addr")
-                                .desired_width((ui.available_width() - 90.).max(160.)),
-                        );
-                        if ui.button(tr("history.ctx.delete", "Удалить")).clicked() {
-                            remove = Some(index);
-                        }
-                    });
+                    let (_, clicked) = field_with_actions(
+                        ui,
+                        typlo_rust::appearance::text_input(&mut snippet.trigger).hint_text(";addr"),
+                        &[tr("history.ctx.delete", "Delete")],
+                    );
+                    if clicked.is_some() {
+                        remove = Some(index);
+                    }
                     ui.add(
                         typlo_rust::appearance::text_area(&mut snippet.text)
                             .hint_text(tr("settings.snippetText", "Text to insert"))
                             .desired_rows(3)
+                            .clip_text(true)
                             .desired_width(f32::INFINITY),
                     );
                     #[cfg(windows)]
@@ -1415,6 +1417,9 @@ impl eframe::App for Workspace {
                                     }
                                     self.navigate(ui, Page::Update);
                                 }
+                                if page == Page::Settings {
+                                    hint(ui, concat!("v", env!("CARGO_PKG_VERSION")));
+                                }
                                 if !self.status.is_empty() {
                                     hint(ui, &self.status);
                                 }
@@ -1527,19 +1532,69 @@ fn hint(ui: &mut Ui, text: &str) {
 }
 
 fn setting_row<R>(ui: &mut Ui, label: &str, input: impl FnOnce(&mut Ui) -> R) -> R {
-    const LABEL_WIDTH: f32 = 182.;
+    let label_width = (ui.available_width() * 0.35).min(182.);
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(
-            egui::vec2(LABEL_WIDTH, 32.),
+            egui::vec2(label_width, 32.),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                ui.set_width(LABEL_WIDTH);
+                ui.set_width(label_width);
                 ui.add(egui::Label::new(label).wrap());
             },
         );
         input(ui)
     })
     .inner
+}
+
+fn field_with_actions(
+    ui: &mut Ui,
+    field: egui::TextEdit<'_>,
+    labels: &[&str],
+) -> (egui::Response, Option<usize>) {
+    let field = field.id(ui.id().with("action-field"));
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let padding = 2. * ui.spacing().button_padding.x;
+    let spacing = ui.spacing().item_spacing.x;
+    let widths: Vec<_> = labels
+        .iter()
+        .map(|label| {
+            ui.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap((*label).into(), font.clone(), Color32::WHITE)
+                    .size()
+                    .x
+            })
+            .ceil()
+                + padding
+        })
+        .collect();
+    let available = ui.available_width();
+    let inline_width = available - widths.iter().sum::<f32>() - spacing * labels.len() as f32;
+    let actions = |ui: &mut Ui| {
+        labels
+            .iter()
+            .zip(widths)
+            .enumerate()
+            .fold(None, |clicked, (index, (label, width))| {
+                let button = ui.add(egui::Button::new(*label).min_size(egui::vec2(width, 0.)));
+                if button.clicked() {
+                    Some(index)
+                } else {
+                    clicked
+                }
+            })
+    };
+    if inline_width >= 160. {
+        ui.horizontal(|ui| {
+            let field = ui.add(field.desired_width(inline_width));
+            (field, actions(ui))
+        })
+        .inner
+    } else {
+        let field = ui.add(field.desired_width(available));
+        (field, ui.horizontal_wrapped(actions).inner)
+    }
 }
 
 fn shortcut_row(ui: &mut Ui, shortcut: &str, action: &str) {
@@ -1792,7 +1847,7 @@ fn cycle_controls(ui: &mut Ui, cycle: &mut Vec<Language>, minimum: usize) {
     let mut move_up = None;
     let mut remove = None;
     for (position, &index) in visible.iter().enumerate() {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(cycle[index].name());
             if ui
                 .add_enabled(
@@ -1840,5 +1895,51 @@ fn available_choices() -> Vec<Language> {
         Language::ALL.to_vec()
     } else {
         choices
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn settings_fields_and_localized_actions_fit_the_available_width() {
+        let context = egui::Context::default();
+        let mut text = "long-unbroken-text".repeat(40);
+        let mut wide_field = 0.;
+        for width in [500., 240., 500.] {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 400.),
+                )),
+                ..Default::default()
+            };
+            let _ = context.run_ui(input, |ui| {
+                let right = ui.max_rect().right();
+                let (field, _) = field_with_actions(
+                    ui,
+                    typlo_rust::appearance::text_input(&mut text),
+                    &["Choose an application…", "Remove"],
+                );
+                let template = ui.add(
+                    typlo_rust::appearance::text_area(&mut text)
+                        .clip_text(true)
+                        .desired_width(f32::INFINITY),
+                );
+                assert!(ui.min_rect().right() <= right + 1.);
+                assert!(template.rect.right() <= right + 1.);
+                if width == 240. {
+                    assert!((field.rect.right() - right).abs() <= 1.);
+                } else {
+                    assert!(field.rect.right() < right - 40.);
+                    assert!(field.rect.width() > 200.);
+                    if wide_field > 0. {
+                        assert_eq!(field.rect.width(), wide_field);
+                    }
+                    wide_field = field.rect.width();
+                }
+            });
+        }
     }
 }

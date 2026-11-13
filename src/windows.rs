@@ -100,7 +100,6 @@ const TYPING_TIMER: usize = 1;
 const UPDATE_TIMER: usize = 2;
 const ACTIVITY_TIMER: usize = 3;
 const INPUT_RETRY_TIMER: usize = 4;
-const UPDATE_CHECKED: u32 = WM_APP + 9;
 const HOST_CLASS: &str = "TyploRustBackground";
 const SETTINGS_WINDOW: &str = "TyploRustSettingsWindow";
 const SCREENSHOT_EDITOR: &str = "TyploRustScreenshotEditor";
@@ -431,8 +430,6 @@ struct Resident {
     accessible: Option<accessible::Worker>,
     tools: Option<tools_job::Job>,
     last_automatic: diagnostics::Shared,
-    update_query: Option<std::sync::mpsc::Receiver<io::Result<Option<String>>>>,
-    available_update: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -778,11 +775,15 @@ pub fn reload_lan_clipboard() {
 }
 
 pub fn run(profile: &Path, report: Option<&Path>) -> io::Result<()> {
-    run_resident(profile, report, report.is_some(), false)
+    run_resident(profile, report, report.is_some(), false, report.is_none())
 }
 
 pub fn run_updated(profile: &Path, report: &Path) -> io::Result<()> {
-    run_resident(profile, Some(report), false, false)
+    run_resident(profile, Some(report), false, false, false)
+}
+
+pub fn run_previous(profile: &Path) -> io::Result<()> {
+    run_resident(profile, None, false, false, false)
 }
 
 pub fn run_measurement(profile: &Path, report: &Path) -> io::Result<()> {
@@ -806,7 +807,7 @@ pub fn run_measurement(profile: &Path, report: &Path) -> io::Result<()> {
             "Use the private desktop created by measure-full-windows.ps1",
         ));
     }
-    run_resident(profile, Some(report), false, true)
+    run_resident(profile, Some(report), false, true, false)
 }
 
 fn run_resident(
@@ -814,6 +815,7 @@ fn run_resident(
     report: Option<&Path>,
     probe: bool,
     measured: bool,
+    auto_update: bool,
 ) -> io::Result<()> {
     let _instance = if probe || measured {
         None
@@ -926,8 +928,6 @@ fn run_resident(
             accessible: None,
             tools: None,
             last_automatic: Default::default(),
-            update_query: None,
-            available_update: None,
         }));
         if !probe {
             if unsafe { AddClipboardFormatListener(window) } == 0 {
@@ -954,7 +954,9 @@ fn run_resident(
                 );
             }
             unsafe {
-                SetTimer(window, UPDATE_TIMER, 20_000, None);
+                if auto_update {
+                    SetTimer(window, UPDATE_TIMER, 2_000, None);
+                }
                 SetTimer(window, INPUT_RETRY_TIMER, 5_000, None);
                 if RESIDENT.with_borrow(|resident| {
                     resident
@@ -1746,16 +1748,28 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                             &item.template,
                         )?;
                     }
-                    snippet_menu::Selection::Accessible(capture) => {
+                    selection => {
+                        let command = match selection {
+                            snippet_menu::Selection::Accessible(capture) => {
+                                accessible::Command::InsertMenuSnippet {
+                                    capture,
+                                    template: item.template,
+                                }
+                            }
+                            snippet_menu::Selection::Scintilla(capture) => {
+                                accessible::Command::InsertScintillaSnippet {
+                                    capture,
+                                    template: item.template,
+                                }
+                            }
+                            snippet_menu::Selection::Native { .. } => unreachable!(),
+                        };
                         resident.accessible_edit(
                             window,
                             accessible::Request {
                                 target,
                                 sequence,
-                                command: accessible::Command::InsertMenuSnippet {
-                                    capture,
-                                    template: item.template,
-                                },
+                                command,
                                 cycle: Vec::new(),
                                 switch_layout: false,
                                 recent: None,
@@ -1911,38 +1925,16 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             unsafe {
                 KillTimer(window, UPDATE_TIMER);
             }
-            RESIDENT.with_borrow_mut(|resident| {
-                let Some(resident) = resident else { return };
-                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-                let handle = window as usize;
-                if std::thread::Builder::new()
-                    .name("typlo-update-check".into())
-                    .spawn(move || {
-                        if sender.send(update::check_in_helper()).is_ok() {
-                            unsafe {
-                                PostMessageW(handle as HWND, UPDATE_CHECKED, 0, 0);
-                            }
-                        }
-                    })
-                    .is_ok()
-                {
-                    resident.update_query = Some(receiver);
-                }
-            });
-            0
-        }
-        UPDATE_CHECKED => {
-            RESIDENT.with_borrow_mut(|resident| {
-                if let Some(resident) = resident
-                    && let Some(query) = resident.update_query.take()
-                {
-                    match query.try_recv() {
-                        Ok(Ok(version)) => resident.available_update = version,
-                        Ok(Err(error)) => eprintln!("Typlo Rust: {error}"),
-                        Err(_) => {}
+            if let Err(error) = std::thread::Builder::new()
+                .name("typlo-auto-update".into())
+                .spawn(|| {
+                    if let Err(error) = update::auto_install_in_helper() {
+                        eprintln!("Typlo update: {error}");
                     }
-                }
-            });
+                })
+            {
+                eprintln!("Typlo update worker: {error}");
+            }
             0
         }
         TRAY_MESSAGE => {
@@ -2077,11 +2069,11 @@ fn tray_menu(window: HWND) {
             }
         }
         items.push((0, String::new(), MF_SEPARATOR));
-        let update = resident.available_update.as_ref().map_or_else(
-            || tr("update.check", "Check for updates").to_owned(),
-            |version| tr("update.install", "Update to v{0}").replace("{0}", version),
-        );
-        items.push((UPDATE_MENU, update, MF_STRING));
+        items.push((
+            UPDATE_MENU,
+            tr("update.check", "Check for updates").to_owned(),
+            MF_STRING,
+        ));
         items.push((QUIT, tr("tray.exit", "Exit").into(), MF_STRING));
         Some(items)
     }) else {

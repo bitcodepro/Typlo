@@ -136,12 +136,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             typlo_rust::windows::update::install_selected(version, hash)?
         }
         #[cfg(windows)]
+        [mode, version, hash, status] if mode == "--install-update" => {
+            typlo_rust::windows::update::install_selected_with_status(
+                version,
+                hash,
+                Some(Path::new(status)),
+            )?;
+        }
+        #[cfg(windows)]
+        [mode] if mode == "--auto-update" => {
+            typlo_rust::windows::update::auto_install()?;
+        }
+        #[cfg(windows)]
         [mode, report] if mode == "--updated-resident" => {
             typlo_rust::windows::run_updated(&config::profile(), Path::new(report))?
         }
         #[cfg(windows)]
         [mode] if mode == "--restart-previous" => {
-            typlo_rust::windows::run(&config::profile(), None)?
+            typlo_rust::windows::run_previous(&config::profile())?
         }
         #[cfg(windows)]
         [mode, source] if mode == "--import-history" => {

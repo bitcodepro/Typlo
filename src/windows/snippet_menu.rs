@@ -32,8 +32,8 @@ use windows_sys::Win32::{
 pub(super) const READY: u32 = WM_APP + 16;
 pub(super) const APPLY: u32 = WM_APP + 17;
 const MAX_VISIBLE: usize = 8;
-const BACKGROUND: u32 = 0x00fbf9f7;
-const SELECTED: u32 = 0x00ffead9;
+const BACKGROUND: u32 = 0x00fcfafa;
+const SELECTED: u32 = 0x00fce8db;
 const FOREGROUND: u32 = 0x00252018;
 
 #[derive(Clone, Copy)]
@@ -65,6 +65,7 @@ pub(super) enum Selection {
         selection: Range<usize>,
     },
     Accessible(Captured),
+    Scintilla(super::scintilla::SnippetSelection),
 }
 
 pub(super) struct Prepared {
@@ -766,7 +767,31 @@ fn paint(window: HWND) {
             let brush = GetStockObject(DC_BRUSH) as HBRUSH;
             SetDCBrushColor(dc, BACKGROUND);
             FillRect(dc, &client, brush);
-            SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
+            let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(window).max(96);
+            let font = CreateFontW(
+                -(14 * dpi as i32 / 96),
+                0,
+                0,
+                0,
+                FW_SEMIBOLD as i32,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                CLEARTYPE_QUALITY as u32,
+                DEFAULT_PITCH as u32,
+                wide("Segoe UI").as_ptr(),
+            );
+            let old_font = SelectObject(
+                dc,
+                if font.is_null() {
+                    GetStockObject(DEFAULT_GUI_FONT)
+                } else {
+                    font
+                },
+            );
             SetBkMode(dc, TRANSPARENT as i32);
             SetTextColor(dc, FOREGROUND);
             OPEN.with_borrow(|menu| {
@@ -900,6 +925,10 @@ fn paint(window: HWND) {
                     );
                 }
             });
+            SelectObject(dc, old_font);
+            if !font.is_null() {
+                DeleteObject(font);
+            }
         }
     }
     unsafe {

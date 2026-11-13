@@ -40,37 +40,58 @@ pub fn check() -> io::Result<Option<Update>> {
     update_package::check(&installed, ASSET)
 }
 
-pub(super) fn check_in_helper() -> io::Result<Option<String>> {
+pub(super) fn auto_install_in_helper() -> io::Result<()> {
     let output = Command::new(std::env::current_exe()?)
         .creation_flags(CREATE_NO_WINDOW)
-        .arg("--query-update")
+        .arg("--auto-update")
         .output()?;
     if !output.status.success() {
         return Err(io::Error::other(
             String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         ));
     }
-    serde_json::from_slice(&output.stdout).map_err(io::Error::other)
+    Ok(())
+}
+
+pub fn auto_install() -> io::Result<()> {
+    let _lock = InstallLock::acquire()?;
+    let Some(update) = check()? else {
+        return Ok(());
+    };
+    install(&update, |_| {})
 }
 
 pub fn install_selected(version: &str, hash: &str) -> io::Result<()> {
+    install_selected_with_status(version, hash, None)
+}
+
+pub fn install_selected_with_status(
+    version: &str,
+    hash: &str,
+    status: Option<&Path>,
+) -> io::Result<()> {
     let _lock = InstallLock::acquire()?;
     let update = check()?
         .filter(|update| update.version == version && update.sha256 == hash)
         .ok_or_else(|| {
             io::Error::other("The selected update is no longer available. Check again.")
         })?;
-    install(&update)
+    install(&update, |phase| {
+        if let Some(path) = status {
+            let _ = fs::write(path, phase);
+        }
+    })
 }
 
 #[cfg(feature = "gui")]
-pub fn spawn_installer(update: &Update) -> io::Result<()> {
+pub fn spawn_installer(update: &Update, status: &Path) -> io::Result<()> {
     let executable = std::env::current_exe()?.with_file_name(RESIDENT_EXE);
     let output = Command::new(executable)
         .creation_flags(CREATE_NO_WINDOW)
         .arg("--install-update")
         .arg(&update.version)
         .arg(&update.sha256)
+        .arg(status)
         .output()?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
@@ -83,7 +104,7 @@ pub fn spawn_installer(update: &Update) -> io::Result<()> {
     Ok(())
 }
 
-fn install(update: &Update) -> io::Result<()> {
+fn install(update: &Update, status: impl Fn(&str)) -> io::Result<()> {
     let root = installation_root()?;
     let previous = current(&root)?;
     let base = root.join(RESIDENT_EXE);
@@ -102,7 +123,9 @@ fn install(update: &Update) -> io::Result<()> {
     }
     let workspace = tempfile::tempdir()?;
     let archive = workspace.path().join("update.zip");
+    status("download");
     download(&update.url, &archive, MAX_PACKAGE, 120)?;
+    status("verify");
     let new_executable = stage(&root, &archive, &update.version, &update.sha256)?;
     let probe = workspace.path().join("probe-ready.txt");
     let isolated = workspace.path().join("isolated-profile");
@@ -115,6 +138,7 @@ fn install(update: &Update) -> io::Result<()> {
     let _ = child.kill();
     let _ = child.wait();
     probe_result?;
+    status("restart");
     let stopped = stop_resident(&old_executable)?;
     activate(
         &root,
@@ -388,5 +412,23 @@ mod tests {
                 .contains("synthetic startup failure")
         );
         assert!(restarted.get());
+    }
+
+    #[test]
+    fn successful_restart_keeps_the_new_version_active() {
+        let root = tempfile::tempdir().unwrap();
+        set_current(root.path(), Some("0.1.0")).unwrap();
+        activate(
+            root.path(),
+            "0.2.0",
+            Some("0.1.0"),
+            || {
+                assert_eq!(current(root.path()).unwrap().as_deref(), Some("0.2.0"));
+                Ok(())
+            },
+            || panic!("A successful restart must not restore the previous version"),
+        )
+        .unwrap();
+        assert_eq!(current(root.path()).unwrap().as_deref(), Some("0.2.0"));
     }
 }

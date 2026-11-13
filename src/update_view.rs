@@ -12,6 +12,8 @@ pub struct UpdateView {
     pending: Option<mpsc::Receiver<io::Result<Reply>>>,
     status: String,
     initial_check: bool,
+    #[cfg(windows)]
+    install_status: Option<tempfile::TempDir>,
 }
 
 enum Reply {
@@ -28,6 +30,24 @@ impl UpdateView {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        ui.label(concat!("v", env!("CARGO_PKG_VERSION")));
+        #[cfg(windows)]
+        if let Some(directory) = &self.install_status {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
+            if let Ok(phase) = std::fs::read_to_string(directory.path().join("status")) {
+                self.status = match phase.as_str() {
+                    "download" => tr("rust.update.downloading", "Downloading update…"),
+                    "verify" => tr(
+                        "rust.update.validating",
+                        "Verifying update and testing startup…",
+                    ),
+                    "restart" => tr("rust.update.restarting", "Restarting Typlo…"),
+                    _ => &self.status,
+                }
+                .to_owned();
+            }
+        }
         if std::mem::take(&mut self.initial_check) {
             ui.scroll_to_cursor(Some(egui::Align::Max));
             self.start(
@@ -47,6 +67,10 @@ impl UpdateView {
             };
             if let Some(reply) = reply {
                 self.pending = None;
+                #[cfg(windows)]
+                {
+                    self.install_status = None;
+                }
                 self.status = match reply {
                     Ok(Reply::Available(Some(update))) => {
                         let text = tr("update.available", "Typlo v{0} is available")
@@ -89,6 +113,24 @@ impl UpdateView {
                     .clicked()
             {
                 let update = update.clone();
+                #[cfg(windows)]
+                match tempfile::tempdir() {
+                    Ok(directory) => {
+                        let path = directory.path().join("status");
+                        self.start(
+                            ui,
+                            tr("update.checking", "Checking for updates…"),
+                            move || {
+                                update::spawn_installer(&update, &path).map(|()| Reply::Installed)
+                            },
+                        );
+                        if self.pending.is_some() {
+                            self.install_status = Some(directory);
+                        }
+                    }
+                    Err(error) => self.status = error.to_string(),
+                }
+                #[cfg(not(windows))]
                 self.start(
                     ui,
                     tr("rust.update.verifying", "Загружаю и проверяю обновление…"),
