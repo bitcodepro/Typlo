@@ -1,0 +1,5 @@
+/target/
+/dist/
+**/bin/Debug/
+**/bin/Release/
+**/obj/

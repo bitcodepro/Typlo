@@ -1,0 +1,78 @@
+[package]
+name = "typlo-rust"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[features]
+default = []
+gui = ["dep:eframe", "dep:arboard", "dep:image", "dep:raw-window-handle", "dep:winit",
+    "windows/Graphics_Imaging", "windows/Media_Ocr", "windows/Security_Cryptography",
+    "windows/Storage_Streams", "windows/Win32_System_WinRT"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+eframe = { version = "0.34", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+arboard = { version = "3", optional = true, default-features = false, features = ["image-data"] }
+rusqlite = "0.38.0"
+spellbook = "0.4.2"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "ico", "png", "jpeg", "tiff"], optional = true }
+raw-window-handle = { version = "0.6.2", optional = true }
+zip = { version = "2.6.1", default-features = false, features = ["deflate"] }
+tempfile = "3.27.0"
+aes-gcm = "0.10"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+getrandom = "0.4"
+hmac = "0.12.1"
+sha2 = "0.10.9"
+percent-encoding = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = { version = "0.30", optional = true, default-features = false }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std", "libc", "objc2-core-foundation", "NSPasteboard", "NSPasteboardItem", "NSRunningApplication",
+    "NSApplication", "NSEvent", "NSGraphicsContext", "NSResponder", "NSStatusBar", "NSStatusItem", "NSStatusBarButton",
+    "NSButton", "NSControl", "NSView", "NSMenu", "NSMenuItem",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSObject"] }
+
+[target.'cfg(windows)'.dependencies]
+base64 = "0.22"
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+image = { version = "0.25.10", default-features = false, features = ["bmp", "png"] }
+unicode-segmentation = "1.13"
+hmac = "0.12.1"
+sha2 = "0.10.9"
+windows = { version = "0.62.2", features = ["Win32_UI_Accessibility", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock",
+    "Win32_System_StationsAndDesktops",
+    "Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Cryptography",
+    "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Power", "Win32_System_ProcessStatus", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading",
+    "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_UI_Controls_Dialogs", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3", optional = true, default-features = false, features = ["wayland-data-control"] }
+libc = "0.2"
+libloading = "0.8"
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+x11rb = { version = "0.13.2", features = ["dl-libxcb", "xkb", "xinput", "res", "xfixes", "xtest"] }
+xkbcommon-dl = { version = "0.4.2", features = ["x11"] }
+
+[[bin]]
+name = "typlo-settings"
+path = "src/bin/typlo-settings.rs"
+required-features = ["gui"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
