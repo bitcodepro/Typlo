@@ -4,6 +4,9 @@ param(
     [Parameter(Mandatory)][string]$Version
 )
 $ErrorActionPreference = 'Stop'
+if ($Version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+    throw 'Updater version must be X.Y.Z'
+}
 $payload = (Resolve-Path -LiteralPath $PayloadDirectory).Path
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $relative = [IO.Path]::GetRelativePath($payload, $output)
@@ -41,8 +44,12 @@ try {
     }
     $verification = [Diagnostics.Process]::Start($spec)
     try {
-        $errorOutput = $verification.StandardError.ReadToEnd()
-        $verification.WaitForExit()
+        $errorRead = $verification.StandardError.ReadToEndAsync()
+        if (!$verification.WaitForExit(60000)) {
+            $verification.Kill($true)
+            throw 'Update package verification timed out'
+        }
+        $errorOutput = $errorRead.GetAwaiter().GetResult()
         if ($verification.ExitCode -ne 0) { throw "Update package rejected. $errorOutput" }
     } finally {
         $verification.Dispose()

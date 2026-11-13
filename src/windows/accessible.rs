@@ -581,6 +581,10 @@ fn start_tools(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Windows worker passes its independently borrowed services explicitly"
+)]
 fn run(
     automation: &IUIAutomation2,
     owner: HWND,
@@ -611,6 +615,10 @@ fn run(
     result
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Windows worker passes its independently borrowed services explicitly"
+)]
 fn run_edit(
     automation: &IUIAutomation2,
     owner: HWND,

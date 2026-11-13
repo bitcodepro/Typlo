@@ -248,8 +248,10 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let profile = folder.path().join("profile");
         let dictionary = Dictionary::new(&profile);
-        let mut original = Config::default();
-        original.ui_theme = config::UiTheme::Dark;
+        let original = Config {
+            ui_theme: config::UiTheme::Dark,
+            ..Config::default()
+        };
         let data = serde_json::to_vec(&original).unwrap();
         dictionary
             .restore_snapshot(

@@ -53,6 +53,10 @@ impl Fallback {
         })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing clipboard fallback transaction interface"
+    )]
     pub(super) fn run(
         &mut self,
         owner: HWND,

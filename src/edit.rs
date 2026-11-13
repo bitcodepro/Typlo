@@ -259,6 +259,10 @@ impl<T: Clone + Eq> Session<T> {
         Ok(true)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the existing edit transaction inputs explicit"
+    )]
     fn apply(
         &mut self,
         editor: &mut impl Editor<Target = T>,

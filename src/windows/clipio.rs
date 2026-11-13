@@ -766,7 +766,9 @@ impl TemporaryText {
         // CRLF can double the UTF-16 length of a normalized multiline range.
         let data = read(UNICODE_TEXT, 256 * 1024).ok_or_else(unrestorable)?;
         let mut units = data
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|unit| u16::from_le_bytes([unit[0], unit[1]]));
         let text = String::from_utf16(
             &units
