@@ -160,7 +160,11 @@ impl History {
                 "Unsupported clipboard history schema version",
             ));
         }
-        if version == SCHEMA_VERSION {
+        // VACUUM INTO preserves user_version but creates a fresh journal.
+        let journal: String = db
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .map_err(io::Error::other)?;
+        if version == SCHEMA_VERSION && journal.eq_ignore_ascii_case("wal") {
             let secret: Vec<u8> = db
                 .query_row("SELECT secret FROM metadata WHERE id=1", [], |row| {
                     row.get(0)
@@ -986,6 +990,30 @@ mod tests {
         let id = reader.list(0).unwrap()[0].id;
         assert_eq!(reader.load(id).unwrap().unwrap().text(), "existing entry");
         transaction.rollback().unwrap();
+    }
+
+    #[test]
+    fn versioned_history_copy_reenables_wal() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let history = History::open(source.path()).unwrap();
+        history
+            .db
+            .execute(
+                "VACUUM INTO ?1",
+                [destination
+                    .path()
+                    .join("history.sqlite3")
+                    .to_string_lossy()
+                    .as_ref()],
+            )
+            .unwrap();
+        let copied = History::open(destination.path()).unwrap();
+        let journal: String = copied
+            .db
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal, "wal");
     }
 
     #[test]
