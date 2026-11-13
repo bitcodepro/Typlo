@@ -9,6 +9,7 @@ pub struct Settings {
     paired: bool,
     address: String,
     code: String,
+    local_code: Option<String>,
     status: String,
     checking: Option<mpsc::Receiver<io::Result<String>>>,
 }
@@ -19,6 +20,7 @@ impl Settings {
             paired: false,
             address: String::new(),
             code: String::new(),
+            local_code: None,
             status: String::new(),
             checking: None,
         };
@@ -52,22 +54,51 @@ impl Settings {
         ui.collapsing(tr("rust.lan.heading", "Clipboard sharing with another computer"), |ui| {
             ui.label(tr(
                 "rust.lan.instructions",
-                "On both computers, copy this computer’s code and enter it on the other computer. Then use ↗ next to an item in history to send it.",
+                "On both computers, show the pairing code and enter it on the other computer. Then use ↗ next to an item in history to send it.",
             ));
-            if ui.button(tr("rust.lan.copyCode", "Copy this computer’s code")).clicked() {
-                self.status = match lan_clipboard::invite(profile) {
-                    Ok(code) => {
-                        ui.ctx().copy_text(code);
-                        tr("rust.lan.copied", "Pairing code copied").into()
-                    }
-                    Err(error) => error.to_string(),
+            ui.horizontal_wrapped(|ui| {
+                let label = if self.local_code.is_some() {
+                    tr("rust.lan.hideCode", "Hide pairing code")
+                } else {
+                    tr("rust.lan.showCode", "Show pairing code")
                 };
+                if ui.button(label).clicked() && self.local_code.take().is_none() {
+                    match lan_clipboard::invite(profile) {
+                        Ok(code) => {
+                            self.local_code = Some(code);
+                            self.status.clear();
+                        }
+                        Err(error) => self.status = error.to_string(),
+                    }
+                }
+                if let Some(code) = &self.local_code
+                    && ui.button(tr("rust.lan.copy", "Copy code")).clicked()
+                {
+                    ui.ctx().copy_text(code.clone());
+                    self.status = tr("rust.lan.copied", "Pairing code copied").into();
+                }
+            });
+            if let Some(code) = &self.local_code {
+                ui.label(tr("rust.lan.thisCode", "This computer’s code"));
+                let grouped = code.as_bytes().chunks(32)
+                    .map(|line| std::str::from_utf8(line).expect("Pairing codes are ASCII"))
+                    .collect::<Vec<_>>().join("\n");
+                let mut code = grouped.as_str();
+                ui.add(crate::appearance::text_area(&mut code)
+                    .font(egui::TextStyle::Monospace)
+                    .clip_text(true)
+                    .desired_width(f32::INFINITY));
             }
             if self.paired {
                 ui.label(tr("rust.lan.paired", "A computer is paired"));
             } else {
                 ui.label(tr("rust.lan.otherCode", "Other computer’s code"));
-                ui.add(egui::TextEdit::singleline(&mut self.code).desired_width(f32::INFINITY));
+                ui.add(crate::appearance::text_area(&mut self.code)
+                    .font(egui::TextStyle::Monospace)
+                    .clip_text(true)
+                    .desired_rows(2)
+                    .char_limit(8192)
+                    .desired_width(f32::INFINITY));
             }
             ui.label(tr("rust.lan.address", "Other computer’s IPv4 address (optional)"));
             ui.add(egui::TextEdit::singleline(&mut self.address).hint_text("192.168.1.20").char_limit(15));

@@ -1500,6 +1500,7 @@ impl eframe::App for Workspace {
                         heading(ui, tr("tools.measurements", "Measurements"));
                         #[cfg(windows)]
                         self.performance_report(ui);
+                        #[cfg(windows)]
                         if ui.button(tr("rust.logs.open", "Open diagnostic logs")).clicked()
                             && let Err(error) = open_diagnostic_logs(&self.profile)
                         {
