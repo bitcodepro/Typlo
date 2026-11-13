@@ -987,6 +987,9 @@ fn run_resident(
         if let Some(report) = report {
             std::fs::write(report, "Typlo Rust background ready\n")?;
         }
+        if _session.is_some() {
+            crate::runtime_log::write("INFO", format_args!("Resident ready"));
+        }
         let mut message = MSG::default();
         loop {
             let result = unsafe { GetMessageW(&mut message, null_mut(), 0, 0) };

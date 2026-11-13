@@ -13,14 +13,20 @@ use typlo_rust::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(windows)]
-    if std::env::args_os().len() == 1 {
-        typlo_rust::windows::prepare_portable_profile(&config::profile())?;
-    }
-    typlo_rust::runtime_log::initialize(&config::profile(), "ui");
     run().inspect_err(|error| {
         typlo_rust::runtime_log::write("ERROR", format_args!("UI failed: {error}"));
     })
+}
+
+fn ui_profile(path: Option<std::ffi::OsString>) -> std::io::Result<PathBuf> {
+    let default = config::profile();
+    let profile = path.map_or_else(|| default.clone(), PathBuf::from);
+    #[cfg(windows)]
+    if profile == default {
+        typlo_rust::windows::prepare_portable_profile(&profile)?;
+    }
+    typlo_rust::runtime_log::initialize(&profile, "ui");
+    Ok(profile)
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,10 +37,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .is_some_and(|mode| mode == "--layout-choice-preview")
     {
-        let profile = args
-            .next()
-            .map(PathBuf::from)
-            .unwrap_or_else(config::profile);
+        let profile = ui_profile(args.next())?;
         return typlo_rust::selection_tools_view::run_preview(profile);
     }
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -42,18 +45,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .is_some_and(|mode| mode == "--selection-tools")
     {
-        let profile = args
-            .next()
-            .map(PathBuf::from)
-            .unwrap_or_else(config::profile);
+        let profile = ui_profile(args.next())?;
         return typlo_rust::selection_tools_view::run(profile);
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if mode.as_deref().is_some_and(|mode| mode == "--history") {
-        let profile = args
-            .next()
-            .map(PathBuf::from)
-            .unwrap_or_else(config::profile);
+        let profile = ui_profile(args.next())?;
         let mut origin = [0; 2];
         for field in &mut origin {
             *field = args
@@ -78,10 +75,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(Into::into);
         }
         if mode == "--history" {
-            let profile = args
-                .next()
-                .map(PathBuf::from)
-                .unwrap_or_else(config::profile);
+            let profile = ui_profile(args.next())?;
             let mut origin = [0; 3];
             for field in &mut origin {
                 *field = args
@@ -94,10 +88,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return typlo_rust::history_view::run(profile, origin, anchor);
         }
         if mode == "--capture" {
-            let profile = args
-                .next()
-                .map(PathBuf::from)
-                .unwrap_or_else(config::profile);
+            let profile = ui_profile(args.next())?;
             let destination = args.next().unwrap_or_default();
             let shape = if args.next().is_some_and(|arg| arg == "free") {
                 config::CaptureShape::Free
@@ -111,10 +102,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         if mode == "--screenshot-editor" {
-            let profile = args
-                .next()
-                .map(PathBuf::from)
-                .unwrap_or_else(config::profile);
+            let profile = ui_profile(args.next())?;
             let for_save = args.next().is_some_and(|arg| arg == "file");
             return typlo_rust::capture_view::run_editor(&profile, for_save);
         }
@@ -123,10 +111,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .is_some_and(|arg| arg == "--spelling-review")
     {
-        let profile = args
-            .next()
-            .map(PathBuf::from)
-            .unwrap_or_else(config::profile);
+        let profile = ui_profile(args.next())?;
         return typlo_rust::spelling_view::run(profile);
     }
     let page = match mode.as_deref().and_then(|arg| arg.to_str()) {
@@ -139,10 +124,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let report = (mode.as_deref().is_some_and(|arg| arg == "--ui-probe"))
         .then(|| args.next().map(PathBuf::from))
         .flatten();
-    let profile = args
-        .next()
-        .map(PathBuf::from)
-        .unwrap_or_else(config::profile);
+    let profile = ui_profile(args.next())?;
     let report = report.map(|report| UiProbe {
         report,
         frame: args.next().map(PathBuf::from),

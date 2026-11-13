@@ -86,6 +86,70 @@ public static class TyploUiSmoke {
         }
     }
 
+    public static void VerifyPortableStartup(string resident, string settings, string fixture) {
+        string install = Path.Combine(fixture, "portable");
+        string appData = Path.Combine(fixture, "local");
+        string legacy = Path.Combine(appData, "Typlo-Rust");
+        Directory.CreateDirectory(install);
+        Directory.CreateDirectory(legacy);
+        File.WriteAllText(Path.Combine(legacy, "settings.json"), "{\"ui_language\":\"ru\",\"history_items\":73}");
+        string settingsCopy = Path.Combine(install, Path.GetFileName(settings));
+        string residentCopy = Path.Combine(install, Path.GetFileName(resident));
+        File.Copy(settings, settingsCopy);
+        File.Copy(resident, residentCopy);
+        string softwareGl = Path.Combine(Path.GetDirectoryName(settings), "opengl32.dll");
+        if (File.Exists(softwareGl)) File.Copy(softwareGl, Path.Combine(install, "opengl32.dll"));
+
+        string desktopName = "TyploPortable_" + Guid.NewGuid().ToString("N");
+        IntPtr desktop = CreateDesktopW(desktopName, IntPtr.Zero, IntPtr.Zero, 0, 0x1ff, IntPtr.Zero);
+        if (desktop == IntPtr.Zero) throw new Win32Exception();
+        string previousLocal = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+        try {
+            Environment.SetEnvironmentVariable("LOCALAPPDATA", appData);
+            // An explicit test profile must never initialize the installation's default profile.
+            CheckWindow(settingsCopy, desktop, desktopName, "--history " + Quote(Path.Combine(fixture, "explicit")),
+                "Typlo2.0 — clipboard history", null);
+            string data = Path.Combine(install, "data");
+            if (Directory.Exists(data)) throw new InvalidOperationException("An explicit profile created the default profile");
+
+            CheckWindow(settingsCopy, desktop, desktopName, "--history", "Typlo2.0 — история буфера", null);
+            string migrated = Path.Combine(data, "settings.json");
+            if (File.ReadAllText(migrated) != File.ReadAllText(Path.Combine(legacy, "settings.json")) ||
+                !File.Exists(Path.Combine(data, "history.sqlite3")))
+                throw new InvalidOperationException("History did not migrate the default profile before opening");
+
+            if (Mutex.TryOpenExisting(@"Local\Typlo.Rust.Resident.v1", out Mutex existing)) {
+                existing.Dispose();
+                CheckWindow(settingsCopy, desktop, desktopName, "", "Typlo2.0 — настройки", null);
+                Console.WriteLine("PASS first launch through --history migrates the profile; resident check skipped because Typlo is already running");
+                return;
+            }
+            var background = Start(residentCopy, desktopName, "");
+            try {
+                string log = Path.Combine(data, "logs", "typlo.log");
+                for (int i = 0; i < 100; i++) {
+                    if (File.Exists(log) && File.ReadAllText(log).Contains($"pid={background.Pid} Resident ready")) {
+                        Console.WriteLine("PASS first launch through --history migrates the profile before resident startup");
+                        return;
+                    }
+                    if (WaitForSingleObject(background.Process, 0) == 0) break;
+                    Thread.Sleep(20);
+                }
+                throw new InvalidOperationException("Resident did not start with the migrated portable profile");
+            } finally {
+                EnumDesktopWindows(desktop, (window, _) => {
+                    GetWindowThreadProcessId(window, out var pid);
+                    if (pid == background.Pid) PostMessageW(window, 0x0010, IntPtr.Zero, IntPtr.Zero);
+                    return true;
+                }, IntPtr.Zero);
+                CloseProcess(background);
+            }
+        } finally {
+            Environment.SetEnvironmentVariable("LOCALAPPDATA", previousLocal);
+            CloseDesktop(desktop);
+        }
+    }
+
     static void CheckThemeFrame(string exe, IntPtr desktop, string name, string profile, string theme, string expected) {
         string fixture = Path.Combine(profile, theme);
         Directory.CreateDirectory(fixture);
@@ -186,6 +250,7 @@ Add-Type -TypeDefinition $native
 $profile = Join-Path ([System.IO.Path]::GetTempPath()) ('TyploUiSmoke-' + [guid]::NewGuid().ToString('N'))
 try {
     [TyploUiSmoke]::Verify((Resolve-Path -LiteralPath $Resident).Path, (Resolve-Path -LiteralPath $Settings).Path, $profile)
+    [TyploUiSmoke]::VerifyPortableStartup((Resolve-Path -LiteralPath $Resident).Path, (Resolve-Path -LiteralPath $Settings).Path, "$profile/portable-startup")
 } catch {
     # Preserve renderer/startup errors when the private-desktop process exits.
     $failure = $_

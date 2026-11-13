@@ -11,19 +11,21 @@ use typlo_rust::{
 };
 
 fn main() {
-    let mode = env::args_os().nth(1);
-    if mode.as_deref().is_some_and(|mode| {
-        matches!(
-            mode.to_str(),
-            Some("--auto-update" | "--install-update" | "--lan-send" | "--lan-retry")
-        )
-    }) {
-        typlo_rust::runtime_log::initialize(&config::profile(), "resident");
-    }
     if let Err(error) = run() {
         typlo_rust::runtime_error!("Typlo Rust: {error}");
         std::process::exit(1);
     }
+}
+
+#[cfg(windows)]
+fn helper_profile(path: Option<&str>) -> io::Result<std::path::PathBuf> {
+    let default = config::profile();
+    let profile = path.map_or_else(|| default.clone(), std::path::PathBuf::from);
+    if profile == default {
+        typlo_rust::windows::prepare_portable_profile(&profile)?;
+    }
+    typlo_rust::runtime_log::initialize(&profile, "resident");
+    Ok(profile)
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -131,21 +133,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(windows)]
         [mode, profile, entry] if mode == "--lan-send" => {
             typlo_rust::windows::lan_clipboard::jobs::run(
-                Path::new(profile),
+                &helper_profile(Some(profile))?,
                 entry.parse()?,
                 false,
             )?
         }
         #[cfg(windows)]
         [mode, profile, entry] if mode == "--lan-retry" => {
-            typlo_rust::windows::lan_clipboard::jobs::run(Path::new(profile), entry.parse()?, true)?
+            typlo_rust::windows::lan_clipboard::jobs::run(
+                &helper_profile(Some(profile))?,
+                entry.parse()?,
+                true,
+            )?
         }
         #[cfg(windows)]
         [mode, version, hash] if mode == "--install-update" => {
+            helper_profile(None)?;
             typlo_rust::windows::update::install_selected(version, hash)?
         }
         #[cfg(windows)]
         [mode, version, hash, status] if mode == "--install-update" => {
+            helper_profile(None)?;
             typlo_rust::windows::update::install_selected_with_status(
                 version,
                 hash,
@@ -154,6 +162,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(windows)]
         [mode] if mode == "--auto-update" => {
+            helper_profile(None)?;
             typlo_rust::windows::update::auto_install()?;
         }
         #[cfg(windows)]
@@ -166,7 +175,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(windows)]
         [mode, source] if mode == "--import-history" => {
-            let imported = typlo_rust::windows::history::History::open(&config::profile())?
+            let imported = typlo_rust::windows::history::History::open(&helper_profile(None)?)?
                 .import_legacy(Path::new(source))?;
             println!("{imported}");
         }
