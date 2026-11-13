@@ -47,7 +47,8 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
+        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT,
+        SetLastError, WPARAM,
     },
     Globalization::{GetLocaleInfoW, LOCALE_SNATIVELANGNAME},
     System::{
@@ -188,11 +189,15 @@ impl WinEdit {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> io::Result<usize> {
-        let remaining = self
-            .deadline
-            .map_or(Duration::from_millis(100), |deadline| {
-                deadline.saturating_duration_since(Instant::now())
-            });
+        let message_limit = if self.fixed.is_some() {
+            NATIVE_FIXTURE_MESSAGE_TIMEOUT_MS
+        } else {
+            100
+        };
+        let remaining = self.deadline.map_or(
+            Duration::from_millis(u64::from(message_limit)),
+            |deadline| deadline.saturating_duration_since(Instant::now()),
+        );
         if remaining.is_zero() {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -204,7 +209,7 @@ impl WinEdit {
             message,
             wparam,
             lparam,
-            remaining.as_millis().clamp(1, 100) as u32,
+            remaining.as_millis().clamp(1, u128::from(message_limit)) as u32,
         )
     }
 
@@ -266,7 +271,12 @@ impl Editor for WinEdit {
 
     fn begin_operation(&mut self) {
         self.lease = None;
-        self.deadline = Some(Instant::now() + Duration::from_millis(250));
+        let budget = if self.fixed.is_some() {
+            NATIVE_FIXTURE_OPERATION_TIMEOUT_MS
+        } else {
+            250
+        };
+        self.deadline = Some(Instant::now() + Duration::from_millis(budget));
     }
 
     fn recent_range(&self, snapshot: &Snapshot<Target>) -> Option<Range<usize>> {
@@ -429,6 +439,21 @@ fn send(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> io::Resul
     send_timeout(window, message, wparam, lparam, 100)
 }
 
+// The isolated fixture also measures cross-process edits on shared CI runners.
+// Give it scheduling headroom independently of the interactive editor budget.
+const NATIVE_FIXTURE_MESSAGE_TIMEOUT_MS: u32 = 1_000;
+const NATIVE_FIXTURE_OPERATION_TIMEOUT_MS: u64 = 3_000;
+
+fn send_fixture(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> io::Result<usize> {
+    send_timeout(
+        window,
+        message,
+        wparam,
+        lparam,
+        NATIVE_FIXTURE_MESSAGE_TIMEOUT_MS,
+    )
+}
+
 fn send_timeout(
     window: HWND,
     message: u32,
@@ -438,6 +463,7 @@ fn send_timeout(
 ) -> io::Result<usize> {
     let mut result = 0;
     if unsafe {
+        SetLastError(0);
         SendMessageTimeoutW(
             window,
             message,
@@ -449,8 +475,18 @@ fn send_timeout(
         )
     } == 0
     {
-        return Err(io::Error::other(
-            "The native editor did not acknowledge the operation",
+        let error = io::Error::last_os_error();
+        let kind = if error.raw_os_error() == Some(0) {
+            io::ErrorKind::Other
+        } else {
+            error.kind()
+        };
+        return Err(io::Error::new(
+            kind,
+            format!(
+                "Native editor message {message:#06x} failed (limit {timeout} ms, Win32 error {})",
+                error.raw_os_error().unwrap_or_default()
+            ),
         ));
     }
     Ok(result)
@@ -2957,7 +2993,7 @@ fn check_native_fixture(mode: &str, window: HWND, editor: &mut WinEdit) -> io::R
             Ok(state.document.iter().copied().eq(text.encode_utf16())
                 && state.selection == (caret..caret))
         };
-        send(window, EM_SETSEL, 8, 8)?;
+        send_fixture(window, EM_SETSEL, 8, 8)?;
         let template = Template::parse("hello\n🙂{cursor}!")?;
         if !session.expand_snippet(editor, ";ad", &template)?
             || !expected(editor, "keep hello\r\n🙂!", 14)?
@@ -2969,8 +3005,8 @@ fn check_native_fixture(mode: &str, window: HWND, editor: &mut WinEdit) -> io::R
             ));
         }
         let sample = wide("keep rfr ");
-        send(window, WM_SETTEXT, 0, sample.as_ptr() as LPARAM)?;
-        send(window, EM_SETSEL, 9, 9)?;
+        send_fixture(window, WM_SETTEXT, 0, sample.as_ptr() as LPARAM)?;
+        send_fixture(window, EM_SETSEL, 9, 9)?;
         let mut vocabulary = Vocabulary::installed()?;
         let empty = Dictionary::new(
             &std::env::temp_dir().join(format!("typlo-fixture-{}", std::process::id())),
@@ -3009,8 +3045,8 @@ fn check_native_fixture(mode: &str, window: HWND, editor: &mut WinEdit) -> io::R
             let corrected = format!("keep привет{separator}");
             let text = wide(&original);
             let caret = original.encode_utf16().count();
-            send(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)?;
-            send(window, EM_SETSEL, caret, caret as LPARAM)?;
+            send_fixture(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)?;
+            send_fixture(window, EM_SETSEL, caret, caret as LPARAM)?;
             if session.correct_word(editor, "ghbdtn ", &mut suggest)? != Some(Language::Ru)
                 || !expected(editor, &corrected, caret)?
                 || !session.undo(editor)?
@@ -3031,20 +3067,37 @@ fn check_native_fixture(mode: &str, window: HWND, editor: &mut WinEdit) -> io::R
             Err(io::Error::other("Unsafe editor was accepted"))
         };
     }
-    for (prefix, original, result, suffix) in [
+    for (index, (prefix, original, result, suffix)) in [
         ("🙂", "ghbdtn", "привет", "TAIL"),
         ("", "rfr", "как", ""),
         ("keep ", "gjlrk.xbnm ", "подключить ", "NEXT"),
         ("keep ", "ghbdtn\u{a0}", "привет\u{a0}", "🙂"),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let before = format!("{prefix}{original}{suffix}");
         let after = format!("{prefix}{result}{suffix}");
         let text = wide(&before);
         let start = prefix.encode_utf16().count();
         let end = start + original.encode_utf16().count();
         let caret = start + result.encode_utf16().count();
-        send(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)?;
-        send(window, EM_SETSEL, start, end as LPARAM)?;
+        let phase = |action, error: io::Error| {
+            io::Error::new(
+                error.kind(),
+                format!("case {} {action}: {error}", index + 1),
+            )
+        };
+        if send_fixture(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)
+            .map_err(|error| phase("reset", error))?
+            == 0
+        {
+            return Err(phase(
+                "reset",
+                io::Error::other("Editor refused sample text"),
+            ));
+        }
+        send_fixture(window, EM_SETSEL, start, end as LPARAM)?;
         let mut session = Session::default();
         let check =
             |editor: &mut WinEdit, text: &str, selection: Range<usize>| -> io::Result<bool> {
@@ -3052,19 +3105,31 @@ fn check_native_fixture(mode: &str, window: HWND, editor: &mut WinEdit) -> io::R
                 Ok(snapshot.selection == selection
                     && snapshot.document.iter().copied().eq(text.encode_utf16()))
             };
-        if session.convert_to(editor, Language::Ru, Some(Language::En))? != Some(Language::Ru)
+        if session
+            .convert_to(editor, Language::Ru, Some(Language::En))
+            .map_err(|error| phase("convert", error))?
+            != Some(Language::Ru)
             || !check(editor, &after, caret..caret)?
         {
             return Err(io::Error::other(
                 "Native replacement changed the wrong text or caret",
             ));
         }
-        send(window, EM_SETSEL, start, start as LPARAM)?;
-        if session.undo(editor)? || !check(editor, &after, start..start)? {
+        send_fixture(window, EM_SETSEL, start, start as LPARAM)?;
+        if session
+            .undo(editor)
+            .map_err(|error| phase("moved caret", error))?
+            || !check(editor, &after, start..start)?
+        {
             return Err(io::Error::other("Undo edited text after the caret moved"));
         }
-        send(window, EM_SETSEL, caret, caret as LPARAM)?;
-        if !session.undo(editor)? || !check(editor, &before, end..end)? || session.undo(editor)? {
+        send_fixture(window, EM_SETSEL, caret, caret as LPARAM)?;
+        if !session.undo(editor).map_err(|error| phase("undo", error))?
+            || !check(editor, &before, end..end)?
+            || session
+                .undo(editor)
+                .map_err(|error| phase("repeat undo", error))?
+        {
             return Err(io::Error::other(
                 "Undo did not restore the exact original text and caret",
             ));
@@ -3099,10 +3164,10 @@ pub fn measure_native(iterations: usize) -> io::Result<serde_json::Value> {
             for _ in 0..iterations {
                 let mut session = Session::default();
                 let start_text = wide("🙂ghbdtnTAIL");
-                if send(window, WM_SETTEXT, 0, start_text.as_ptr() as LPARAM)? == 0 {
+                if send_fixture(window, WM_SETTEXT, 0, start_text.as_ptr() as LPARAM)? == 0 {
                     return Err(io::Error::other("Native fixture refused to reset"));
                 }
-                send(window, EM_SETSEL, 2, 8)?;
+                send_fixture(window, EM_SETSEL, 2, 8)?;
                 let start = Instant::now();
                 let converted = session.convert_to(&mut editor, Language::Ru, Some(Language::En));
                 let elapsed = start.elapsed().as_secs_f64() * 1000.;
@@ -3141,10 +3206,10 @@ pub fn measure_native(iterations: usize) -> io::Result<serde_json::Value> {
             let expected = format!("keep привет{separator}");
             let caret = original.encode_utf16().count();
             let text = wide(&original);
-            if send(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)? == 0 {
+            if send_fixture(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)? == 0 {
                 return Err(io::Error::other("Typing fixture refused to reset"));
             }
-            send(window, EM_SETSEL, caret, caret as LPARAM)?;
+            send_fixture(window, EM_SETSEL, caret, caret as LPARAM)?;
             let mut session = Session::default();
             let started = Instant::now();
             let changed = session.correct_word(&mut editor, "ghbdtn ", |token| {
