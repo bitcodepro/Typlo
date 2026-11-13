@@ -57,9 +57,9 @@ jobs:
       - name: Package one Windows ZIP and verify
         shell: pwsh
         run: ./tools/prepare-windows-release.ps1 -SoftwareOpenGL
-      - name: Verify ZIP with published v0.1.0 updater
+      - name: Verify ZIP format and manual migration layout
         shell: pwsh
-        run: ./tools/test-windows-package-compat.ps1 -ArchivePath ./dist/typlo-rust-win-x64.zip
+        run: ./tools/test-windows-package-compat.ps1 -ArchivePath ./dist/typlo-win-x64.zip
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-x64-${{ github.sha }}

@@ -31,4 +31,10 @@ try {
     $detail = $errorRead.GetAwaiter().GetResult()
     if ($process.ExitCode -ne 0) { throw "v0.1.0 rejected the package: $detail" }
 } finally { $process.Dispose() }
-Write-Host 'PASS published v0.1.0 accepts the single Windows ZIP (package compatibility only; no update installed)'
+# Simulate a manual extraction without launching a resident or using a real profile.
+$manual = Join-Path $temporary 'manual-install'
+[IO.Compression.ZipFile]::ExtractToDirectory($candidate, $manual)
+foreach ($name in @('typlo-rust.exe', 'typlo-settings.exe', 'resources/language-detection/words.sqlite3', 'README.md', 'LICENSE')) {
+    if (!(Test-Path -LiteralPath (Join-Path $manual $name) -PathType Leaf)) { throw "Manual installation missing: $name" }
+}
+Write-Host 'PASS internal ZIP format and isolated manual extraction; v0.1.0 cannot discover typlo-win-x64.zip (no automatic migration or live update tested)'

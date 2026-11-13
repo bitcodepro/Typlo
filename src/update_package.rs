@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn windows_checks_use_one_exact_installation_and_update_asset() {
-        let name = "typlo-rust-win-x64.zip";
+        let name = "typlo-win-x64.zip";
         let chosen = select(
             vec![
                 release("v0.1.1", name),
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn release_identity_and_digest_rules_remain_strict() {
-        let name = "typlo-rust-win-x64.zip";
+        let name = "typlo-win-x64.zip";
         for tag in [
             "0.1.1",
             "v0.1.1-rc1",
@@ -417,7 +417,24 @@ mod tests {
         ] {
             let found = select(vec![release("v0.1.1", name)], name).unwrap();
             assert!(found.url.ends_with(name));
-            assert!(select(vec![release("v0.1.1", name)], "typlo-rust-win-x64.zip").is_none());
+            assert!(select(vec![release("v0.1.1", name)], "typlo-win-x64.zip").is_none());
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn renamed_windows_asset_requires_manual_migration_from_v0_1_0() {
+        let feed: Vec<Release> =
+            serde_json::from_value(json!([release("v0.1.1", "typlo-win-x64.zip")])).unwrap();
+        // Installed v0.1.0 asks only for its old exact name. No alias/fallback.
+        assert!(select_update(feed, [0, 1, 0], "typlo-rust-win-x64.zip").is_none());
+        let feed: Vec<Release> = serde_json::from_value(json!([
+            release("v0.1.2", "typlo-win-x64.zip"),
+            release("v0.2.0", "typlo-rust-win-x64.zip")
+        ]))
+        .unwrap();
+        let update = select_update(feed, [0, 1, 1], crate::windows::update::ASSET).unwrap();
+        assert_eq!(update.version, "0.1.2");
+        assert!(update.url.ends_with("/typlo-win-x64.zip"));
     }
 }

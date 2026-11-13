@@ -21,15 +21,17 @@ function Read-ReleaseManifest {
     param([string]$Directory, [string]$Commit, [string]$Version, [switch]$AllowLegacy)
     $manifest = Get-Content (Join-Path $Directory 'release-manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.commit -cne $Commit -or $manifest.version -cne $Version) { throw 'Artifact provenance mismatch' }
-    $expected = @('typlo-rust-win-x64.zip', 'typlo-rust-win-x64.zip.sha256')
+    $archiveName = 'typlo-win-x64.zip'
+    $expected = @($archiveName, "$archiveName.sha256")
     $schema = $manifest.PSObject.Properties['schema_version']
     $platform = $manifest.PSObject.Properties['platform']
     if ($schema -and $platform -and $schema.Value -eq 1 -and $platform.Value -ceq 'windows-x64') {
         # Only this platform has a tested release workflow. Add other platforms
         # with their own build/package gates before accepting their manifests.
-    } elseif ($AllowLegacy -and !$schema -and !$platform) {
+    } elseif ($AllowLegacy -and $Version -ceq '0.1.0' -and !$schema -and !$platform) {
         # Keep historical v0.1.0 assets verifiable without changing/deleting them.
-        $expected = @("Typlo-$Version-Portable-win-x64.zip") + $expected
+        $archiveName = 'typlo-rust-win-x64.zip'
+        $expected = @('Typlo-0.1.0-Portable-win-x64.zip', $archiveName, "$archiveName.sha256")
     } else {
         throw 'Unsupported release manifest schema/platform'
     }
@@ -40,9 +42,9 @@ function Read-ReleaseManifest {
         $file = Join-Path $Directory $name
         if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entries[0].sha256) { throw "Asset digest mismatch: $name" }
     }
-    $line = (Get-Content (Join-Path $Directory 'typlo-rust-win-x64.zip.sha256') -Raw).Trim()
-    $digest = ($manifest.assets | Where-Object name -eq 'typlo-rust-win-x64.zip').sha256
-    if ($line -cne "$digest  typlo-rust-win-x64.zip") { throw 'Updater checksum mismatch' }
+    $line = (Get-Content (Join-Path $Directory "$archiveName.sha256") -Raw).Trim()
+    $digest = ($manifest.assets | Where-Object name -CEQ $archiveName).sha256
+    if ($line -cne "$digest  $archiveName") { throw 'Updater checksum mismatch' }
     return $manifest
 }
 function Test-UploadedAssets {
