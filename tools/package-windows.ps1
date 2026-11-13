@@ -15,7 +15,7 @@ if (![IO.Path]::IsPathRooted($relative) -and $relative -notmatch '^\.\.([\\/]|$)
 }
 [IO.Directory]::CreateDirectory($output) | Out-Null
 $resident = Join-Path $payload 'typlo-rust.exe'
-$update = Join-Path $output 'typlo-rust-win-x64.zip'
+$update = Join-Path $output 'typlo-win-x64.zip'
 foreach ($file in @($update, "$update.sha256")) {
     if (Test-Path -LiteralPath $file) { throw "Already exists: $file" }
 }
@@ -54,7 +54,7 @@ try {
         $verification.Dispose()
     }
     [IO.File]::Move($candidate, $update)
-    [IO.File]::WriteAllText("$update.sha256", "$digest  typlo-rust-win-x64.zip" + [Environment]::NewLine)
+    [IO.File]::WriteAllText("$update.sha256", "$digest  typlo-win-x64.zip" + [Environment]::NewLine)
     Get-Item -LiteralPath $update,"$update.sha256"
 } finally {
     if (Test-Path -LiteralPath $candidate) { Remove-Item -LiteralPath $candidate }

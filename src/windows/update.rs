@@ -18,7 +18,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId, PostMessageW, WM_CLOSE},
 };
 
-const ASSET: &str = "typlo-rust-win-x64.zip";
+pub(crate) const ASSET: &str = "typlo-win-x64.zip";
 const RESIDENT_EXE: &str = "typlo-rust.exe";
 const MARKER: &str = "rust-current.txt";
 #[cfg(test)]
