@@ -116,6 +116,14 @@ $global:TyploReleaseMock.releases = @($global:TyploReleaseMock.release)
 $global:TyploReleaseMock.writes = 0
 & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit
 if ($global:TyploReleaseMock.writes) { throw 'Published rerun mutated release' }
+# Retry after creation succeeded but its response was lost: empty draft, no tag.
+$empty = $global:TyploReleaseMock.release | ConvertTo-Json -Depth 15 | ConvertFrom-Json
+$empty.draft = $true
+$empty.published_at = $null
+$empty.assets = @()
+$global:TyploReleaseMock = @{ releases = @($empty); release = $empty; tag = $null; writes = 0; published = $false }
+& "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit
+if (!$global:TyploReleaseMock.published -or $global:TyploReleaseMock.writes -ne 5) { throw 'Empty draft retry failed' }
 $partial = $global:TyploReleaseMock.release | ConvertTo-Json -Depth 15 | ConvertFrom-Json
 $partial.draft = $true
 $partial.published_at = $null
