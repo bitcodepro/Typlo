@@ -126,7 +126,7 @@ fn install(update: &Update, status: impl Fn(&str)) -> io::Result<()> {
     {
         return Ok(());
     }
-    let workspace = tempfile::tempdir()?;
+    let workspace = tempfile::tempdir_in(&root)?;
     let archive = workspace.path().join("update.zip");
     crate::runtime_log::write(
         "INFO",
@@ -252,8 +252,12 @@ pub fn launch_installed() -> io::Result<bool> {
     Ok(true)
 }
 
-fn installation_root() -> io::Result<PathBuf> {
+pub(crate) fn installation_root() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
+    installation_root_for(&exe)
+}
+
+pub(crate) fn installation_root_for(exe: &Path) -> io::Result<PathBuf> {
     let directory = exe
         .parent()
         .ok_or_else(|| io::Error::other("Missing installation directory"))?;
@@ -269,6 +273,11 @@ fn installation_root() -> io::Result<PathBuf> {
         return Ok(root.to_owned());
     }
     Ok(directory.to_owned())
+}
+
+#[cfg(feature = "gui")]
+pub fn temporary_workspace() -> io::Result<tempfile::TempDir> {
+    tempfile::tempdir_in(installation_root()?)
 }
 
 fn stage(root: &Path, archive: &Path, version: &str, digest: &str) -> io::Result<PathBuf> {
@@ -381,6 +390,18 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::fs::File;
     use zip::{ZipWriter, write::SimpleFileOptions};
+
+    #[test]
+    fn updated_executables_resolve_the_same_portable_profile_root() {
+        let root = Path::new(r"C:\Apps\Typlo");
+        for exe in ["typlo-rust.exe", "typlo-settings.exe"] {
+            assert_eq!(installation_root_for(&root.join(exe)).unwrap(), root);
+            assert_eq!(
+                installation_root_for(&root.join("versions/0.1.3").join(exe)).unwrap(),
+                root
+            );
+        }
+    }
 
     #[test]
     fn stages_verified_package_without_changing_active_version() {

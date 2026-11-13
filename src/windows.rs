@@ -27,6 +27,10 @@ pub mod lan_clipboard;
 #[cfg(feature = "gui")]
 pub mod ocr;
 mod phantom;
+mod portable_profile;
+pub fn prepare_portable_profile(profile: &Path) -> io::Result<()> {
+    portable_profile::prepare(profile)
+}
 mod scintilla;
 mod session_options;
 mod snippet_menu;
@@ -822,6 +826,10 @@ fn run_resident(
     } else {
         Some(SingleInstance::acquire()?)
     };
+    if !probe && !measured {
+        portable_profile::prepare(profile)?;
+        crate::runtime_log::initialize(profile, "resident");
+    }
     let _session =
         (!probe && !measured).then(|| crate::runtime_log::ResidentSession::start(profile));
     let instance = unsafe { GetModuleHandleW(null_mut()) };

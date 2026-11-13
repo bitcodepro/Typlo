@@ -38,6 +38,9 @@ struct Asset {
 
 pub fn check(installed: &str, asset_name: &str) -> io::Result<Option<Update>> {
     let installed = version(installed).ok_or_else(|| invalid("Invalid installed version"))?;
+    #[cfg(windows)]
+    let workspace = tempfile::tempdir_in(crate::windows::update::installation_root()?)?;
+    #[cfg(not(windows))]
     let workspace = tempfile::tempdir()?;
     let response = workspace.path().join("releases.json");
     download(FEED, &response, 2 * 1024 * 1024, 20)?;

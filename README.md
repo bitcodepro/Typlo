@@ -2,9 +2,9 @@
 
 Typlo2.0 is the Rust version of Typlo. [Original C# project](https://github.com/bitcodepro/Typlo)
 
-On Windows, run `typlo-rust.exe` and open Settings from the notification area. Keep `typlo-settings.exe` and the `resources` folder beside the executable. The profile lives in `%LOCALAPPDATA%\Typlo-Rust`. New profiles use English. Change it under **Settings → Interface language**.
+On Windows, extract Typlo to a writable folder and run `typlo-rust.exe`. Keep `typlo-settings.exe` and `resources` beside it. Typlo keeps its profile in `data` beside the original executable. Versions installed by the updater share that same folder. New profiles use English. Change it under **Settings → Interface language**.
 
-If Typlo disappears from the notification area, reopen it and select **Typlo tools → Open diagnostic logs**. Windows logs are stored in `%LOCALAPPDATA%\Typlo-Rust\logs`. Typlo keeps the current log and one previous log, up to 256 KiB each.
+If Typlo disappears from the notification area, reopen it and select **Typlo tools → Open diagnostic logs**. Typlo keeps the current log and one previous log under `data/logs`, up to 256 KiB each.
 
 | Windows shortcut | Action |
 |---|---|
@@ -36,7 +36,7 @@ Select the pencil to edit a text item or add a caption to an image or file selec
 1. On both computers, open **Clipboard sharing with another computer** at the top of **Settings**. Select **Show pairing code**, enter each code on the other computer, then select **Pair computer**. Use **Copy code** if you can transfer the code between computers.
 2. Open history with `Ctrl+Shift+V` and select ↗ beside the item. Typlo2.0 can send text, images, files, and folders. The receiving computer adds the item to its history. Use **Open received files** to find saved files.
 
-The computers discover each other on the local network. If discovery fails, enter a private IPv4 address manually. Allow Typlo2.0 through Windows Firewall on private networks to receive items. Transfers use TCP 49237 and discovery uses UDP 49237. You can pair with one other computer. The file transfer limit is 512 MiB. Received files stay on disk until deleted.
+The computers discover each other on the local network. If discovery fails, enter a private IPv4 address manually. Allow Typlo2.0 through Windows Firewall on private networks to receive items. Transfers use TLS on TCP 49237, and discovery uses UDP 49237. You can pair with one other computer. The file transfer limit is 512 MiB. Received files are saved as ordinary files under `data/Received files` and stay there until deleted.
 
 **Check connection** reports discovery, connectivity, and certificate verification. The **Received files** history filter shows received files and folders, their stored size, and a button to open the folder.
 
@@ -71,7 +71,7 @@ Pass `--import-history` the original Typlo folder containing `history.db` and `h
 1. Download **`typlo-win-x64.zip`** from the published **v0.1.1** release when it is available. The old client cannot discover this renamed asset automatically.
 2. Extract the entire ZIP into a **separate new writable folder**. Keep `typlo-rust.exe`, `typlo-settings.exe` and `resources` together; do not copy the old `rust-current.txt` or `versions` directory into it.
 3. Exit the old Typlo process using its tray **Exit** command.
-4. Run `typlo-rust.exe` from the new folder. It uses the same profile at `%LOCALAPPDATA%\Typlo-Rust`; your settings and history stay there. Update any startup shortcut to the new executable path.
+4. Run `typlo-rust.exe` from the new folder. On the first launch with portable storage, Typlo copies the old Windows profile from `%LOCALAPPDATA%\Typlo-Rust` into `data` and updates the received-file paths in history. The old profile remains available to the previous installation. Update any startup shortcut to the new executable path.
 
 The published v0.1.0 ZIPs, tag and assets are retained. This is a manual handoff, not an automatic v0.1.0 upgrade. Once on v0.1.1, future update checks select `typlo-win-x64.zip`.
 

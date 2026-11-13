@@ -244,13 +244,18 @@ impl Default for Config {
     }
 }
 
+#[cfg(windows)]
 pub fn profile() -> PathBuf {
-    let base = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA")
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-    };
-    base.map(PathBuf::from)
+    std::env::current_exe()
+        .and_then(|exe| crate::windows::update::installation_root_for(&exe))
+        .expect("Windows executable path must identify the Typlo installation")
+        .join("data")
+}
+
+#[cfg(not(windows))]
+pub fn profile() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME").map(|home| {
                 let home = PathBuf::from(home);

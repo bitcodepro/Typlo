@@ -639,6 +639,60 @@ impl History {
         Ok((folder, legacy))
     }
 
+    pub(super) fn rebase_received_files(&mut self, from: &Path, to: &Path) -> io::Result<()> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(io::Error::other)?;
+        let files = tx
+            .prepare("SELECT id FROM clips WHERE kind=3")
+            .map_err(io::Error::other)?
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(io::Error::other)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(io::Error::other)?;
+        for id in files {
+            let payload: Vec<u8> = tx
+                .query_row("SELECT payload FROM clips WHERE id=?1", [id], |row| {
+                    row.get(0)
+                })
+                .map_err(io::Error::other)?;
+            let Ok(clip) = unprotect(&payload).and_then(|data| Clip::decode(&data)) else {
+                continue;
+            };
+            let paths = clip.text();
+            let mut changed = false;
+            let rebased = paths
+                .lines()
+                .map(|path| {
+                    if let Ok(relative) = Path::new(path).strip_prefix(from) {
+                        changed = true;
+                        to.join(relative).to_string_lossy().into_owned()
+                    } else {
+                        path.to_owned()
+                    }
+                })
+                .collect::<Vec<_>>();
+            if !changed {
+                continue;
+            }
+            let mut replacement = Clip::from_legacy(3, rebased.join("\n").into_bytes(), None)?;
+            replacement.set_editable_text(&clip.editable_text())?;
+            tx.execute(
+                "UPDATE clips SET payload=?2,preview=?3,bytes=?4,fingerprint=?5 WHERE id=?1",
+                params![
+                    id,
+                    protect(&replacement.encode())?,
+                    protect(&clip_preview(&replacement))?,
+                    i64::try_from(replacement.size()).map_err(io::Error::other)?,
+                    fingerprint(&self.key, &replacement).as_slice(),
+                ],
+            )
+            .map_err(io::Error::other)?;
+        }
+        tx.commit().map_err(io::Error::other)
+    }
+
     pub fn import_legacy(&mut self, directory: &Path) -> io::Result<usize> {
         const LIMIT: i64 = 128 * 1024 * 1024 + 28;
         use std::io::Read;

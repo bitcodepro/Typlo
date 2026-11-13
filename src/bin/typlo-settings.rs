@@ -13,6 +13,10 @@ use typlo_rust::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    if std::env::args_os().len() == 1 {
+        typlo_rust::windows::prepare_portable_profile(&config::profile())?;
+    }
     typlo_rust::runtime_log::initialize(&config::profile(), "ui");
     run().inspect_err(|error| {
         typlo_rust::runtime_log::write("ERROR", format_args!("UI failed: {error}"));

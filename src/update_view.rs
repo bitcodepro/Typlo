@@ -114,7 +114,7 @@ impl UpdateView {
             {
                 let update = update.clone();
                 #[cfg(windows)]
-                match tempfile::tempdir() {
+                match update::temporary_workspace() {
                     Ok(directory) => {
                         let path = directory.path().join("status");
                         self.start(

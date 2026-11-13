@@ -12,17 +12,10 @@ use typlo_rust::{
 
 fn main() {
     let mode = env::args_os().nth(1);
-    if mode.as_deref().is_none_or(|mode| {
+    if mode.as_deref().is_some_and(|mode| {
         matches!(
             mode.to_str(),
-            Some(
-                "--updated-resident"
-                    | "--restart-previous"
-                    | "--auto-update"
-                    | "--install-update"
-                    | "--lan-send"
-                    | "--lan-retry"
-            )
+            Some("--auto-update" | "--install-update" | "--lan-send" | "--lan-retry")
         )
     }) {
         typlo_rust::runtime_log::initialize(&config::profile(), "resident");
