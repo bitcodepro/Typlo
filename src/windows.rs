@@ -27,6 +27,10 @@ pub mod lan_clipboard;
 #[cfg(feature = "gui")]
 pub mod ocr;
 mod phantom;
+mod portable_profile;
+pub fn prepare_portable_profile(profile: &Path) -> io::Result<()> {
+    portable_profile::prepare(profile)
+}
 mod scintilla;
 mod session_options;
 mod snippet_menu;
@@ -43,7 +47,8 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
+        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT,
+        SetLastError, WPARAM,
     },
     Globalization::{GetLocaleInfoW, LOCALE_SNATIVELANGNAME},
     System::{
@@ -100,7 +105,6 @@ const TYPING_TIMER: usize = 1;
 const UPDATE_TIMER: usize = 2;
 const ACTIVITY_TIMER: usize = 3;
 const INPUT_RETRY_TIMER: usize = 4;
-const UPDATE_CHECKED: u32 = WM_APP + 9;
 const HOST_CLASS: &str = "TyploRustBackground";
 const SETTINGS_WINDOW: &str = "TyploRustSettingsWindow";
 const SCREENSHOT_EDITOR: &str = "TyploRustScreenshotEditor";
@@ -123,6 +127,7 @@ struct WinEdit {
     deadline: Option<Instant>,
     sequence: Option<usize>,
     recent: Option<String>,
+    lease: Option<input::SelectionLease>,
 }
 
 impl WinEdit {
@@ -184,11 +189,15 @@ impl WinEdit {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> io::Result<usize> {
-        let remaining = self
-            .deadline
-            .map_or(Duration::from_millis(100), |deadline| {
-                deadline.saturating_duration_since(Instant::now())
-            });
+        let message_limit = if self.fixed.is_some() {
+            NATIVE_FIXTURE_MESSAGE_TIMEOUT_MS
+        } else {
+            100
+        };
+        let remaining = self.deadline.map_or(
+            Duration::from_millis(u64::from(message_limit)),
+            |deadline| deadline.saturating_duration_since(Instant::now()),
+        );
         if remaining.is_zero() {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -200,7 +209,7 @@ impl WinEdit {
             message,
             wparam,
             lparam,
-            remaining.as_millis().clamp(1, 100) as u32,
+            remaining.as_millis().clamp(1, u128::from(message_limit)) as u32,
         )
     }
 
@@ -261,7 +270,13 @@ impl Editor for WinEdit {
     type Target = Target;
 
     fn begin_operation(&mut self) {
-        self.deadline = Some(Instant::now() + Duration::from_millis(250));
+        self.lease = None;
+        let budget = if self.fixed.is_some() {
+            NATIVE_FIXTURE_OPERATION_TIMEOUT_MS
+        } else {
+            250
+        };
+        self.deadline = Some(Instant::now() + Duration::from_millis(budget));
     }
 
     fn recent_range(&self, snapshot: &Snapshot<Target>) -> Option<Range<usize>> {
@@ -336,22 +351,67 @@ impl Editor for WinEdit {
         {
             return Err(unsupported_editor());
         }
-        if range != expected.selection {
-            self.send(target.edit, EM_SETSEL, range.start, range.end as LPARAM)?;
-            let selected = self.snapshot()?;
-            if selected.document != expected.document || selected.selection != range {
-                return Err(io::Error::other("Editor changed while selecting the range"));
-            }
-        }
-        if self.target()? != target || self.selection(target)? != range {
-            return Err(io::Error::other("Target selection changed"));
-        }
         let mut text = Vec::with_capacity(replacement.len() + 1);
         text.extend_from_slice(replacement);
         text.push(0);
-        self.target()?;
-        self.send(target.edit, EM_REPLACESEL, 1, text.as_ptr() as LPARAM)?;
+        let lease = self
+            .sequence
+            .map(|sequence| input::SelectionLease::start(sequence, target, None))
+            .transpose()?;
+        let moved = range != expected.selection;
+        let ready = (|| {
+            if moved {
+                self.send(target.edit, EM_SETSEL, range.start, range.end as LPARAM)?;
+                let selected = self.snapshot()?;
+                if selected.document != expected.document || selected.selection != range {
+                    return Err(io::Error::other("Editor changed while selecting the range"));
+                }
+            }
+            if self.target()? != target || self.selection(target)? != range {
+                return Err(io::Error::other("Target selection changed"));
+            }
+            if lease
+                .as_ref()
+                .is_some_and(|lease| !lease.begin_native_commit())
+            {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            Ok(())
+        })();
+        if let Err(error) = ready {
+            if moved {
+                self.restore_native_selection(expected, range);
+            }
+            return Err(error);
+        }
+        self.lease = lease;
+        if let Err(error) = self.send(target.edit, EM_REPLACESEL, 1, text.as_ptr() as LPARAM) {
+            if moved {
+                self.restore_native_selection(expected, range);
+            }
+            return Err(error);
+        }
         Ok(())
+    }
+}
+
+impl WinEdit {
+    fn restore_native_selection(&self, before: &Snapshot<Target>, temporary: Range<usize>) {
+        let mut editor = Self {
+            expected: Some(before.target),
+            deadline: Some(Instant::now() + Duration::from_millis(40)),
+            ..Default::default()
+        };
+        if editor.snapshot().is_ok_and(|current| {
+            current.document == before.document && current.selection == temporary
+        }) {
+            let _ = editor.send(
+                before.target.edit,
+                EM_SETSEL,
+                before.selection.start,
+                before.selection.end as LPARAM,
+            );
+        }
     }
 }
 
@@ -379,6 +439,21 @@ fn send(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> io::Resul
     send_timeout(window, message, wparam, lparam, 100)
 }
 
+// The isolated fixture also measures cross-process edits on shared CI runners.
+// Give it scheduling headroom independently of the interactive editor budget.
+const NATIVE_FIXTURE_MESSAGE_TIMEOUT_MS: u32 = 1_000;
+const NATIVE_FIXTURE_OPERATION_TIMEOUT_MS: u64 = 3_000;
+
+fn send_fixture(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> io::Result<usize> {
+    send_timeout(
+        window,
+        message,
+        wparam,
+        lparam,
+        NATIVE_FIXTURE_MESSAGE_TIMEOUT_MS,
+    )
+}
+
 fn send_timeout(
     window: HWND,
     message: u32,
@@ -388,6 +463,7 @@ fn send_timeout(
 ) -> io::Result<usize> {
     let mut result = 0;
     if unsafe {
+        SetLastError(0);
         SendMessageTimeoutW(
             window,
             message,
@@ -399,8 +475,18 @@ fn send_timeout(
         )
     } == 0
     {
-        return Err(io::Error::other(
-            "The native editor did not acknowledge the operation",
+        let error = io::Error::last_os_error();
+        let kind = if error.raw_os_error() == Some(0) {
+            io::ErrorKind::Other
+        } else {
+            error.kind()
+        };
+        return Err(io::Error::new(
+            kind,
+            format!(
+                "Native editor message {message:#06x} failed (limit {timeout} ms, Win32 error {})",
+                error.raw_os_error().unwrap_or_default()
+            ),
         ));
     }
     Ok(result)
@@ -431,8 +517,6 @@ struct Resident {
     accessible: Option<accessible::Worker>,
     tools: Option<tools_job::Job>,
     last_automatic: diagnostics::Shared,
-    update_query: Option<std::sync::mpsc::Receiver<io::Result<Option<String>>>>,
-    available_update: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -778,11 +862,15 @@ pub fn reload_lan_clipboard() {
 }
 
 pub fn run(profile: &Path, report: Option<&Path>) -> io::Result<()> {
-    run_resident(profile, report, report.is_some(), false)
+    run_resident(profile, report, report.is_some(), false, report.is_none())
 }
 
 pub fn run_updated(profile: &Path, report: &Path) -> io::Result<()> {
-    run_resident(profile, Some(report), false, false)
+    run_resident(profile, Some(report), false, false, false)
+}
+
+pub fn run_previous(profile: &Path) -> io::Result<()> {
+    run_resident(profile, None, false, false, false)
 }
 
 pub fn run_measurement(profile: &Path, report: &Path) -> io::Result<()> {
@@ -806,7 +894,7 @@ pub fn run_measurement(profile: &Path, report: &Path) -> io::Result<()> {
             "Use the private desktop created by measure-full-windows.ps1",
         ));
     }
-    run_resident(profile, Some(report), false, true)
+    run_resident(profile, Some(report), false, true, false)
 }
 
 fn run_resident(
@@ -814,12 +902,19 @@ fn run_resident(
     report: Option<&Path>,
     probe: bool,
     measured: bool,
+    auto_update: bool,
 ) -> io::Result<()> {
     let _instance = if probe || measured {
         None
     } else {
         Some(SingleInstance::acquire()?)
     };
+    if !probe && !measured {
+        portable_profile::prepare(profile)?;
+        crate::runtime_log::initialize(profile, "resident");
+    }
+    let _session =
+        (!probe && !measured).then(|| crate::runtime_log::ResidentSession::start(profile));
     let instance = unsafe { GetModuleHandleW(null_mut()) };
     let class = wide(if probe {
         "TyploRustBenchmark"
@@ -863,12 +958,12 @@ fn run_resident(
             if settings.keep_screen_on
                 && let Err(error) = session_options::keep_screen_on(true)
             {
-                eprintln!("Typlo Rust: {error}");
+                crate::runtime_error!("Typlo Rust: {error}");
             }
             if settings.start_with_windows
                 && let Err(error) = session_options::startup(true)
             {
-                eprintln!("Typlo Rust: {error}");
+                crate::runtime_error!("Typlo Rust: {error}");
             }
         }
         let snippets = Snippets::compile_for(&settings.snippets, &available_layouts())?;
@@ -883,7 +978,7 @@ fn run_resident(
         }
         let mut lan_listener = None;
         if !probe && let Err(error) = lan_clipboard::Listener::refresh(&mut lan_listener, profile) {
-            eprintln!("Typlo LAN clipboard: {error}");
+            crate::runtime_error!("Typlo LAN clipboard: {error}");
         }
         let drawing = (!settings_window_focused()).then_some(settings.drawing_shortcut);
         RESIDENT.replace(Some(Resident {
@@ -894,7 +989,7 @@ fn run_resident(
                 None
             } else {
                 input::Hooks::start(window, hook_bindings(&bindings, &direct, drawing))
-                    .map_err(|error| eprintln!("Typlo Rust keyboard hook: {error}"))
+                    .map_err(|error| crate::runtime_error!("Typlo Rust keyboard hook: {error}"))
                     .ok()
             },
             bindings,
@@ -918,7 +1013,7 @@ fn run_resident(
                 None
             } else {
                 history_monitor::Monitor::start(profile.to_owned())
-                    .map_err(|error| eprintln!("Typlo Rust history monitor: {error}"))
+                    .map_err(|error| crate::runtime_error!("Typlo Rust history monitor: {error}"))
                     .ok()
             },
             history_pause: None,
@@ -926,15 +1021,20 @@ fn run_resident(
             accessible: None,
             tools: None,
             last_automatic: Default::default(),
-            update_query: None,
-            available_update: None,
         }));
         if !probe {
             if unsafe { AddClipboardFormatListener(window) } == 0 {
-                eprintln!("Typlo Rust: Windows did not register clipboard notifications");
+                crate::runtime_error!(
+                    "Typlo Rust: Windows did not register clipboard notifications"
+                );
             }
             if unsafe { Shell_NotifyIconW(NIM_ADD, &icon) } == 0 && !measured {
-                eprintln!("Typlo Rust: Unable to create the tray icon");
+                crate::runtime_error!(
+                    "Unable to create the tray icon: {}",
+                    io::Error::last_os_error()
+                );
+            } else if !measured {
+                crate::runtime_log::write("INFO", format_args!("Tray icon registered"));
             }
             foreground_hook = unsafe {
                 SetWinEventHook(
@@ -948,13 +1048,15 @@ fn run_resident(
                 )
             };
             if foreground_hook.is_null() {
-                eprintln!(
+                crate::runtime_error!(
                     "Typlo Rust foreground monitor: {}",
                     io::Error::last_os_error()
                 );
             }
             unsafe {
-                SetTimer(window, UPDATE_TIMER, 20_000, None);
+                if auto_update {
+                    SetTimer(window, UPDATE_TIMER, 2_000, None);
+                }
                 SetTimer(window, INPUT_RETRY_TIMER, 5_000, None);
                 if RESIDENT.with_borrow(|resident| {
                     resident
@@ -967,6 +1069,9 @@ fn run_resident(
         }
         if let Some(report) = report {
             std::fs::write(report, "Typlo Rust background ready\n")?;
+        }
+        if _session.is_some() {
+            crate::runtime_log::write("INFO", format_args!("Resident ready"));
         }
         let mut message = MSG::default();
         loop {
@@ -1050,7 +1155,7 @@ fn install_hotkeys(
 
 fn report_conflicts(actions: &[Action]) {
     for action in actions {
-        eprintln!(
+        crate::runtime_error!(
             "Typlo Rust: Windows rejected the shortcut for {}",
             action.label()
         );
@@ -1106,7 +1211,7 @@ fn install_direct(
             active.push(binding);
         } else {
             success = false;
-            eprintln!(
+            crate::runtime_error!(
                 "Typlo Rust: Windows rejected the shortcut for {}",
                 binding.layout.name()
             );
@@ -1225,7 +1330,9 @@ unsafe extern "system" fn window_proc(
                 resident.recent.reset();
             }
         });
-        eprintln!("Typlo Rust: Windows command {message:#x} was interrupted and recovered");
+        crate::runtime_error!(
+            "Typlo Rust: Windows command {message:#x} was interrupted and recovered"
+        );
         0
     })
 }
@@ -1235,8 +1342,16 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
     let taskbar_created = *TASKBAR_CREATED
         .get_or_init(|| unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) });
     if message != 0 && message == taskbar_created {
-        unsafe {
-            Shell_NotifyIconW(NIM_ADD, &tray_data(window));
+        if unsafe { Shell_NotifyIconW(NIM_ADD, &tray_data(window)) } == 0 {
+            crate::runtime_error!(
+                "Explorer restarted; could not restore the tray icon: {}",
+                io::Error::last_os_error()
+            );
+        } else {
+            crate::runtime_log::write(
+                "INFO",
+                format_args!("Tray icon restored after Explorer restart"),
+            );
         }
         return 0;
     }
@@ -1561,7 +1676,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             });
             if let Err(error) = result {
                 // A rejected target must not take focus away from the application.
-                eprintln!("Typlo Rust: {error}");
+                crate::runtime_error!("Typlo Rust: {error}");
             }
             0
         }
@@ -1573,7 +1688,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                         &resident.profile,
                     )
                 {
-                    eprintln!("Typlo LAN clipboard: {error}");
+                    crate::runtime_error!("Typlo LAN clipboard: {error}");
                 }
             });
             0
@@ -1597,14 +1712,14 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                                 && let Err(error) =
                                     session_options::keep_screen_on(settings.keep_screen_on)
                             {
-                                eprintln!("Typlo Rust: {error}");
+                                crate::runtime_error!("Typlo Rust: {error}");
                             }
                             sync_activity_timer(window, settings.keep_screen_on);
                             if settings.start_with_windows != resident.settings.start_with_windows
                                 && let Err(error) =
                                     session_options::startup(settings.start_with_windows)
                             {
-                                eprintln!("Typlo Rust: {error}");
+                                crate::runtime_error!("Typlo Rust: {error}");
                             }
                             if !resident.hotkeys_suspended {
                                 let prior_static = resident.bindings.clone();
@@ -1642,7 +1757,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                                 hooks.update(resident.hook_bindings());
                             }
                         }
-                        Err(error) => eprintln!("Typlo Rust: {error}"),
+                        Err(error) => crate::runtime_error!("Typlo Rust: {error}"),
                     }
                 }
             });
@@ -1712,7 +1827,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             if let Some(profile) = profile
                 && let Err(error) = snippet_menu::show(window, &profile)
             {
-                eprintln!("Typlo Rust snippet menu: {error}");
+                crate::runtime_error!("Typlo Rust snippet menu: {error}");
             }
             0
         }
@@ -1746,16 +1861,28 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                             &item.template,
                         )?;
                     }
-                    snippet_menu::Selection::Accessible(capture) => {
+                    selection => {
+                        let command = match selection {
+                            snippet_menu::Selection::Accessible(capture) => {
+                                accessible::Command::InsertMenuSnippet {
+                                    capture,
+                                    template: item.template,
+                                }
+                            }
+                            snippet_menu::Selection::Scintilla(capture) => {
+                                accessible::Command::InsertScintillaSnippet {
+                                    capture,
+                                    template: item.template,
+                                }
+                            }
+                            snippet_menu::Selection::Native { .. } => unreachable!(),
+                        };
                         resident.accessible_edit(
                             window,
                             accessible::Request {
                                 target,
                                 sequence,
-                                command: accessible::Command::InsertMenuSnippet {
-                                    capture,
-                                    template: item.template,
-                                },
+                                command,
                                 cycle: Vec::new(),
                                 switch_layout: false,
                                 recent: None,
@@ -1766,7 +1893,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                 Ok(())
             });
             if let Err(error) = result {
-                eprintln!("Typlo Rust snippet insertion: {error}");
+                crate::runtime_error!("Typlo Rust snippet insertion: {error}");
             }
             0
         }
@@ -1850,7 +1977,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                         Err(error) => {
                             resident.spelling = None;
                             if error.kind() != io::ErrorKind::Interrupted {
-                                eprintln!("Typlo Rust: {error}");
+                                crate::runtime_error!("Typlo Rust: {error}");
                             }
                         }
                     }
@@ -1867,7 +1994,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                         Ok(true) => resident.tools = None,
                         Err(error) => {
                             resident.tools = None;
-                            eprintln!("Typlo Rust: {error}");
+                            crate::runtime_error!("Typlo Rust: {error}");
                         }
                     }
                 }
@@ -1883,7 +2010,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                         io::ErrorKind::Interrupted | io::ErrorKind::Unsupported
                     )
                 {
-                    eprintln!("Typlo Rust: {error}");
+                    crate::runtime_error!("Typlo Rust: {error}");
                 }
             });
             0
@@ -1901,7 +2028,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                         .is_none_or(input::Hooks::is_finished)
                 {
                     resident.input = input::Hooks::start(window, resident.hook_bindings())
-                        .map_err(|error| eprintln!("Typlo Rust keyboard hook: {error}"))
+                        .map_err(|error| crate::runtime_error!("Typlo Rust keyboard hook: {error}"))
                         .ok();
                 }
             });
@@ -1911,38 +2038,16 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             unsafe {
                 KillTimer(window, UPDATE_TIMER);
             }
-            RESIDENT.with_borrow_mut(|resident| {
-                let Some(resident) = resident else { return };
-                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-                let handle = window as usize;
-                if std::thread::Builder::new()
-                    .name("typlo-update-check".into())
-                    .spawn(move || {
-                        if sender.send(update::check_in_helper()).is_ok() {
-                            unsafe {
-                                PostMessageW(handle as HWND, UPDATE_CHECKED, 0, 0);
-                            }
-                        }
-                    })
-                    .is_ok()
-                {
-                    resident.update_query = Some(receiver);
-                }
-            });
-            0
-        }
-        UPDATE_CHECKED => {
-            RESIDENT.with_borrow_mut(|resident| {
-                if let Some(resident) = resident
-                    && let Some(query) = resident.update_query.take()
-                {
-                    match query.try_recv() {
-                        Ok(Ok(version)) => resident.available_update = version,
-                        Ok(Err(error)) => eprintln!("Typlo Rust: {error}"),
-                        Err(_) => {}
+            if let Err(error) = std::thread::Builder::new()
+                .name("typlo-auto-update".into())
+                .spawn(|| {
+                    if let Err(error) = update::auto_install_in_helper() {
+                        crate::runtime_error!("Typlo update: {error}");
                     }
-                }
-            });
+                })
+            {
+                crate::runtime_error!("Typlo update worker: {error}");
+            }
             0
         }
         TRAY_MESSAGE => {
@@ -1955,6 +2060,12 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             0
         }
         WM_CLOSE => {
+            let reason = if wparam == update::SHUTDOWN_FOR_UPDATE {
+                "Shutdown requested by updater"
+            } else {
+                "Shutdown requested by Windows or another process"
+            };
+            crate::runtime_log::write("INFO", format_args!("{reason}"));
             unsafe { PostQuitMessage(0) };
             0
         }
@@ -2077,11 +2188,11 @@ fn tray_menu(window: HWND) {
             }
         }
         items.push((0, String::new(), MF_SEPARATOR));
-        let update = resident.available_update.as_ref().map_or_else(
-            || tr("update.check", "Check for updates").to_owned(),
-            |version| tr("update.install", "Update to v{0}").replace("{0}", version),
-        );
-        items.push((UPDATE_MENU, update, MF_STRING));
+        items.push((
+            UPDATE_MENU,
+            tr("update.check", "Check for updates").to_owned(),
+            MF_STRING,
+        ));
         items.push((QUIT, tr("tray.exit", "Exit").into(), MF_STRING));
         Some(items)
     }) else {
@@ -2138,6 +2249,7 @@ fn tray_menu(window: HWND) {
             Ok(())
         }
         QUIT => {
+            crate::runtime_log::write("INFO", format_args!("Quit selected in the tray menu"));
             unsafe {
                 PostQuitMessage(0);
             }
@@ -2185,7 +2297,7 @@ fn tray_menu(window: HWND) {
         }),
     };
     if let Err(error) = result {
-        eprintln!("Typlo: {error}");
+        crate::runtime_error!("Typlo: {error}");
     }
 }
 
@@ -2297,7 +2409,7 @@ fn open_ui(mode: &str) {
             .spawn()
     });
     if let Err(error) = result {
-        eprintln!("Typlo: cannot open UI: {error}");
+        crate::runtime_error!("Typlo: cannot open UI: {error}");
     }
 }
 
@@ -2881,7 +2993,7 @@ fn check_native_fixture(mode: &str, window: HWND, editor: &mut WinEdit) -> io::R
             Ok(state.document.iter().copied().eq(text.encode_utf16())
                 && state.selection == (caret..caret))
         };
-        send(window, EM_SETSEL, 8, 8)?;
+        send_fixture(window, EM_SETSEL, 8, 8)?;
         let template = Template::parse("hello\n🙂{cursor}!")?;
         if !session.expand_snippet(editor, ";ad", &template)?
             || !expected(editor, "keep hello\r\n🙂!", 14)?
@@ -2893,8 +3005,8 @@ fn check_native_fixture(mode: &str, window: HWND, editor: &mut WinEdit) -> io::R
             ));
         }
         let sample = wide("keep rfr ");
-        send(window, WM_SETTEXT, 0, sample.as_ptr() as LPARAM)?;
-        send(window, EM_SETSEL, 9, 9)?;
+        send_fixture(window, WM_SETTEXT, 0, sample.as_ptr() as LPARAM)?;
+        send_fixture(window, EM_SETSEL, 9, 9)?;
         let mut vocabulary = Vocabulary::installed()?;
         let empty = Dictionary::new(
             &std::env::temp_dir().join(format!("typlo-fixture-{}", std::process::id())),
@@ -2933,8 +3045,8 @@ fn check_native_fixture(mode: &str, window: HWND, editor: &mut WinEdit) -> io::R
             let corrected = format!("keep привет{separator}");
             let text = wide(&original);
             let caret = original.encode_utf16().count();
-            send(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)?;
-            send(window, EM_SETSEL, caret, caret as LPARAM)?;
+            send_fixture(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)?;
+            send_fixture(window, EM_SETSEL, caret, caret as LPARAM)?;
             if session.correct_word(editor, "ghbdtn ", &mut suggest)? != Some(Language::Ru)
                 || !expected(editor, &corrected, caret)?
                 || !session.undo(editor)?
@@ -2955,16 +3067,73 @@ fn check_native_fixture(mode: &str, window: HWND, editor: &mut WinEdit) -> io::R
             Err(io::Error::other("Unsafe editor was accepted"))
         };
     }
-    send(window, EM_SETSEL, 2, 8)?;
-    let mut session = Session::default();
-    if session.convert(editor, &Language::ALL, Some(Language::En))? != Some(Language::Ru)
-        || editor.snapshot()?.document != "🙂приветTAIL".encode_utf16().collect::<Vec<_>>()
-        || !session.undo(editor)?
-        || editor.snapshot()?.document != "🙂ghbdtnTAIL".encode_utf16().collect::<Vec<_>>()
+    for (index, (prefix, original, result, suffix)) in [
+        ("🙂", "ghbdtn", "привет", "TAIL"),
+        ("", "rfr", "как", ""),
+        ("keep ", "gjlrk.xbnm ", "подключить ", "NEXT"),
+        ("keep ", "ghbdtn\u{a0}", "привет\u{a0}", "🙂"),
+    ]
+    .into_iter()
+    .enumerate()
     {
-        return Err(io::Error::other(
-            "Native replacement or Undo returned unexpected text",
-        ));
+        let before = format!("{prefix}{original}{suffix}");
+        let after = format!("{prefix}{result}{suffix}");
+        let text = wide(&before);
+        let start = prefix.encode_utf16().count();
+        let end = start + original.encode_utf16().count();
+        let caret = start + result.encode_utf16().count();
+        let phase = |action, error: io::Error| {
+            io::Error::new(
+                error.kind(),
+                format!("case {} {action}: {error}", index + 1),
+            )
+        };
+        if send_fixture(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)
+            .map_err(|error| phase("reset", error))?
+            == 0
+        {
+            return Err(phase(
+                "reset",
+                io::Error::other("Editor refused sample text"),
+            ));
+        }
+        send_fixture(window, EM_SETSEL, start, end as LPARAM)?;
+        let mut session = Session::default();
+        let check =
+            |editor: &mut WinEdit, text: &str, selection: Range<usize>| -> io::Result<bool> {
+                let snapshot = editor.snapshot()?;
+                Ok(snapshot.selection == selection
+                    && snapshot.document.iter().copied().eq(text.encode_utf16()))
+            };
+        if session
+            .convert_to(editor, Language::Ru, Some(Language::En))
+            .map_err(|error| phase("convert", error))?
+            != Some(Language::Ru)
+            || !check(editor, &after, caret..caret)?
+        {
+            return Err(io::Error::other(
+                "Native replacement changed the wrong text or caret",
+            ));
+        }
+        send_fixture(window, EM_SETSEL, start, start as LPARAM)?;
+        if session
+            .undo(editor)
+            .map_err(|error| phase("moved caret", error))?
+            || !check(editor, &after, start..start)?
+        {
+            return Err(io::Error::other("Undo edited text after the caret moved"));
+        }
+        send_fixture(window, EM_SETSEL, caret, caret as LPARAM)?;
+        if !session.undo(editor).map_err(|error| phase("undo", error))?
+            || !check(editor, &before, end..end)?
+            || session
+                .undo(editor)
+                .map_err(|error| phase("repeat undo", error))?
+        {
+            return Err(io::Error::other(
+                "Undo did not restore the exact original text and caret",
+            ));
+        }
     }
     Ok(())
 }
@@ -2995,10 +3164,10 @@ pub fn measure_native(iterations: usize) -> io::Result<serde_json::Value> {
             for _ in 0..iterations {
                 let mut session = Session::default();
                 let start_text = wide("🙂ghbdtnTAIL");
-                if send(window, WM_SETTEXT, 0, start_text.as_ptr() as LPARAM)? == 0 {
+                if send_fixture(window, WM_SETTEXT, 0, start_text.as_ptr() as LPARAM)? == 0 {
                     return Err(io::Error::other("Native fixture refused to reset"));
                 }
-                send(window, EM_SETSEL, 2, 8)?;
+                send_fixture(window, EM_SETSEL, 2, 8)?;
                 let start = Instant::now();
                 let converted = session.convert_to(&mut editor, Language::Ru, Some(Language::En));
                 let elapsed = start.elapsed().as_secs_f64() * 1000.;
@@ -3037,10 +3206,10 @@ pub fn measure_native(iterations: usize) -> io::Result<serde_json::Value> {
             let expected = format!("keep привет{separator}");
             let caret = original.encode_utf16().count();
             let text = wide(&original);
-            if send(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)? == 0 {
+            if send_fixture(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)? == 0 {
                 return Err(io::Error::other("Typing fixture refused to reset"));
             }
-            send(window, EM_SETSEL, caret, caret as LPARAM)?;
+            send_fixture(window, EM_SETSEL, caret, caret as LPARAM)?;
             let mut session = Session::default();
             let started = Instant::now();
             let changed = session.correct_word(&mut editor, "ghbdtn ", |token| {

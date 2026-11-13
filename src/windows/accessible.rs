@@ -64,6 +64,10 @@ pub(super) enum Command {
         capture: Captured,
         template: Template,
     },
+    InsertScintillaSnippet {
+        capture: super::scintilla::SnippetSelection,
+        template: Template,
+    },
     ApplyChoice {
         capture: Captured,
         range: Range<usize>,
@@ -180,7 +184,7 @@ impl Worker {
                                     io::ErrorKind::Interrupted | io::ErrorKind::Unsupported
                                 )
                             {
-                                eprintln!("Typlo Rust Notepad++: {error}");
+                                crate::runtime_error!("Typlo Rust Notepad++: {error}");
                             }
                             return;
                         }
@@ -201,7 +205,7 @@ impl Worker {
                                     io::ErrorKind::Interrupted | io::ErrorKind::Unsupported
                                 )
                             {
-                                eprintln!("Typlo Rust spelling: {error}");
+                                crate::runtime_error!("Typlo Rust spelling: {error}");
                             }
                             return;
                         }
@@ -217,7 +221,7 @@ impl Worker {
                                 error.kind(),
                                 io::ErrorKind::Interrupted | io::ErrorKind::Unsupported
                             ) {
-                                eprintln!("Typlo Rust selection tools: {error}");
+                                crate::runtime_error!("Typlo Rust selection tools: {error}");
                             }
                             return;
                         }
@@ -234,7 +238,7 @@ impl Worker {
                             error.kind(),
                             io::ErrorKind::Unsupported | io::ErrorKind::Interrupted
                         ) {
-                            eprintln!("Typlo Rust accessible editor: {error}");
+                            crate::runtime_error!("Typlo Rust accessible editor: {error}");
                         }
                     }));
                     if processed.is_err() {
@@ -243,7 +247,9 @@ impl Worker {
                         fallback = super::clipboard_edit::Fallback::default();
                         scintilla = super::scintilla::Edits::default();
                         vocabulary = Vocabulary::installed().ok();
-                        eprintln!("Typlo Rust editor worker recovered after a failed command");
+                        crate::runtime_error!(
+                            "Typlo Rust editor worker recovered after a failed command"
+                        );
                     }
                 }
                 drop(automation);
@@ -447,7 +453,7 @@ fn start_spelling(
                     }
                 }
                 Err(error) if error.kind() != io::ErrorKind::Interrupted => {
-                    eprintln!("Typlo Rust spelling: {error}")
+                    crate::runtime_error!("Typlo Rust spelling: {error}")
                 }
                 _ => {}
             },
@@ -579,7 +585,7 @@ fn start_tools(
                     }
                 }
                 Err(error) if error.kind() != io::ErrorKind::Interrupted => {
-                    eprintln!("Typlo Rust selection tools: {error}")
+                    crate::runtime_error!("Typlo Rust selection tools: {error}")
                 }
                 _ => {}
             }
@@ -691,7 +697,10 @@ fn run_edit(
         // ProseMirror exposes the text and caret through UIA, but selecting a
         // range through that provider can fail to update the editor selection.
         let keyboard_selection = matches!(host, Some(ClipboardHost::ChatGpt))
-            && matches!(job.command, Command::Typing { word: Some(_), .. })
+            && matches!(
+                job.command,
+                Command::Typing { word: Some(_), .. } | Command::Undo
+            )
             && unsafe { element.CurrentClassName() }.is_ok_and(|class| {
                 class
                     .to_string()
@@ -917,30 +926,41 @@ fn run_edit(
         } => {
             use super::snippet_menu::{self, Origin, Prepared, Selection};
             let native_anchor = snippet_menu::caret_anchor(target);
-            let (selection, anchor) = match editor.native.snapshot() {
-                Ok(snapshot) => (
-                    Some(Selection::Native {
-                        document: snapshot.document,
-                        selection: snapshot.selection,
-                    }),
-                    native_anchor,
-                ),
-                Err(_) => {
-                    let mut anchor = native_anchor;
-                    let selection = editor.focused().ok().and_then(|(identity, element)| {
-                        anchor = snippet_caret(&element).or(anchor);
-                        let (document, selection) = read_text_pattern(&element).ok()?;
-                        if editor.focused().ok()?.0 != identity {
-                            return None;
-                        }
-                        Some(Selection::Accessible(Captured {
-                            runtime: identity.runtime,
-                            provider: identity.provider,
-                            document,
-                            selection,
-                        }))
-                    });
-                    (selection, anchor)
+            let (selection, anchor) = if super::scintilla::is_editor(target) {
+                super::scintilla::capture_snippet(owner, target, job.sequence)
+                    .map(|(capture, anchor)| {
+                        (
+                            Some(Selection::Scintilla(capture)),
+                            anchor.or(native_anchor),
+                        )
+                    })
+                    .unwrap_or((None, native_anchor))
+            } else {
+                match editor.native.snapshot() {
+                    Ok(snapshot) => (
+                        Some(Selection::Native {
+                            document: snapshot.document,
+                            selection: snapshot.selection,
+                        }),
+                        native_anchor,
+                    ),
+                    Err(_) => {
+                        let mut anchor = native_anchor;
+                        let selection = editor.focused().ok().and_then(|(identity, element)| {
+                            anchor = snippet_caret(&element).or(anchor);
+                            let (document, selection) = read_text_pattern(&element).ok()?;
+                            if editor.focused().ok()?.0 != identity {
+                                return None;
+                            }
+                            Some(Selection::Accessible(Captured {
+                                runtime: identity.runtime,
+                                provider: identity.provider,
+                                document,
+                                selection,
+                            }))
+                        });
+                        (selection, anchor)
+                    }
                 }
             };
             editor.native.target()?;
@@ -968,6 +988,10 @@ fn run_edit(
                 selection: capture.selection,
             };
             session.insert_snippet(&mut editor, expected, &web_template(template)?)?;
+            None
+        }
+        Command::InsertScintillaSnippet { capture, template } => {
+            super::scintilla::insert_snippet(owner, target, job.sequence, capture, &template)?;
             None
         }
         Command::Typing {
@@ -1193,17 +1217,11 @@ impl Editor for Accessible<'_> {
         if self.snapshot()? != *expected {
             return Err(changed());
         }
-        let keyboard_distance = self
+        let keyboard_selection = self
             .keyboard_word_selection
-            .then(|| {
-                expected
-                    .selection
-                    .end
-                    .checked_sub(range.start)
-                    .filter(|distance| *distance <= 129 && range.end + 1 == expected.selection.end)
-            })
+            .then(|| keyboard_word_selection(expected, &range))
             .flatten();
-        let proposed = if range != expected.selection && keyboard_distance.is_none() {
+        let proposed = if range != expected.selection && keyboard_selection.is_none() {
             let (identity, element) = self.focused()?;
             if identity != expected.target {
                 return Err(changed());
@@ -1225,10 +1243,12 @@ impl Editor for Accessible<'_> {
             if let Some(selection) = &proposed {
                 unsafe { selection.Select() }.map_err(io::Error::other)?;
                 self.confirm_selection(expected, range.clone())?;
-            } else if let Some(distance) = keyboard_distance {
+            } else if let Some((skip, width)) = keyboard_selection {
                 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_LEFT, VK_SHIFT};
-                input::send_selection_keys(None, VK_LEFT, 1, false)?;
-                input::send_selection_keys(Some(VK_SHIFT), VK_LEFT, distance - 1, false)?;
+                if skip > 0 {
+                    input::send_selection_keys(None, VK_LEFT, skip, false)?;
+                }
+                input::send_selection_keys(Some(VK_SHIFT), VK_LEFT, width, false)?;
                 self.confirm_selection(expected, range.clone())?;
             }
             lease.arm_focus();
@@ -1247,7 +1267,7 @@ impl Editor for Accessible<'_> {
         })();
         if let Err(error) = operation {
             if !lease.cancel_pending_paste() {
-                if keyboard_distance.is_some() {
+                if keyboard_selection.is_some() {
                     let _ = self.restore_keyboard_word_caret(expected, range);
                 } else if proposed.is_some() {
                     let _ = self.restore_selection(expected, range);
@@ -1261,7 +1281,7 @@ impl Editor for Accessible<'_> {
         let paste_end = range.start + replacement.len();
         let verification = self.wait_for_replacement(expected, &result, paste_end, &clipboard);
         if verification.is_err() {
-            if keyboard_distance.is_some() {
+            if keyboard_selection.is_some() {
                 let _ = self.restore_keyboard_word_caret(expected, range);
             } else if proposed.is_some() {
                 let _ = self.restore_selection(expected, range);
@@ -1269,7 +1289,7 @@ impl Editor for Accessible<'_> {
         }
         let mut current = verification?;
         if let Some(caret) = final_caret {
-            let moved = if keyboard_distance.is_some() {
+            let moved = if keyboard_selection.is_some() {
                 use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT;
                 self.native
                     .target()
@@ -1295,10 +1315,26 @@ impl Editor for Accessible<'_> {
         if let Err(error) = clipboard.restore() {
             // The document already changed. Let the clipboard guard retry on drop
             // without losing the confirmed edit or its Undo record.
-            eprintln!("Typlo Rust: restoring the clipboard after an edit: {error}");
+            crate::runtime_error!("Typlo Rust: restoring the clipboard after an edit: {error}");
         }
         Ok(())
     }
+}
+
+fn keyboard_word_selection<T>(
+    expected: &Snapshot<T>,
+    word: &Range<usize>,
+) -> Option<(usize, usize)> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let skip = expected.selection.end.checked_sub(word.end)?;
+    if !expected.selection.is_empty() || skip > 1 || !(1..=128).contains(&word.len()) {
+        return None;
+    }
+    let text = String::from_utf16(expected.document.get(word.clone())?).ok()?;
+    if text.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some((skip, text.graphemes(true).count()))
 }
 
 // Address bars can trim pasted text. Keep a verified existing separator in
@@ -1328,14 +1364,22 @@ impl Accessible<'_> {
         if current.target != expected.target || current.document != expected.document {
             return Err(changed());
         }
+        let skip = expected
+            .selection
+            .end
+            .checked_sub(word.end)
+            .ok_or_else(changed)?;
         let count = if current.selection == word {
-            2
+            1 + skip
         } else if current.selection == (word.end..word.end) {
-            1
+            skip
         } else {
             return Ok(());
         };
-        input::send_selection_keys(None, VK_RIGHT, count, true)
+        if count > 0 {
+            input::send_selection_keys(None, VK_RIGHT, count, true)?;
+        }
+        Ok(())
     }
 
     fn wait_for_replacement(
@@ -2021,6 +2065,30 @@ mod tests {
             assert!(!trailing_separator(&before, &(0..7), &replacement));
             before.selection = 7..7;
             assert!(!trailing_separator(&before, &(0..7), &replacement[..6]));
+        }
+    }
+
+    #[test]
+    fn keyboard_undo_selects_the_whole_word_with_or_without_a_separator() {
+        for (text, word, selection, movement) in [
+            ("🙂 привет ", 3..9, 10..10, Some((1, 6))),
+            ("🙂 привет", 3..9, 9..9, Some((0, 6))),
+            ("🙂 привіт\u{a0}", 3..9, 10..10, Some((1, 6))),
+            ("🙂 e\u{301}", 3..5, 5..5, Some((0, 1))),
+            ("🙂 привет xy", 3..9, 12..12, None),
+            ("🙂 при вет", 3..10, 10..10, None),
+            ("🙂 привет", 3..9, 3..9, None),
+        ] {
+            let snapshot = Snapshot {
+                target: (),
+                document: text.encode_utf16().collect(),
+                selection,
+            };
+            assert_eq!(
+                keyboard_word_selection(&snapshot, &word),
+                movement,
+                "{text}"
+            );
         }
     }
 

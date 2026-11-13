@@ -13,6 +13,23 @@ use typlo_rust::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    run().inspect_err(|error| {
+        typlo_rust::runtime_log::write("ERROR", format_args!("UI failed: {error}"));
+    })
+}
+
+fn ui_profile(path: Option<std::ffi::OsString>) -> std::io::Result<PathBuf> {
+    let default = config::profile();
+    let profile = path.map_or_else(|| default.clone(), PathBuf::from);
+    #[cfg(windows)]
+    if profile == default {
+        typlo_rust::windows::prepare_portable_profile(&profile)?;
+    }
+    typlo_rust::runtime_log::initialize(&profile, "ui");
+    Ok(profile)
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let mode = args.next();
     #[cfg(unix)]
@@ -20,10 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .is_some_and(|mode| mode == "--layout-choice-preview")
     {
-        let profile = args
-            .next()
-            .map(PathBuf::from)
-            .unwrap_or_else(config::profile);
+        let profile = ui_profile(args.next())?;
         return typlo_rust::selection_tools_view::run_preview(profile);
     }
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -31,18 +45,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .is_some_and(|mode| mode == "--selection-tools")
     {
-        let profile = args
-            .next()
-            .map(PathBuf::from)
-            .unwrap_or_else(config::profile);
+        let profile = ui_profile(args.next())?;
         return typlo_rust::selection_tools_view::run(profile);
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if mode.as_deref().is_some_and(|mode| mode == "--history") {
-        let profile = args
-            .next()
-            .map(PathBuf::from)
-            .unwrap_or_else(config::profile);
+        let profile = ui_profile(args.next())?;
         let mut origin = [0; 2];
         for field in &mut origin {
             *field = args
@@ -67,10 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(Into::into);
         }
         if mode == "--history" {
-            let profile = args
-                .next()
-                .map(PathBuf::from)
-                .unwrap_or_else(config::profile);
+            let profile = ui_profile(args.next())?;
             let mut origin = [0; 3];
             for field in &mut origin {
                 *field = args
@@ -83,10 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return typlo_rust::history_view::run(profile, origin, anchor);
         }
         if mode == "--capture" {
-            let profile = args
-                .next()
-                .map(PathBuf::from)
-                .unwrap_or_else(config::profile);
+            let profile = ui_profile(args.next())?;
             let destination = args.next().unwrap_or_default();
             let shape = if args.next().is_some_and(|arg| arg == "free") {
                 config::CaptureShape::Free
@@ -100,10 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         if mode == "--screenshot-editor" {
-            let profile = args
-                .next()
-                .map(PathBuf::from)
-                .unwrap_or_else(config::profile);
+            let profile = ui_profile(args.next())?;
             let for_save = args.next().is_some_and(|arg| arg == "file");
             return typlo_rust::capture_view::run_editor(&profile, for_save);
         }
@@ -112,10 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .is_some_and(|arg| arg == "--spelling-review")
     {
-        let profile = args
-            .next()
-            .map(PathBuf::from)
-            .unwrap_or_else(config::profile);
+        let profile = ui_profile(args.next())?;
         return typlo_rust::spelling_view::run(profile);
     }
     let page = match mode.as_deref().and_then(|arg| arg.to_str()) {
@@ -128,10 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let report = (mode.as_deref().is_some_and(|arg| arg == "--ui-probe"))
         .then(|| args.next().map(PathBuf::from))
         .flatten();
-    let profile = args
-        .next()
-        .map(PathBuf::from)
-        .unwrap_or_else(config::profile);
+    let profile = ui_profile(args.next())?;
     let report = report.map(|report| UiProbe {
         report,
         frame: args.next().map(PathBuf::from),
@@ -548,20 +541,23 @@ impl Workspace {
                 .inner_margin(10.)
                 .show(ui, |ui| {
                     ui.push_id(index, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                typlo_rust::appearance::text_input(&mut rule.process)
-                                    .desired_width((ui.available_width() - 112.).max(100.))
-                                    .hint_text(tr("appLayouts.process", "Process name")),
-                            );
+                        let buttons: &[_] = if cfg!(windows) {
+                            &[tr("appLayouts.choose", "Choose…"), "✕"]
+                        } else {
+                            &["✕"]
+                        };
+                        let (_, clicked) = field_with_actions(
+                            ui,
+                            typlo_rust::appearance::text_input(&mut rule.process)
+                                .hint_text(tr("appLayouts.process", "Process name")),
+                            buttons,
+                        );
+                        match clicked {
                             #[cfg(windows)]
-                            if ui.button(tr("appLayouts.choose", "Choose…")).clicked() {
-                                choose = Some(index);
-                            }
-                            if ui.button("✕").clicked() {
-                                remove = Some(index);
-                            }
-                        });
+                            Some(0) => choose = Some(index),
+                            Some(_) => remove = Some(index),
+                            None => {}
+                        }
                         ui.checkbox(&mut rule.enabled, tr("appLayouts.enabled", "Enabled"));
                         tri_state(
                             ui,
@@ -587,7 +583,7 @@ impl Workspace {
                         }
                         let mut reorder = None;
                         for (position, layout) in order.iter().copied().enumerate() {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 let mut enabled = rule.cycle.contains(&layout);
                                 if ui.checkbox(&mut enabled, layout.name()).changed() {
                                     if enabled {
@@ -747,20 +743,19 @@ impl Workspace {
                             .hint_text(tr("rust.snippet.name", "Name (optional)"))
                             .desired_width(f32::INFINITY),
                     );
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            typlo_rust::appearance::text_input(&mut snippet.trigger)
-                                .hint_text(";addr")
-                                .desired_width((ui.available_width() - 90.).max(160.)),
-                        );
-                        if ui.button(tr("history.ctx.delete", "Удалить")).clicked() {
-                            remove = Some(index);
-                        }
-                    });
+                    let (_, clicked) = field_with_actions(
+                        ui,
+                        typlo_rust::appearance::text_input(&mut snippet.trigger).hint_text(";addr"),
+                        &[tr("history.ctx.delete", "Delete")],
+                    );
+                    if clicked.is_some() {
+                        remove = Some(index);
+                    }
                     ui.add(
                         typlo_rust::appearance::text_area(&mut snippet.text)
                             .hint_text(tr("settings.snippetText", "Text to insert"))
                             .desired_rows(3)
+                            .clip_text(true)
                             .desired_width(f32::INFINITY),
                     );
                     #[cfg(windows)]
@@ -1415,6 +1410,9 @@ impl eframe::App for Workspace {
                                     }
                                     self.navigate(ui, Page::Update);
                                 }
+                                if page == Page::Settings {
+                                    hint(ui, concat!("v", env!("CARGO_PKG_VERSION")));
+                                }
                                 if !self.status.is_empty() {
                                     hint(ui, &self.status);
                                 }
@@ -1488,6 +1486,12 @@ impl eframe::App for Workspace {
                         heading(ui, tr("tools.measurements", "Measurements"));
                         #[cfg(windows)]
                         self.performance_report(ui);
+                        #[cfg(windows)]
+                        if ui.button(tr("rust.logs.open", "Open diagnostic logs")).clicked()
+                            && let Err(error) = open_diagnostic_logs(&self.profile)
+                        {
+                            self.status = error.to_string();
+                        }
                         hint(ui, tr("tools.noProbe", "Run the field compatibility shortcut in the target editor to inspect it."));
                         shortcut_row(ui, &self.settings.hotkeys.tools, tr("tools.title", "Typlo tools"));
                         self.backup(ui, true);
@@ -1513,6 +1517,18 @@ impl eframe::App for Workspace {
     }
 }
 
+#[cfg(windows)]
+fn open_diagnostic_logs(profile: &std::path::Path) -> std::io::Result<()> {
+    let directory = profile.join("logs");
+    std::fs::create_dir_all(&directory)?;
+    let explorer = std::env::var_os("SystemRoot")
+        .ok_or_else(|| std::io::Error::other("Windows directory is unavailable"))?;
+    std::process::Command::new(PathBuf::from(explorer).join("explorer.exe"))
+        .arg(directory)
+        .spawn()?;
+    Ok(())
+}
+
 fn heading(ui: &mut Ui, label: &str) {
     ui.add_space(8.);
     ui.label(RichText::new(label).size(16.).strong());
@@ -1527,19 +1543,69 @@ fn hint(ui: &mut Ui, text: &str) {
 }
 
 fn setting_row<R>(ui: &mut Ui, label: &str, input: impl FnOnce(&mut Ui) -> R) -> R {
-    const LABEL_WIDTH: f32 = 182.;
+    let label_width = (ui.available_width() * 0.35).min(182.);
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(
-            egui::vec2(LABEL_WIDTH, 32.),
+            egui::vec2(label_width, 32.),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                ui.set_width(LABEL_WIDTH);
+                ui.set_width(label_width);
                 ui.add(egui::Label::new(label).wrap());
             },
         );
         input(ui)
     })
     .inner
+}
+
+fn field_with_actions(
+    ui: &mut Ui,
+    field: egui::TextEdit<'_>,
+    labels: &[&str],
+) -> (egui::Response, Option<usize>) {
+    let field = field.id(ui.id().with("action-field"));
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let padding = 2. * ui.spacing().button_padding.x;
+    let spacing = ui.spacing().item_spacing.x;
+    let widths: Vec<_> = labels
+        .iter()
+        .map(|label| {
+            ui.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap((*label).into(), font.clone(), Color32::WHITE)
+                    .size()
+                    .x
+            })
+            .ceil()
+                + padding
+        })
+        .collect();
+    let available = ui.available_width();
+    let inline_width = available - widths.iter().sum::<f32>() - spacing * labels.len() as f32;
+    let actions = |ui: &mut Ui| {
+        labels
+            .iter()
+            .zip(widths)
+            .enumerate()
+            .fold(None, |clicked, (index, (label, width))| {
+                let button = ui.add(egui::Button::new(*label).min_size(egui::vec2(width, 0.)));
+                if button.clicked() {
+                    Some(index)
+                } else {
+                    clicked
+                }
+            })
+    };
+    if inline_width >= 160. {
+        ui.horizontal(|ui| {
+            let field = ui.add(field.desired_width(inline_width));
+            (field, actions(ui))
+        })
+        .inner
+    } else {
+        let field = ui.add(field.desired_width(available));
+        (field, ui.horizontal_wrapped(actions).inner)
+    }
 }
 
 fn shortcut_row(ui: &mut Ui, shortcut: &str, action: &str) {
@@ -1792,7 +1858,7 @@ fn cycle_controls(ui: &mut Ui, cycle: &mut Vec<Language>, minimum: usize) {
     let mut move_up = None;
     let mut remove = None;
     for (position, &index) in visible.iter().enumerate() {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(cycle[index].name());
             if ui
                 .add_enabled(
@@ -1840,5 +1906,51 @@ fn available_choices() -> Vec<Language> {
         Language::ALL.to_vec()
     } else {
         choices
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn settings_fields_and_localized_actions_fit_the_available_width() {
+        let context = egui::Context::default();
+        let mut text = "long-unbroken-text".repeat(40);
+        let mut wide_field = 0.;
+        for width in [500., 240., 500.] {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 400.),
+                )),
+                ..Default::default()
+            };
+            let _ = context.run_ui(input, |ui| {
+                let right = ui.max_rect().right();
+                let (field, _) = field_with_actions(
+                    ui,
+                    typlo_rust::appearance::text_input(&mut text),
+                    &["Choose an application…", "Remove"],
+                );
+                let template = ui.add(
+                    typlo_rust::appearance::text_area(&mut text)
+                        .clip_text(true)
+                        .desired_width(f32::INFINITY),
+                );
+                assert!(ui.min_rect().right() <= right + 1.);
+                assert!(template.rect.right() <= right + 1.);
+                if width == 240. {
+                    assert!((field.rect.right() - right).abs() <= 1.);
+                } else {
+                    assert!(field.rect.right() < right - 40.);
+                    assert!(field.rect.width() > 200.);
+                    if wide_field > 0. {
+                        assert_eq!(field.rect.width(), wide_field);
+                    }
+                    wide_field = field.rect.width();
+                }
+            });
+        }
     }
 }

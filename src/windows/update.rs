@@ -21,6 +21,7 @@ use windows_sys::Win32::{
 pub(crate) const ASSET: &str = "typlo-win-x64.zip";
 const RESIDENT_EXE: &str = "typlo-rust.exe";
 const MARKER: &str = "rust-current.txt";
+pub(super) const SHUTDOWN_FOR_UPDATE: usize = 0x5459;
 #[cfg(test)]
 const REQUIRED: [&str; 9] = [
     "typlo-rust.exe",
@@ -40,37 +41,62 @@ pub fn check() -> io::Result<Option<Update>> {
     update_package::check(&installed, ASSET)
 }
 
-pub(super) fn check_in_helper() -> io::Result<Option<String>> {
+pub(super) fn auto_install_in_helper() -> io::Result<()> {
     let output = Command::new(std::env::current_exe()?)
         .creation_flags(CREATE_NO_WINDOW)
-        .arg("--query-update")
+        .arg("--auto-update")
         .output()?;
     if !output.status.success() {
         return Err(io::Error::other(
             String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         ));
     }
-    serde_json::from_slice(&output.stdout).map_err(io::Error::other)
+    Ok(())
+}
+
+pub fn auto_install() -> io::Result<()> {
+    let _lock = InstallLock::acquire()?;
+    let Some(update) = check()? else {
+        crate::runtime_log::write(
+            "INFO",
+            format_args!("Startup update check found no newer release"),
+        );
+        return Ok(());
+    };
+    install(&update, |_| {})
 }
 
 pub fn install_selected(version: &str, hash: &str) -> io::Result<()> {
+    install_selected_with_status(version, hash, None)
+}
+
+pub fn install_selected_with_status(
+    version: &str,
+    hash: &str,
+    status: Option<&Path>,
+) -> io::Result<()> {
     let _lock = InstallLock::acquire()?;
     let update = check()?
         .filter(|update| update.version == version && update.sha256 == hash)
         .ok_or_else(|| {
             io::Error::other("The selected update is no longer available. Check again.")
         })?;
-    install(&update)
+    install(&update, |phase| {
+        if let Some(path) = status {
+            let _ = fs::write(path, phase);
+        }
+    })
 }
 
 #[cfg(feature = "gui")]
-pub fn spawn_installer(update: &Update) -> io::Result<()> {
+pub fn spawn_installer(update: &Update, status: &Path) -> io::Result<()> {
     let executable = std::env::current_exe()?.with_file_name(RESIDENT_EXE);
     let output = Command::new(executable)
         .creation_flags(CREATE_NO_WINDOW)
         .arg("--install-update")
         .arg(&update.version)
         .arg(&update.sha256)
+        .arg(status)
         .output()?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
@@ -83,7 +109,7 @@ pub fn spawn_installer(update: &Update) -> io::Result<()> {
     Ok(())
 }
 
-fn install(update: &Update) -> io::Result<()> {
+fn install(update: &Update, status: impl Fn(&str)) -> io::Result<()> {
     let root = installation_root()?;
     let previous = current(&root)?;
     let base = root.join(RESIDENT_EXE);
@@ -100,9 +126,16 @@ fn install(update: &Update) -> io::Result<()> {
     {
         return Ok(());
     }
-    let workspace = tempfile::tempdir()?;
+    let workspace = tempfile::tempdir_in(&root)?;
     let archive = workspace.path().join("update.zip");
+    crate::runtime_log::write(
+        "INFO",
+        format_args!("Downloading update v{}", update.version),
+    );
+    status("download");
     download(&update.url, &archive, MAX_PACKAGE, 120)?;
+    status("verify");
+    crate::runtime_log::write("INFO", format_args!("Verifying update v{}", update.version));
     let new_executable = stage(&root, &archive, &update.version, &update.sha256)?;
     let probe = workspace.path().join("probe-ready.txt");
     let isolated = workspace.path().join("isolated-profile");
@@ -115,6 +148,11 @@ fn install(update: &Update) -> io::Result<()> {
     let _ = child.kill();
     let _ = child.wait();
     probe_result?;
+    status("restart");
+    crate::runtime_log::write(
+        "INFO",
+        format_args!("Restarting for update v{}", update.version),
+    );
     let stopped = stop_resident(&old_executable)?;
     activate(
         &root,
@@ -139,7 +177,12 @@ fn install(update: &Update) -> io::Result<()> {
             }
             Ok(())
         },
-    )
+    )?;
+    crate::runtime_log::write(
+        "INFO",
+        format_args!("Update v{} is running", update.version),
+    );
+    Ok(())
 }
 
 fn activate(
@@ -209,8 +252,12 @@ pub fn launch_installed() -> io::Result<bool> {
     Ok(true)
 }
 
-fn installation_root() -> io::Result<PathBuf> {
+pub(crate) fn installation_root() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
+    installation_root_for(&exe)
+}
+
+pub(crate) fn installation_root_for(exe: &Path) -> io::Result<PathBuf> {
     let directory = exe
         .parent()
         .ok_or_else(|| io::Error::other("Missing installation directory"))?;
@@ -226,6 +273,11 @@ fn installation_root() -> io::Result<PathBuf> {
         return Ok(root.to_owned());
     }
     Ok(directory.to_owned())
+}
+
+#[cfg(feature = "gui")]
+pub fn temporary_workspace() -> io::Result<tempfile::TempDir> {
+    tempfile::tempdir_in(installation_root()?)
 }
 
 fn stage(root: &Path, archive: &Path, version: &str, digest: &str) -> io::Result<PathBuf> {
@@ -319,7 +371,7 @@ fn stop_resident(executable: &Path) -> io::Result<bool> {
     if process.is_null() {
         return Err(io::Error::last_os_error());
     }
-    let result = if unsafe { PostMessageW(window, WM_CLOSE, 0, 0) } == 0 {
+    let result = if unsafe { PostMessageW(window, WM_CLOSE, SHUTDOWN_FOR_UPDATE, 0) } == 0 {
         Err(io::Error::last_os_error())
     } else if unsafe { WaitForSingleObject(process, 10_000) } != WAIT_OBJECT_0 {
         Err(io::Error::other("Previous Typlo Rust process did not exit"))
@@ -338,6 +390,18 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::fs::File;
     use zip::{ZipWriter, write::SimpleFileOptions};
+
+    #[test]
+    fn updated_executables_resolve_the_same_portable_profile_root() {
+        let root = Path::new(r"C:\Apps\Typlo");
+        for exe in ["typlo-rust.exe", "typlo-settings.exe"] {
+            assert_eq!(installation_root_for(&root.join(exe)).unwrap(), root);
+            assert_eq!(
+                installation_root_for(&root.join("versions/0.1.3").join(exe)).unwrap(),
+                root
+            );
+        }
+    }
 
     #[test]
     fn stages_verified_package_without_changing_active_version() {
@@ -388,5 +452,23 @@ mod tests {
                 .contains("synthetic startup failure")
         );
         assert!(restarted.get());
+    }
+
+    #[test]
+    fn successful_restart_keeps_the_new_version_active() {
+        let root = tempfile::tempdir().unwrap();
+        set_current(root.path(), Some("0.1.0")).unwrap();
+        activate(
+            root.path(),
+            "0.2.0",
+            Some("0.1.0"),
+            || {
+                assert_eq!(current(root.path()).unwrap().as_deref(), Some("0.2.0"));
+                Ok(())
+            },
+            || panic!("A successful restart must not restore the previous version"),
+        )
+        .unwrap();
+        assert_eq!(current(root.path()).unwrap().as_deref(), Some("0.2.0"));
     }
 }

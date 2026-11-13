@@ -57,7 +57,7 @@ impl Listener {
                 .name("typlo-lan-clipboard".into())
                 .spawn(move || {
                     if let Err(error) = listen(&profile, &peer, server, identity, stop) {
-                        eprintln!("Typlo LAN clipboard: {error}");
+                        crate::runtime_error!("Typlo LAN clipboard: {error}");
                     }
                 })?
         };

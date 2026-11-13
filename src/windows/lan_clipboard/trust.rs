@@ -138,8 +138,14 @@ pub fn invite(profile: &Path) -> io::Result<String> {
 }
 
 pub fn pair(profile: &Path, code: &str, address: &str) -> io::Result<()> {
+    if code.len() > 8192 {
+        return Err(invalid("Pairing code is too long"));
+    }
+    let code: String = code
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect();
     let code = code
-        .trim()
         .strip_prefix(PREFIX)
         .filter(|code| code.len() <= 4096)
         .ok_or_else(|| invalid("Enter the pairing code from the other computer"))?;
@@ -201,4 +207,28 @@ pub fn paired_address(profile: &Path) -> io::Result<Option<String>> {
 
 pub(super) fn fingerprint(certificate: &[u8]) -> [u8; 32] {
     Sha256::digest(certificate).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pairing_accepts_line_breaks_in_a_transcribed_certificate() {
+        let sender = tempfile::tempdir().unwrap();
+        let receiver = tempfile::tempdir().unwrap();
+        let code = invite(sender.path()).unwrap();
+        let mut wrapped = String::new();
+        for (index, character) in code.chars().enumerate() {
+            if index > 0 && index % 48 == 0 {
+                wrapped.push_str("\r\n ");
+            }
+            wrapped.push(character);
+        }
+        pair(receiver.path(), &wrapped, "").unwrap();
+        assert_eq!(
+            Peer::load(receiver.path()).unwrap().unwrap().certificate,
+            Identity::load(sender.path()).unwrap().certificate,
+        );
+    }
 }

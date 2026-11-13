@@ -19,6 +19,7 @@ pub mod linux;
 pub mod locale;
 #[cfg(target_os = "macos")]
 pub mod macos;
+pub mod runtime_log;
 pub mod selection_tools;
 #[cfg(all(
     feature = "gui",

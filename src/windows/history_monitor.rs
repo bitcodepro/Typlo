@@ -75,7 +75,7 @@ impl Monitor {
                                 Some(&job.source),
                             )
                         {
-                            eprintln!("Typlo Rust clipboard: {error}");
+                            crate::runtime_error!("Typlo Rust clipboard: {error}");
                         }
                     }
                 }

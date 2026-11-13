@@ -1,6 +1,6 @@
 use super::{
     Target, WinEdit, accessible::Command, active_language, clipio, diagnostics, input,
-    switch_layout,
+    snippet_menu, switch_layout,
 };
 use crate::{
     dictionary::Dictionary,
@@ -36,6 +36,9 @@ const GET_PASTE_CONVERT_ENDINGS: u32 = 2468;
 const GET_SELECTIONS: u32 = 2570;
 const GET_CARET_VIRTUAL_SPACE: u32 = 2581;
 const GET_ANCHOR_VIRTUAL_SPACE: u32 = 2583;
+const POINT_X_FROM_POSITION: u32 = 2164;
+const POINT_Y_FROM_POSITION: u32 = 2165;
+const TEXT_HEIGHT: u32 = 2279;
 const MAX_RANGE: usize = 60_000;
 
 pub(super) fn supports(target: Target, command: &Command) -> bool {
@@ -52,9 +55,110 @@ pub(super) fn supports(target: Target, command: &Command) -> bool {
     ) {
         return false;
     }
+    is_editor(target)
+}
+
+pub(super) fn is_editor(target: Target) -> bool {
     let mut class = [0u16; 16];
     let len = unsafe { GetClassNameW(target.edit, class.as_mut_ptr(), class.len() as i32) };
     len == 9 && class[..9].iter().copied().eq("Scintilla".encode_utf16())
+}
+
+pub(super) struct SnippetSelection {
+    state: State,
+    surrounding: String,
+}
+
+fn snippet_view(target: Target, sequence: usize) -> View {
+    let mut editor = WinEdit {
+        expected: Some(target),
+        sequence: Some(sequence),
+        ..Default::default()
+    };
+    editor.begin_operation();
+    View { editor, target }
+}
+
+pub(super) fn capture_snippet(
+    owner: HWND,
+    target: Target,
+    sequence: usize,
+) -> io::Result<(
+    SnippetSelection,
+    Option<windows_sys::Win32::Foundation::RECT>,
+)> {
+    let view = snippet_view(target, sequence);
+    let state = view.state()?;
+    let mut clipboard = Clipboard { owner, saved: None };
+    let surrounding = view.snippet_context(&state, &mut clipboard)?;
+    let anchor = view.snippet_anchor(&state);
+    if view.state()? != state {
+        return Err(interrupted());
+    }
+    Ok((SnippetSelection { state, surrounding }, anchor))
+}
+
+pub(super) fn insert_snippet(
+    owner: HWND,
+    target: Target,
+    sequence: usize,
+    captured: SnippetSelection,
+    template: &crate::snippets::Template,
+) -> io::Result<()> {
+    let view = snippet_view(target, sequence);
+    let before = view.state()?;
+    if before != captured.state {
+        return Err(interrupted());
+    }
+    let lease = input::SelectionLease::start(sequence, target, None)?;
+    let mut clipboard = Clipboard { owner, saved: None };
+    if view.snippet_context(&before, &mut clipboard)? != captured.surrounding {
+        return Err(interrupted());
+    }
+    let range = before.range();
+    let original = view.read(&mut clipboard, range.clone(), &before)?;
+    let mode = view.get(GET_EOL_MODE)?;
+    let replacement = snippet_endings(&template.text, mode);
+    let caret = template
+        .caret
+        .map(|offset| {
+            String::from_utf16(
+                &template
+                    .text
+                    .encode_utf16()
+                    .take(offset)
+                    .collect::<Vec<_>>(),
+            )
+            .map(|prefix| range.start + snippet_endings(&prefix, mode).len())
+            .map_err(io::Error::other)
+        })
+        .transpose()?;
+    let after = view.replace(
+        &mut clipboard,
+        &lease,
+        &before,
+        range.clone(),
+        &original,
+        &replacement,
+    )?;
+    if let Some(caret) = caret {
+        if view.state()? != after {
+            return Err(interrupted());
+        }
+        view.message(SET_SELECTION, caret, caret)?;
+    }
+    Ok(())
+}
+
+fn snippet_endings(text: &str, mode: usize) -> String {
+    let newline = match mode {
+        1 => "\r",
+        2 => "\n",
+        _ => "\r\n",
+    };
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', newline)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,7 +280,9 @@ impl Edits {
         };
         let before = view.state()?;
         timing.phase("verified Scintilla document and selection");
-        let lease = input::SelectionLease::start(job.sequence, job.target, job.canceled.clone())?;
+        // Keep the clipboard guard alive until verification and restore it
+        // before replaying any input buffered during the write.
+        let lease;
         let mut clipboard = Clipboard {
             owner: job.owner,
             saved: None,
@@ -279,6 +385,7 @@ impl Edits {
         if original == replacement || replacement.is_empty() {
             return Ok(None);
         }
+        lease = input::SelectionLease::start(job.sequence, job.target, job.canceled.clone())?;
         let after = view.replace(
             &mut clipboard,
             &lease,
@@ -325,6 +432,38 @@ struct View {
 }
 
 impl View {
+    fn snippet_context(&self, state: &State, clipboard: &mut Clipboard) -> io::Result<String> {
+        let range = state.range();
+        let start = self.message(POSITION_BEFORE, range.start, 0)?;
+        let end = self.message(POSITION_AFTER, range.end, 0)?;
+        self.read(clipboard, start..end, state)
+    }
+
+    fn snippet_anchor(&self, state: &State) -> Option<windows_sys::Win32::Foundation::RECT> {
+        use windows_sys::Win32::{
+            Foundation::{POINT, RECT},
+            Graphics::Gdi::ClientToScreen,
+        };
+        let _dpi = snippet_menu::DpiScope::new();
+        let mut point = POINT {
+            x: self.message(POINT_X_FROM_POSITION, 0, state.caret).ok()? as i32,
+            y: self.message(POINT_Y_FROM_POSITION, 0, state.caret).ok()? as i32,
+        };
+        let height = self.get(TEXT_HEIGHT).ok()? as i32;
+        if point.x < 0
+            || point.y < 0
+            || height <= 0
+            || unsafe { ClientToScreen(self.target.edit, &mut point) } == 0
+        {
+            return None;
+        }
+        Some(RECT {
+            left: point.x,
+            right: point.x + 1,
+            top: point.y,
+            bottom: point.y + height,
+        })
+    }
     fn message(&self, code: u32, first: usize, second: usize) -> io::Result<usize> {
         self.editor
             .send(self.target.edit, code, first, second as isize)
