@@ -2117,6 +2117,7 @@ mod layout_tests {
                 let button = frame
                     .shapes
                     .iter()
+                    .rev()
                     .find_map(|shape| match &shape.shape {
                         egui::Shape::Text(text) if text.galley.text() == label => {
                             Some(text.pos + text.galley.size() * 0.5)
