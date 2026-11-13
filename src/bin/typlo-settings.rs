@@ -866,16 +866,63 @@ impl Workspace {
             };
             shortcut_row(ui, &label, DrawingShortcut::label());
         }
-        for setting in &self.settings.layout_hotkeys {
-            let label =
-                tr("settings.convertTo", "Convert to {0}").replace("{0}", &setting.layout.name());
-            shortcut_row(ui, &setting.hotkey, &label);
+        for layout in available_choices() {
+            let label = tr("settings.convertTo", "Convert to {0}").replace("{0}", &layout.name());
+            let shortcut = self
+                .settings
+                .layout_hotkeys
+                .iter()
+                .find(|setting| setting.layout == layout && !setting.hotkey.is_empty())
+                .map_or(tr("hotkey.off", "Off"), |setting| setting.hotkey.as_str());
+            shortcut_row(ui, shortcut, &label);
         }
-        shortcut_row(
-            ui,
-            &format!("{} ×2", self.settings.hotkeys.history),
-            tr("shortcuts.previous", "Paste previous clipboard item"),
-        );
+        if !self.settings.hotkeys.history.is_empty() {
+            shortcut_row(
+                ui,
+                &format!("{} ×2", self.settings.hotkeys.history),
+                tr("shortcuts.previous", "Paste previous clipboard item"),
+            );
+        }
+        #[cfg(windows)]
+        {
+            heading(ui, tr("rust.shortcuts.snippets", "In the snippet menu"));
+            for (keys, action) in [
+                ("↑ ↓", tr("shortcuts.select", "Select item")),
+                ("Enter", tr("rust.snippet.insert", "Insert snippet")),
+                ("Ctrl+P", tr("history.ctx.pin", "Pin")),
+                (
+                    "Tab",
+                    tr("rust.shortcuts.snippetParameter", "Next snippet parameter"),
+                ),
+                ("Esc", tr("update.close", "Close")),
+            ] {
+                shortcut_row(ui, keys, action);
+            }
+            heading(ui, tr("rust.shortcuts.drawing", "While drawing on screen"));
+            shortcut_row(
+                ui,
+                "1–9",
+                tr("rust.shortcuts.brushPreset", "Select brush thickness"),
+            );
+            shortcut_row(
+                ui,
+                tr("rust.shortcuts.wheel", "Mouse wheel"),
+                tr("rust.shortcuts.brushAdjust", "Adjust brush thickness"),
+            );
+            heading(ui, tr("paint.openLatest", "Screenshot editor"));
+            for (keys, action) in [
+                ("Ctrl+C", tr("capture.copy", "Copy screenshot")),
+                ("Ctrl+S", tr("capture.save", "Save screenshot")),
+                ("Ctrl+Z", tr("rust.shortcuts.undoEdit", "Undo edit")),
+                (
+                    "Ctrl+Y / Ctrl+Shift+Z",
+                    tr("rust.shortcuts.redoEdit", "Redo edit"),
+                ),
+                ("Esc", tr("update.close", "Close")),
+            ] {
+                shortcut_row(ui, keys, action);
+            }
+        }
         heading(
             ui,
             tr("shortcuts.historyWindow", "In the clipboard history"),
@@ -918,6 +965,13 @@ impl Workspace {
                     ui.selectable_value(&mut self.settings.capture_shape, value, shape(value));
                 }
             });
+        ui.checkbox(
+            &mut self.settings.capture_editor_after_copy,
+            tr(
+                "capture.editorAfterCopy",
+                "Open the editor after copying a screenshot",
+            ),
+        );
         ui.horizontal(|ui| {
             for (label, mode) in [
                 (tr("capture.copy", "Copy screenshot"), "clipboard"),
@@ -1017,8 +1071,6 @@ impl Workspace {
         }
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         self.history_stats(ui);
-        #[cfg(windows)]
-        self.lan_clipboard.show(ui, &self.profile);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if ui
             .button(tr("settings.openHistory", "Open history"))
@@ -1128,7 +1180,12 @@ impl Workspace {
         if let Some(backup) = &self.pending_backup {
             let (snippets, words, exclusions, pairs) = backup.summary();
             let summary = if backup.settings_only() {
-                format!("{}: {snippets}", tr("settings.snippets", "Snippets"))
+                tr(
+                    "rust.backup.settingsSummary",
+                    "Snippets: {0} · Correction pairs: {1}",
+                )
+                .replace("{0}", &snippets.to_string())
+                .replace("{1}", &pairs.to_string())
             } else {
                 tr(
                     "rust.backup.summary",
@@ -1400,6 +1457,8 @@ impl eframe::App for Workspace {
                 ui.set_min_width(ui.available_width());
                 match page {
                     Page::Settings => {
+                        #[cfg(windows)]
+                        self.lan_clipboard.show(ui, &self.profile);
                         self.preferences(ui);
                         heading(ui, tr("settings.layoutHeader", "Fix the layout of selected text"));
                         hint(ui, tr("settings.layoutHint", "Select text and press a shortcut."));
@@ -1643,7 +1702,7 @@ fn edit_hotkey(ui: &mut Ui, id: impl std::hash::Hash, shortcut: &mut String) -> 
 #[cfg(windows)]
 fn settings_file(save: bool, full: bool) -> std::io::Result<Option<PathBuf>> {
     if full {
-        choose_file(save, "Typlo-backup", "typlo", None)
+        choose_file(save, "Typlo-backup", "typlo", (!save).then_some("json"))
     } else {
         choose_file(save, "typlo-settings", "json", (!save).then_some("typlo"))
     }

@@ -27,9 +27,11 @@ On Windows, letters, top-row digits, and supported punctuation in shortcuts refe
 
 Clipboard history opens near the cursor. Its item menu supports viewing, pasting, pinning, and deleting items. You can paste formatted content as plain text and extract text from images. `Ctrl+O` opens the viewer, `Ctrl+T` runs OCR, and `Ctrl+1`–`Ctrl+9` paste items by position.
 
+Select the pencil to edit a text item or add a caption to an image or file selection. Typlo copies and shares the attachment and caption as one entry. When pasting, the destination app chooses which Windows clipboard formats it can use. Update Typlo2.0 on both computers to share entries with captions.
+
 ## Share clipboard items between Windows computers
 
-1. On both computers, open **Settings → Clipboard history → Clipboard sharing on the local network**. Copy each computer's code into the other computer and select **Pair computer**.
+1. On both computers, open **Clipboard sharing with another computer** at the top of **Settings**. Copy each computer's code into the other computer and select **Pair computer**.
 2. Open history with `Ctrl+Shift+V` and select ↗ beside the item. Typlo2.0 can send text, images, files, and folders. The receiving computer adds the item to its history. Use **Open received files** to find saved files.
 
 The computers discover each other on the local network. If discovery fails, enter a private IPv4 address manually. Allow Typlo2.0 through Windows Firewall on private networks to receive items. Transfers use TCP 49237 and discovery uses UDP 49237. You can pair with one other computer. The file transfer limit is 512 MiB. Received files stay on disk until deleted.
@@ -41,6 +43,8 @@ Starting with Preview 27, transfers show progress. **Cancel** stops the transfer
 Open the snippet menu with `Ctrl+Alt+Shift+S` and type a name or trigger. Set the name in the snippet settings. Select the star or press `Ctrl+P` to pin the selected snippet at the top.
 
 For a template such as `Hello, {name}! Ticket {ticket} is ready.{cursor}`, enable **Ask for parameters** in the snippet settings. Select the snippet from the menu, fill in the values, and press Enter in the last field. Write `{{name}}` to insert literal `{name}`.
+
+Use **Settings → Import settings** to load a C# settings JSON or a Typlo2.0 export. **Export settings** saves settings, snippets, and spelling correction pairs as JSON. Use **Backup** in **Typlo tools** to also include personal dictionary words and autocorrection exceptions.
 
 ## Linux and macOS
 

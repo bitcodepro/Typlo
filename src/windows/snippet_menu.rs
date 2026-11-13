@@ -69,7 +69,8 @@ pub(super) enum Selection {
 
 pub(super) struct Prepared {
     pub origin: Origin,
-    pub selection: Selection,
+    pub selection: Option<Selection>,
+    pub insertion_disabled: bool,
     pub sequence: usize,
     pub anchor: RECT,
     pub snippets: Vec<Snippet>,
@@ -311,7 +312,6 @@ pub(super) fn show(host: HWND, profile: &Path) -> io::Result<()> {
     };
     if prepared.sequence != input::sequence()
         || WinEdit::default().target().ok() != Some(prepared.origin.target())
-        || prepared.snippets.is_empty()
         || focus_existing()
     {
         return Ok(());
@@ -376,7 +376,7 @@ pub(super) fn show(host: HWND, profile: &Path) -> io::Result<()> {
     let rows = prepared
         .snippets
         .len()
-        .min(MAX_VISIBLE)
+        .clamp(1, MAX_VISIBLE)
         .min(((work.bottom - work.top - header - 8) / row_height).max(1) as usize);
     let width = (350 * dpi / 96).min(work.right - work.left);
     let height = header + rows as i32 * row_height + 2;
@@ -414,22 +414,35 @@ pub(super) fn show(host: HWND, profile: &Path) -> io::Result<()> {
 fn popup_position(anchor: RECT, work: RECT, width: i32, height: i32) -> (i32, i32) {
     let below = anchor.bottom + 5;
     let above = anchor.top - height - 5;
-    let y = if below + height <= work.bottom
-        || above < work.top && work.bottom - anchor.bottom >= anchor.top - work.top
-    {
-        below
+    let max_x = (work.right - width).max(work.left);
+    let max_y = (work.bottom - height).max(work.top);
+    let x = anchor.left.clamp(work.left, max_x);
+    if (work.top..=max_y).contains(&below) {
+        return (x, below);
+    }
+    if (work.top..=max_y).contains(&above) {
+        return (x, above);
+    }
+    let right = anchor.right + 5;
+    let left = anchor.left - width - 5;
+    let side = if right <= max_x || left < work.left {
+        right
     } else {
-        above
+        left
     };
     (
-        anchor
-            .left
-            .clamp(work.left, (work.right - width).max(work.left)),
-        y.clamp(work.top, (work.bottom - height).max(work.top)),
+        side.clamp(work.left, max_x),
+        anchor.top.clamp(work.top, max_y),
     )
 }
 
 fn choose(window: HWND) {
+    if !OPEN.with_borrow(|slot| {
+        slot.as_ref()
+            .is_some_and(|menu| menu.prepared.selection.is_some() && !menu.matches.is_empty())
+    }) {
+        return;
+    }
     let form_height = OPEN.with_borrow_mut(|slot| {
         let menu = slot.as_mut()?;
         if menu.parameters.is_some() {
@@ -494,6 +507,7 @@ fn close(window: HWND, apply: bool) {
             }
         }
         if apply
+            && let Some(selection) = menu.prepared.selection
             && (unsafe { GetForegroundWindow() } == target.foreground
                 || unsafe { SetForegroundWindow(target.foreground) } != 0)
             && let Some(template) = if let Some(form) = menu.parameters {
@@ -516,7 +530,7 @@ fn close(window: HWND, apply: bool) {
         {
             *insertion = Some(Insertion {
                 origin: menu.prepared.origin,
-                selection: menu.prepared.selection,
+                selection,
                 template,
             });
             unsafe {
@@ -799,10 +813,22 @@ fn paint(window: HWND) {
                 }
                 let query = if menu.pin_error {
                     tr("rust.snippet.pinError", "Could not save favorites").to_owned()
-                } else if menu.query.is_empty() {
-                    tr("rust.snippet.search", "Type to search · Ctrl+P to pin").to_owned()
-                } else {
+                } else if !menu.query.is_empty() {
                     String::from_utf16_lossy(&menu.query)
+                } else if menu.prepared.insertion_disabled {
+                    tr(
+                        "rust.snippet.disabledHere",
+                        "Snippets are disabled in this app",
+                    )
+                    .to_owned()
+                } else if menu.prepared.selection.is_none() && !menu.prepared.snippets.is_empty() {
+                    tr(
+                        "rust.snippet.readOnly",
+                        "Open an editable field to insert snippets",
+                    )
+                    .to_owned()
+                } else {
+                    tr("rust.snippet.search", "Type to search · Ctrl+P to pin").to_owned()
                 };
                 draw_label(
                     dc,
@@ -817,7 +843,11 @@ fn paint(window: HWND) {
                 if menu.matches.is_empty() {
                     draw_label(
                         dc,
-                        tr("history.notFound", "Nothing found"),
+                        if menu.prepared.snippets.is_empty() {
+                            tr("rust.snippet.empty", "Add snippets in Settings")
+                        } else {
+                            tr("history.notFound", "Nothing found")
+                        },
                         RECT {
                             left: 12,
                             top: menu.header,
@@ -926,10 +956,11 @@ mod tests {
         let mut menu = Menu {
             prepared: Prepared {
                 origin: Origin(0, 0, 0, 0),
-                selection: Selection::Native {
+                selection: Some(Selection::Native {
                     document: Vec::new(),
                     selection: 0..0,
-                },
+                }),
+                insertion_disabled: false,
                 sequence: 0,
                 anchor: RECT::default(),
                 snippets: vec![Snippet {
@@ -985,5 +1016,25 @@ mod tests {
         };
         assert_eq!(popup_position(top, work, 320, 200), (-320, 155));
         assert_eq!(popup_position(bottom, work, 320, 200), (-320, 625));
+        let middle = RECT {
+            left: -700,
+            right: -695,
+            top: 440,
+            bottom: 460,
+        };
+        assert_eq!(popup_position(middle, work, 320, 500), (-690, 400));
+        assert_eq!(
+            popup_position(
+                RECT {
+                    left: -80,
+                    right: -77,
+                    ..middle
+                },
+                work,
+                320,
+                500
+            ),
+            (-405, 400)
+        );
     }
 }

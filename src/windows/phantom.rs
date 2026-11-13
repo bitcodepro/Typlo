@@ -8,7 +8,7 @@ use std::{
     },
 };
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::*,
@@ -35,6 +35,7 @@ static HAS_INK: AtomicBool = AtomicBool::new(false);
 thread_local! {
     static WINDOW: Cell<HWND> = const { Cell::new(null_mut()) };
     static WINDOW_BOUNDS: Cell<Option<RECT>> = const { Cell::new(None) };
+    static SURFACE: RefCell<Option<Surface>> = const { RefCell::new(None) };
     static CANVAS: RefCell<Canvas> = RefCell::new(Canvas::default());
 }
 
@@ -239,6 +240,7 @@ pub(super) fn clear() {
             ShowWindow(window, SW_HIDE);
         }
     }
+    SURFACE.with_borrow_mut(|surface| *surface = None);
 }
 
 pub(super) fn handle(wparam: WPARAM, lparam: LPARAM) {
@@ -294,31 +296,128 @@ fn redraw() {
         }
         WINDOW.set(window);
     }
-    unsafe {
-        if WINDOW_BOUNDS.get().map(rect_edges) != Some(rect_edges(area)) {
-            if SetWindowPos(
-                window,
-                HWND_TOPMOST,
-                area.left,
-                area.top,
-                area.right - area.left,
-                area.bottom - area.top,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            ) != 0
-            {
-                WINDOW_BOUNDS.set(Some(area));
+    let previous = WINDOW_BOUNDS.get();
+    let moved = previous.map(rect_edges) != Some(rect_edges(area));
+    let Some(dirty) = (if moved || full { Some(area) } else { damage }) else {
+        return;
+    };
+    let painted = SURFACE.with_borrow_mut(|surface| {
+        let size = SIZE {
+            cx: area.right - area.left,
+            cy: area.bottom - area.top,
+        };
+        if surface
+            .as_ref()
+            .is_none_or(|surface| surface.capacity.cx < size.cx || surface.capacity.cy < size.cy)
+        {
+            *surface = Surface::new(size);
+        }
+        surface
+            .as_ref()
+            .is_some_and(|surface| surface.present(window, area, size, dirty, moved))
+    });
+    if painted {
+        WINDOW_BOUNDS.set(Some(area));
+        if previous.is_none() {
+            unsafe { ShowWindow(window, SW_SHOWNOACTIVATE) };
+        }
+    } else {
+        // Repaint the entire surface on the next event if presentation failed.
+        CANVAS.with_borrow_mut(|canvas| canvas.full_redraw = true);
+    }
+}
+
+struct Surface {
+    dc: HDC,
+    bitmap: HBITMAP,
+    previous: HGDIOBJ,
+    capacity: SIZE,
+}
+
+impl Surface {
+    fn new(size: SIZE) -> Option<Self> {
+        let reserve = |edge: i32| (edge + 127) & !127;
+        let capacity = SIZE {
+            cx: reserve(size.cx),
+            cy: reserve(size.cy),
+        };
+        unsafe {
+            let screen = GetDC(null_mut());
+            if screen.is_null() {
+                return None;
             }
-            InvalidateRect(window, null_mut(), 0);
-        } else if full {
-            InvalidateRect(window, null_mut(), 0);
-        } else if let Some(rect) = damage {
-            let local = RECT {
-                left: rect.left - area.left,
-                top: rect.top - area.top,
-                right: rect.right - area.left,
-                bottom: rect.bottom - area.top,
+            let dc = CreateCompatibleDC(screen);
+            let bitmap = CreateCompatibleBitmap(screen, capacity.cx, capacity.cy);
+            ReleaseDC(null_mut(), screen);
+            let previous = if dc.is_null() || bitmap.is_null() {
+                null_mut()
+            } else {
+                SelectObject(dc, bitmap)
             };
-            InvalidateRect(window, &local, 0);
+            if previous.is_null() {
+                if !dc.is_null() {
+                    DeleteDC(dc);
+                }
+                if !bitmap.is_null() {
+                    DeleteObject(bitmap);
+                }
+                return None;
+            }
+            Some(Self {
+                dc,
+                bitmap,
+                previous,
+                capacity,
+            })
+        }
+    }
+
+    fn present(&self, window: HWND, area: RECT, size: SIZE, dirty: RECT, moved: bool) -> bool {
+        let position = POINT {
+            x: area.left,
+            y: area.top,
+        };
+        let source = POINT::default();
+        let local = RECT {
+            left: (dirty.left - area.left).max(0),
+            top: (dirty.top - area.top).max(0),
+            right: (dirty.right - area.left).min(size.cx),
+            bottom: (dirty.bottom - area.top).min(size.cy),
+        };
+        unsafe {
+            let saved = SaveDC(self.dc);
+            if saved == 0 {
+                return false;
+            }
+            IntersectClipRect(self.dc, local.left, local.top, local.right, local.bottom);
+            SetDCBrushColor(self.dc, TRANSPARENT_KEY);
+            FillRect(self.dc, &local, GetStockObject(DC_BRUSH) as HBRUSH);
+            CANVAS.with_borrow(|canvas| paint_canvas(self.dc, position, dirty, canvas));
+            RestoreDC(self.dc, saved);
+            // Publish the complete frame and its new bounds in one compositor update.
+            // A resized window never exposes a background before its ink is ready.
+            let update = UPDATELAYEREDWINDOWINFO {
+                cbSize: size_of::<UPDATELAYEREDWINDOWINFO>() as u32,
+                pptDst: &position,
+                psize: &size,
+                hdcSrc: self.dc,
+                pptSrc: &source,
+                crKey: TRANSPARENT_KEY,
+                dwFlags: ULW_COLORKEY,
+                prcDirty: if moved { std::ptr::null() } else { &local },
+                ..Default::default()
+            };
+            UpdateLayeredWindowIndirect(window, &update) != 0
+        }
+    }
+}
+
+impl Drop for Surface {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.dc, self.previous);
+            DeleteObject(self.bitmap);
+            DeleteDC(self.dc);
         }
     }
 }
@@ -338,7 +437,7 @@ fn make_window() -> HWND {
         return null_mut();
     }
     unsafe {
-        let window = CreateWindowExW(
+        CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             class.as_ptr(),
             wide("Typlo screen drawing").as_ptr(),
@@ -351,14 +450,7 @@ fn make_window() -> HWND {
             null_mut(),
             instance,
             null_mut(),
-        );
-        if !window.is_null()
-            && SetLayeredWindowAttributes(window, TRANSPARENT_KEY, 255, LWA_COLORKEY) == 0
-        {
-            DestroyWindow(window);
-            return null_mut();
-        }
-        window
+        )
     }
 }
 
@@ -371,27 +463,6 @@ unsafe extern "system" fn window_proc(
     match message {
         WM_NCHITTEST => HTTRANSPARENT as LRESULT,
         WM_ERASEBKGND => 1,
-        WM_PAINT => {
-            let mut paint = PAINTSTRUCT::default();
-            unsafe {
-                let dc = BeginPaint(window, &mut paint);
-                if !dc.is_null() {
-                    SetDCBrushColor(dc, TRANSPARENT_KEY);
-                    FillRect(dc, &paint.rcPaint, GetStockObject(DC_BRUSH) as HBRUSH);
-                    let mut origin = POINT::default();
-                    ClientToScreen(window, &mut origin);
-                    let dirty = RECT {
-                        left: paint.rcPaint.left + origin.x,
-                        top: paint.rcPaint.top + origin.y,
-                        right: paint.rcPaint.right + origin.x,
-                        bottom: paint.rcPaint.bottom + origin.y,
-                    };
-                    CANVAS.with_borrow(|canvas| paint_canvas(dc, origin, dirty, canvas));
-                }
-                EndPaint(window, &paint);
-            }
-            0
-        }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
     }
 }
@@ -477,6 +548,45 @@ fn paint_canvas(dc: HDC, origin: POINT, dirty: RECT, canvas: &Canvas) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layered_frame_preserves_ink_when_growing_and_updating_dirty_region() {
+        let _dpi = DpiScope::new();
+        let window = make_window();
+        assert!(!window.is_null());
+        let first = POINT { x: -90, y: -70 };
+        let second = POINT { x: 10, y: -40 };
+        CANVAS.with_borrow_mut(|canvas| canvas.start(first));
+        let area = CANVAS.with_borrow(|canvas| canvas.bounds().unwrap());
+        let first_size = SIZE {
+            cx: area.right - area.left,
+            cy: area.bottom - area.top,
+        };
+        let surface = Surface::new(first_size).unwrap();
+        assert!(surface.present(window, area, first_size, area, true));
+        CANVAS.with_borrow_mut(|canvas| canvas.draw_to(second));
+        let area = CANVAS.with_borrow(|canvas| canvas.bounds().unwrap());
+        let size = SIZE {
+            cx: area.right - area.left,
+            cy: area.bottom - area.top,
+        };
+        let surface = Surface::new(size).unwrap();
+        assert!(surface.present(window, area, size, area, true));
+        let mut actual = RECT::default();
+        assert_ne!(unsafe { GetWindowRect(window, &mut actual) }, 0);
+        assert_eq!(rect_edges(actual), rect_edges(area));
+        let dirty = CANVAS.with_borrow_mut(|canvas| {
+            let dirty = canvas.pointer_bounds().unwrap();
+            canvas.pointer = None;
+            dirty
+        });
+        assert!(surface.present(window, area, size, dirty, false));
+        let pixel =
+            |point: POINT| unsafe { GetPixel(surface.dc, point.x - area.left, point.y - area.top) };
+        assert_eq!(pixel(first), RED);
+        assert_eq!(pixel(POINT { x: 35, y: -40 }), TRANSPARENT_KEY);
+        unsafe { DestroyWindow(window) };
+    }
 
     #[test]
     fn cached_bounds_and_damage_cover_negative_coordinates_and_eviction() {

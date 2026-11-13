@@ -56,7 +56,10 @@ pub(super) enum Command {
         review: bool,
     },
     Tools(Action),
-    PrepareSnippetMenu(Vec<crate::snippets::Snippet>),
+    PrepareSnippetMenu {
+        snippets: Vec<crate::snippets::Snippet>,
+        can_insert: bool,
+    },
     InsertMenuSnippet {
         capture: Captured,
         template: Template,
@@ -356,6 +359,7 @@ struct Accessible<'a> {
     first_snapshot: Option<Snapshot<Element>>,
     confirmed_edit: Option<Snapshot<Element>>,
     canceled: Option<Arc<AtomicBool>>,
+    keyboard_word_selection: bool,
 }
 
 fn start_spelling(
@@ -387,6 +391,7 @@ fn start_spelling(
         first_snapshot: None,
         confirmed_edit: None,
         canceled: None,
+        keyboard_word_selection: false,
         native: WinEdit {
             expected: Some(target),
             sequence: Some(job.sequence),
@@ -479,6 +484,7 @@ fn start_tools(
         first_snapshot: None,
         confirmed_edit: None,
         canceled: None,
+        keyboard_word_selection: false,
         native: WinEdit {
             expected: Some(target),
             sequence: Some(job.sequence),
@@ -644,6 +650,7 @@ fn run_edit(
         first_snapshot: None,
         confirmed_edit: None,
         canceled: job.canceled.clone(),
+        keyboard_word_selection: false,
         native: WinEdit {
             expected: Some(target),
             sequence: Some(if untracked {
@@ -681,6 +688,16 @@ fn run_edit(
         let partial_selection =
             chromium || host.is_some_and(ClipboardHost::reports_partial_selection);
         let document_wrapper = control == UIA_DocumentControlTypeId && partial_selection;
+        // ProseMirror exposes the text and caret through UIA, but selecting a
+        // range through that provider can fail to update the editor selection.
+        let keyboard_selection = matches!(host, Some(ClipboardHost::ChatGpt))
+            && matches!(job.command, Command::Typing { word: Some(_), .. })
+            && unsafe { element.CurrentClassName() }.is_ok_and(|class| {
+                class
+                    .to_string()
+                    .split_whitespace()
+                    .any(|name| name == "ProseMirror")
+            });
         let capture = if is_text_control(control) {
             read_text_pattern(&element)
         } else if is_editor_wrapper(control) && (chromium || has_writable_value(&element)?) {
@@ -807,6 +824,7 @@ fn run_edit(
             return Ok(());
         }
         let (document, selection) = capture?;
+        editor.keyboard_word_selection = keyboard_selection && selection.is_empty();
         timing.phase(if selection.is_empty() {
             "UI Automation returned a caret"
         } else {
@@ -893,42 +911,45 @@ fn run_edit(
                 None
             }
         }
-        Command::PrepareSnippetMenu(snippets) => {
+        Command::PrepareSnippetMenu {
+            snippets,
+            can_insert,
+        } => {
             use super::snippet_menu::{self, Origin, Prepared, Selection};
             let native_anchor = snippet_menu::caret_anchor(target);
             let (selection, anchor) = match editor.native.snapshot() {
                 Ok(snapshot) => (
-                    Selection::Native {
+                    Some(Selection::Native {
                         document: snapshot.document,
                         selection: snapshot.selection,
-                    },
+                    }),
                     native_anchor,
                 ),
-                Err(error) if error.kind() == io::ErrorKind::Unsupported => {
-                    let snapshot = editor.snapshot()?;
-                    let (identity, element) = editor.focused()?;
-                    if identity != snapshot.target {
-                        return Err(changed());
-                    }
-                    let anchor = native_anchor.or_else(|| snippet_caret(&element));
-                    (
-                        Selection::Accessible(Captured {
+                Err(_) => {
+                    let mut anchor = native_anchor;
+                    let selection = editor.focused().ok().and_then(|(identity, element)| {
+                        anchor = snippet_caret(&element).or(anchor);
+                        let (document, selection) = read_text_pattern(&element).ok()?;
+                        if editor.focused().ok()?.0 != identity {
+                            return None;
+                        }
+                        Some(Selection::Accessible(Captured {
                             runtime: identity.runtime,
                             provider: identity.provider,
-                            document: snapshot.document,
-                            selection: snapshot.selection,
-                        }),
-                        anchor,
-                    )
+                            document,
+                            selection,
+                        }))
+                    });
+                    (selection, anchor)
                 }
-                Err(error) => return Err(error),
             };
             editor.native.target()?;
             snippet_menu::publish(
                 owner,
                 Prepared {
                     origin: Origin::new(target),
-                    selection,
+                    selection: selection.filter(|_| can_insert),
+                    insertion_disabled: !can_insert,
                     sequence: job.sequence,
                     anchor: anchor.unwrap_or_else(snippet_menu::pointer_anchor),
                     snippets,
@@ -1172,7 +1193,17 @@ impl Editor for Accessible<'_> {
         if self.snapshot()? != *expected {
             return Err(changed());
         }
-        let proposed = if range != expected.selection {
+        let keyboard_distance = self
+            .keyboard_word_selection
+            .then(|| {
+                expected
+                    .selection
+                    .end
+                    .checked_sub(range.start)
+                    .filter(|distance| *distance <= 129 && range.end + 1 == expected.selection.end)
+            })
+            .flatten();
+        let proposed = if range != expected.selection && keyboard_distance.is_none() {
             let (identity, element) = self.focused()?;
             if identity != expected.target {
                 return Err(changed());
@@ -1194,6 +1225,11 @@ impl Editor for Accessible<'_> {
             if let Some(selection) = &proposed {
                 unsafe { selection.Select() }.map_err(io::Error::other)?;
                 self.confirm_selection(expected, range.clone())?;
+            } else if let Some(distance) = keyboard_distance {
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_LEFT, VK_SHIFT};
+                input::send_selection_keys(None, VK_LEFT, 1, false)?;
+                input::send_selection_keys(Some(VK_SHIFT), VK_LEFT, distance - 1, false)?;
+                self.confirm_selection(expected, range.clone())?;
             }
             lease.arm_focus();
             if !lease.still_quiet()
@@ -1210,8 +1246,12 @@ impl Editor for Accessible<'_> {
             }
         })();
         if let Err(error) = operation {
-            if !lease.cancel_pending_paste() && proposed.is_some() {
-                let _ = self.restore_selection(expected, range);
+            if !lease.cancel_pending_paste() {
+                if keyboard_distance.is_some() {
+                    let _ = self.restore_keyboard_word_caret(expected, range);
+                } else if proposed.is_some() {
+                    let _ = self.restore_selection(expected, range);
+                }
             }
             return Err(error);
         }
@@ -1220,12 +1260,25 @@ impl Editor for Accessible<'_> {
         result.splice(range.clone(), replacement.iter().copied());
         let paste_end = range.start + replacement.len();
         let verification = self.wait_for_replacement(expected, &result, paste_end, &clipboard);
-        if verification.is_err() && proposed.is_some() {
-            let _ = self.restore_selection(expected, range.clone());
+        if verification.is_err() {
+            if keyboard_distance.is_some() {
+                let _ = self.restore_keyboard_word_caret(expected, range);
+            } else if proposed.is_some() {
+                let _ = self.restore_selection(expected, range);
+            }
         }
         let mut current = verification?;
         if let Some(caret) = final_caret {
-            if let Err(error) = self.move_caret(&current, caret) {
+            let moved = if keyboard_distance.is_some() {
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT;
+                self.native
+                    .target()
+                    .and_then(|_| input::send_selection_keys(None, VK_RIGHT, 1, false))
+                    .and_then(|()| self.confirm_selection(&current, caret..caret))
+            } else {
+                self.move_caret(&current, caret)
+            };
+            if let Err(error) = moved {
                 let verified = self
                     .snapshot()
                     .ok()
@@ -1265,6 +1318,26 @@ fn trailing_separator<T>(
 }
 
 impl Accessible<'_> {
+    fn restore_keyboard_word_caret(
+        &mut self,
+        expected: &Snapshot<Element>,
+        word: Range<usize>,
+    ) -> io::Result<()> {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT;
+        let current = self.snapshot()?;
+        if current.target != expected.target || current.document != expected.document {
+            return Err(changed());
+        }
+        let count = if current.selection == word {
+            2
+        } else if current.selection == (word.end..word.end) {
+            1
+        } else {
+            return Ok(());
+        };
+        input::send_selection_keys(None, VK_RIGHT, count, true)
+    }
+
     fn wait_for_replacement(
         &mut self,
         expected: &Snapshot<Element>,
@@ -1567,6 +1640,7 @@ pub(super) fn check_focused(native: WinEdit) -> io::Result<bool> {
         first_snapshot: None,
         confirmed_edit: None,
         canceled: None,
+        keyboard_word_selection: false,
     };
     Ok(!editor.snapshot()?.selection.is_empty())
 }

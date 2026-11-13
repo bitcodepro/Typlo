@@ -457,6 +457,7 @@ impl eframe::App for View {
                 }
                 let search = ui.add(
                     crate::appearance::text_input(&mut self.query)
+                        .return_key(None)
                         .hint_text(tr("history.search", "Search clipboard"))
                         .desired_width(f32::INFINITY),
                 );

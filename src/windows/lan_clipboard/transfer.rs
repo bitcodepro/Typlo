@@ -2,7 +2,7 @@ use super::{invalid, read_reply, received_folder};
 use crate::{
     config,
     windows::{
-        clipio::{Clip, Kind},
+        clipio::{Clip, Kind, MAX_CAPTION_BYTES},
         history::{History, Limits, Received},
     },
 };
@@ -18,6 +18,7 @@ pub(super) const VERSION: &[u8] = b"TYPC0001";
 pub(super) const RETRY_VERSION: &[u8; 8] = b"TYPC0002";
 pub(super) const PING: &[u8; 8] = b"TYPCPING";
 const FILES: u8 = 3;
+const FILES_WITH_CAPTION: u8 = 4;
 const MAX_FILES: usize = 2048;
 const MAX_PATH: usize = 4096;
 const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
@@ -26,7 +27,10 @@ const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
 pub(super) enum Payload {
     Clip(Clip),
-    Files(Vec<FileEntry>),
+    Files {
+        entries: Vec<FileEntry>,
+        caption: String,
+    },
 }
 
 pub(super) struct FileEntry {
@@ -68,7 +72,10 @@ impl Payload {
         if entries.is_empty() {
             return Err(invalid("This history entry contains no files"));
         }
-        Ok(Self::Files(entries))
+        Ok(Self::Files {
+            entries,
+            caption: clip.editable_text(),
+        })
     }
 
     pub fn send_body(
@@ -92,14 +99,22 @@ impl Payload {
                     progress(done, total)?;
                 }
             }
-            Self::Files(entries) => {
+            Self::Files { entries, caption } => {
                 let total = entries.iter().filter_map(|entry| entry.length).sum();
                 let mut done = 0;
                 progress(0, total)?;
-                stream.write_all(&[FILES])?;
+                stream.write_all(&[if caption.is_empty() {
+                    FILES
+                } else {
+                    FILES_WITH_CAPTION
+                }])?;
                 stream.write_all(&(entries.len() as u64).to_be_bytes())?;
                 stream.flush()?;
                 read_reply(stream)?;
+                if !caption.is_empty() {
+                    stream.write_all(&(caption.len() as u64).to_be_bytes())?;
+                    stream.write_all(caption.as_bytes())?;
+                }
                 for entry in entries {
                     progress(done, total)?;
                     stream.write_all(&[u8::from(entry.length.is_some())])?;
@@ -202,12 +217,26 @@ pub(super) fn receive(
     let size = read_size(stream)?;
     let limits = history_limits(profile)?;
     let (clip, directory) = match kind {
-        FILES => {
+        FILES | FILES_WITH_CAPTION => {
             if size == 0 || size > MAX_FILES as u64 {
                 return Err(too_large());
             }
             ready(stream)?;
-            let (clip, directory, bytes) = receive_files(profile, stream, size as usize)?;
+            let caption = if kind == FILES_WITH_CAPTION {
+                let length = read_size(stream)?;
+                if length == 0 || length > (MAX_CAPTION_BYTES * 2) as u64 {
+                    return Err(too_large());
+                }
+                let mut data = vec![0; length as usize];
+                stream.read_exact(&mut data)?;
+                Some(String::from_utf8(data).map_err(io::Error::other)?)
+            } else {
+                None
+            };
+            let (mut clip, directory, bytes) = receive_files(profile, stream, size as usize)?;
+            if let Some(caption) = caption {
+                clip.set_editable_text(&caption)?;
+            }
             (clip, Some((directory, bytes)))
         }
         1 | 2 => {
@@ -271,12 +300,7 @@ fn history_limits(profile: &Path) -> io::Result<Limits> {
             "Clipboard history is disabled",
         ));
     }
-    Ok(Limits {
-        max_items: settings.history_items,
-        max_total: u64::from(settings.history_total_mib) * 1024 * 1024,
-        max_image: settings.history_image_mib as usize * 1024 * 1024,
-        max_text: settings.history_text_kib as usize * 1024,
-    })
+    Ok(Limits::from_config(&settings))
 }
 
 fn receive_files(

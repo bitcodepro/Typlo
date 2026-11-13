@@ -25,6 +25,17 @@ pub struct Limits {
     pub max_text: usize,
 }
 
+impl Limits {
+    pub(crate) fn from_config(settings: &crate::config::Config) -> Self {
+        Self {
+            max_items: settings.history_items,
+            max_total: u64::from(settings.history_total_mib) * 1024 * 1024,
+            max_image: settings.history_image_mib as usize * 1024 * 1024,
+            max_text: settings.history_text_kib as usize * 1024,
+        }
+    }
+}
+
 pub struct History {
     db: Connection,
     key: [u8; 32],
@@ -288,8 +299,7 @@ impl History {
         let fingerprint = fingerprint(&self.key, clip);
         let text = clip.text();
         let files = (clip.kind == Kind::Files).then(|| text.lines().count() as i64);
-        let preview = text.chars().take(400).collect::<String>();
-        let preview = protect(preview.as_bytes())?;
+        let preview = protect(&clip_preview(clip))?;
         let payload = protect(&clip.encode())?;
         let tx = self
             .db
@@ -462,6 +472,77 @@ impl History {
             .map_err(io::Error::other)?;
         blob.map(|blob| Clip::decode(&unprotect(&blob)?))
             .transpose()
+    }
+
+    #[cfg(any(test, feature = "gui"))]
+    pub fn edit_text(
+        &mut self,
+        id: i64,
+        original: &str,
+        text: &str,
+        limits: Limits,
+    ) -> io::Result<()> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(io::Error::other)?;
+        let (payload, previous_size): (Vec<u8>, i64) = tx
+            .query_row(
+                "SELECT payload, bytes FROM clips WHERE id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(io::Error::other)?
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "Clipboard entry no longer exists")
+            })?;
+        let mut clip = Clip::decode(&unprotect(&payload)?)?;
+        if clip.editable_text() != original {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Clipboard entry changed while editing",
+            ));
+        }
+        if text == original {
+            return Ok(());
+        }
+        clip.set_editable_text(text)?;
+        let size = i64::try_from(clip.size()).map_err(io::Error::other)?;
+        let item_limit = if clip.kind == Kind::Image {
+            limits.max_image
+        } else {
+            limits.max_text
+        };
+        let total: i64 = tx
+            .query_row("SELECT COALESCE(SUM(bytes), 0) FROM clips", [], |row| {
+                row.get(0)
+            })
+            .map_err(io::Error::other)?;
+        if size as u64 > item_limit as u64
+            || (size > previous_size && (total - previous_size + size) as u64 > limits.max_total)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "Clipboard history size limit exceeded",
+            ));
+        }
+        let changed = tx.execute(
+            "UPDATE OR IGNORE clips SET fingerprint=?2,payload=?3,preview=?4,bytes=?5 WHERE id=?1",
+            params![id, fingerprint(&self.key, &clip).as_slice(), protect(&clip.encode())?, protect(&clip_preview(&clip))?, size],
+        ).map_err(io::Error::other)?;
+        if changed == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "This clipboard entry already exists",
+            ));
+        }
+        tx.execute(
+            "UPDATE clip_details SET formatted=?2 WHERE clip_id=?1",
+            params![id, clip.has_formatting()],
+        )
+        .map_err(io::Error::other)?;
+        tx.commit().map_err(io::Error::other)
     }
 
     #[cfg(feature = "gui")]
@@ -645,8 +726,26 @@ impl History {
 fn fingerprint(key: &[u8; 32], clip: &Clip) -> [u8; 32] {
     let mut hash = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("valid HMAC key");
     hash.update(&[clip.kind as u8]);
+    if let Some(caption) = clip.caption_bytes() {
+        hash.update(&[0x80]);
+        hash.update(&(clip.identity().len() as u64).to_le_bytes());
+        hash.update(caption);
+    }
     hash.update(clip.identity());
     hash.finalize().into_bytes().into()
+}
+
+fn clip_preview(clip: &Clip) -> Vec<u8> {
+    if clip.kind == Kind::Files && clip.caption_bytes().is_some() {
+        let paths: String = clip.text().chars().take(200).collect();
+        let caption: String = clip.editable_text().chars().take(400).collect();
+        return format!("{paths}\0{caption}").into_bytes();
+    }
+    clip.searchable_text()
+        .chars()
+        .take(400)
+        .collect::<String>()
+        .into_bytes()
 }
 
 fn legacy_cipher(master: &[u8]) -> io::Result<Aes256Gcm> {
@@ -780,6 +879,93 @@ fn crypt(input: &[u8], encrypt: bool, entropy: Option<&[u8]>) -> io::Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editing_enforces_the_configured_kibibyte_limit() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut history = History::open(profile.path()).unwrap();
+        let limits = Limits::from_config(&crate::config::Config {
+            history_text_kib: 1,
+            ..Default::default()
+        });
+        history.store(&Clip::from_text("original"), limits).unwrap();
+        let id = history.list(0).unwrap()[0].id;
+        let fits = "a".repeat(511);
+        history.edit_text(id, "original", &fits, limits).unwrap();
+        let error = history
+            .edit_text(id, &fits, &"a".repeat(512), limits)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(history.load(id).unwrap().unwrap().text(), fits);
+    }
+
+    #[test]
+    fn editing_preserves_trailing_line_endings_in_text_and_captions() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut history = History::open(profile.path()).unwrap();
+        let limits = Limits::from_config(&crate::config::Config::default());
+        for ending in ["\n", "\r\n", "\r\n\n"] {
+            let original = format!("line{ending}");
+            let edited = format!("edited{ending}");
+            let mut file = Clip::from_legacy(3, b"C:\\Test\\file.txt".to_vec(), None).unwrap();
+            file.set_editable_text(&original).unwrap();
+            for clip in [Clip::from_text(&original), file] {
+                history.store(&clip, limits).unwrap();
+                let id = history.list(0).unwrap()[0].id;
+                let loaded = history.load(id).unwrap().unwrap();
+                assert_eq!(loaded.editable_text(), original);
+                if clip.kind == Kind::Files {
+                    assert_eq!(loaded.text(), r"C:\Test\file.txt");
+                }
+                history.edit_text(id, &original, &edited, limits).unwrap();
+                assert_eq!(history.load(id).unwrap().unwrap().editable_text(), edited);
+                history.remove(id).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn editing_an_entry_preserves_its_identity_in_history_and_checks_stale_edits() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut history = History::open(profile.path()).unwrap();
+        let limits = Limits {
+            max_items: 10,
+            max_total: 64 * 1024,
+            max_image: 4096,
+            max_text: 4096,
+        };
+        let file = Clip::from_legacy(3, b"C:\\Test\\file.txt".to_vec(), None).unwrap();
+        history.store(&file, limits).unwrap();
+        let id = history.list(0).unwrap()[0].id;
+        history.pin(id, true).unwrap();
+        history
+            .edit_text(id, "", "A file caption\n🙂", limits)
+            .unwrap();
+        assert!(history.edit_text(id, "", "stale", limits).is_err());
+        let entry = &history.search("file caption", 0).unwrap()[0];
+        assert_eq!(entry.id, id);
+        assert!(entry.pinned);
+        let edited = history.load(id).unwrap().unwrap();
+        assert_eq!(edited.text(), file.text());
+        assert_eq!(edited.editable_text(), "A file caption\n🙂");
+        history.store(&file, limits).unwrap();
+        assert_eq!(history.list(0).unwrap().len(), 2);
+        assert!(
+            history
+                .edit_text(id, "A file caption\n🙂", "", limits)
+                .is_err()
+        );
+        let text = Clip::from_text("old text");
+        history.store(&text, limits).unwrap();
+        let text_id = history.search("old text", 0).unwrap()[0].id;
+        history
+            .edit_text(text_id, "old text", "updated text", limits)
+            .unwrap();
+        assert_eq!(
+            history.load(text_id).unwrap().unwrap().text(),
+            "updated text"
+        );
+    }
 
     #[test]
     #[cfg(feature = "gui")]
