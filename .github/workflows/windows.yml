@@ -23,10 +23,8 @@ jobs:
       - name: Toolchain
         shell: pwsh
         run: |
-          rustup toolchain install stable --profile minimal --component clippy,rust-docs
-          if ($LASTEXITCODE -ne 0) { throw 'rustup install failed' }
-          rustup override set stable
-          if ($LASTEXITCODE -ne 0) { throw 'rustup override failed' }
+          rustup show
+          if ($LASTEXITCODE -ne 0) { throw 'rustup toolchain setup failed' }
           $version = rustc -V
           if ($LASTEXITCODE -ne 0) { throw 'rustc failed' }
           "RUST_CACHE_VERSION=$version" >> $env:GITHUB_ENV

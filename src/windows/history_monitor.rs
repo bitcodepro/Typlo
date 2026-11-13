@@ -153,7 +153,7 @@ fn reserve(pending: &AtomicUsize, bytes: usize, kind: clipio::Kind) -> bool {
         IMAGE_BUDGET + SMALL_CLIP_RESERVE
     };
     pending
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
             current.checked_add(bytes).filter(|&next| next <= budget)
         })
         .is_ok()

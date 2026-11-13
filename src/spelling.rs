@@ -424,12 +424,12 @@ impl Spelling {
         let original: Vec<_> = normalized.chars().collect();
         let after_first = &normalized[original[0].len_utf8()..];
         let before_last = &normalized[..normalized.len() - original[original.len() - 1].len_utf8()];
-        for language in 0..LOCALES.len() {
+        for (language, dictionary) in self.dictionaries.iter().enumerate() {
             if mask & (1 << language) == 0 {
                 continue;
             }
             let mut suggestions = Vec::new();
-            self.dictionaries[language]
+            dictionary
                 .as_ref()
                 .expect("each suggestion language has been checked")
                 .suggester()
