@@ -18,11 +18,22 @@ function Get-ReleaseVersion {
     return $version
 }
 function Read-ReleaseManifest {
-    param([string]$Directory, [string]$Commit, [string]$Version)
+    param([string]$Directory, [string]$Commit, [string]$Version, [switch]$AllowLegacy)
     $manifest = Get-Content (Join-Path $Directory 'release-manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.commit -cne $Commit -or $manifest.version -cne $Version) { throw 'Artifact provenance mismatch' }
-    $expected = @("Typlo-$Version-Portable-win-x64.zip", 'typlo-rust-win-x64.zip', 'typlo-rust-win-x64.zip.sha256')
-    if (@($manifest.assets).Count -ne 3) { throw 'Unexpected asset count' }
+    $expected = @('typlo-rust-win-x64.zip', 'typlo-rust-win-x64.zip.sha256')
+    $schema = $manifest.PSObject.Properties['schema_version']
+    $platform = $manifest.PSObject.Properties['platform']
+    if ($schema -and $platform -and $schema.Value -eq 1 -and $platform.Value -ceq 'windows-x64') {
+        # Only this platform has a tested release workflow. Add other platforms
+        # with their own build/package gates before accepting their manifests.
+    } elseif ($AllowLegacy -and !$schema -and !$platform) {
+        # Keep historical v0.1.0 assets verifiable without changing/deleting them.
+        $expected = @("Typlo-$Version-Portable-win-x64.zip") + $expected
+    } else {
+        throw 'Unsupported release manifest schema/platform'
+    }
+    if (@($manifest.assets).Count -ne $expected.Count) { throw 'Unexpected asset count' }
     foreach ($name in $expected) {
         $entries = @($manifest.assets | Where-Object { $_.name -ceq $name })
         if ($entries.Count -ne 1 -or $entries[0].sha256 -cnotmatch '^[a-f0-9]{64}$') { throw "Invalid asset: $name" }

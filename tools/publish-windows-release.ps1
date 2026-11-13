@@ -23,26 +23,32 @@ $releases = @($pages | ForEach-Object { foreach ($release in $_) { $release } })
 $existing = @($releases | Where-Object { $_.tag_name -ceq $tag })
 if ($existing.Count -gt 1) { throw 'Duplicate release tag' }
 $refs = @(Invoke-GitHub @('api', "repos/$Repository/git/matching-refs/tags/$tag") | ConvertFrom-Json | Where-Object { $_.ref -ceq "refs/tags/$tag" })
+$tagCommit = $null
 if ($refs.Count) {
     $tagCommit = Invoke-GitHub @('api', "repos/$Repository/commits/$tag", '--jq', '.sha')
-    if ($tagCommit -cne $Commit) { throw 'Tag belongs to another commit; refusing to overwrite' }
+    if ($tagCommit -cnotmatch '^[a-f0-9]{40}$') { throw 'Invalid tag commit' }
     if (!$existing.Count) { throw 'Tag already exists without a release; refusing to adopt it' }
 }
 if ($existing.Count) {
     $release = Get-RemoteRelease $existing[0].id
-    if ($release.target_commitish -cne $Commit -or $release.prerelease) { throw 'Release provenance/type mismatch' }
+    if ($release.tag_name -cne $tag -or $release.prerelease) { throw 'Release identity/type mismatch' }
     if (!$release.draft) {
-        if (!$refs.Count -or !$release.published_at) { throw 'Published release has no verified tag/date' }
+        if ($refs.Count -ne 1 -or !$release.published_at -or $release.target_commitish -cne $tagCommit) { throw 'Published release provenance mismatch' }
         # A rebuild can have different ZIP timestamps. Validate the original assets instead.
         $temporary = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N'))
         [void](New-Item -ItemType Directory $temporary)
         [void](Invoke-GitHub @('release', 'download', $tag, '--repo', $Repository, '--dir', $temporary))
-        $original = Read-ReleaseManifest -Directory $temporary -Commit $Commit -Version $version
+        $original = Read-ReleaseManifest -Directory $temporary -Commit $tagCommit -Version $version -AllowLegacy
         $digest = (Get-FileHash "$temporary/release-manifest.json" -Algorithm SHA256).Hash.ToLowerInvariant()
         Test-UploadedAssets -Assets $release.assets -Manifest $original -ManifestDigest $digest
-        Write-Host "Release $tag already published and verified for $Commit"
+        if ($tagCommit -ceq $Commit) {
+            Write-Host "Release $tag already published and verified for $Commit"
+        } else {
+            Write-Host "Cargo version $version is already published and verified for $tagCommit; no release for $Commit. Bump Cargo.toml/Cargo.lock for a new release."
+        }
         return
     }
+    if ($release.target_commitish -cne $Commit -or ($tagCommit -and $tagCommit -cne $Commit)) { throw 'Draft provenance mismatch; refusing to adopt another commit' }
 } else {
     foreach ($release in $releases) {
         if (!$release.draft -and !$release.prerelease -and $release.tag_name -match '^v(\d+\.\d+\.\d+)$' -and [version]$Matches[1] -ge [version]$version) {

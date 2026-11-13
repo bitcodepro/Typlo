@@ -69,8 +69,9 @@ if ($SoftwareOpenGL) {
     & "$PSScriptRoot/windows-ui-smoke.ps1" -Resident "$payload/typlo-rust.exe" -Settings "$payload/typlo-settings.exe"
 }
 & "$PSScriptRoot/package-windows.ps1" -PayloadDirectory $payload -OutputDirectory $output -Version $version
+if (@(Get-ChildItem $output -File -Filter '*.zip').Count -ne 1) { throw 'Expected one Windows installation/update ZIP' }
 $assets = @(Get-ChildItem $output -File | Sort-Object Name | ForEach-Object {
     @{ name = $_.Name; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
 })
-@{ version = $version; commit = $commit; assets = $assets } | ConvertTo-Json -Depth 5 | Set-Content "$output/release-manifest.json" -Encoding utf8
+@{ schema_version = 1; platform = 'windows-x64'; version = $version; commit = $commit; assets = $assets } | ConvertTo-Json -Depth 5 | Set-Content "$output/release-manifest.json" -Encoding utf8
 [void](Read-ReleaseManifest -Directory $output -Commit $commit -Version $version)
