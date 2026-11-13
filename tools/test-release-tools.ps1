@@ -21,22 +21,38 @@ foreach ($bad in @('0.1.0-rc1', '0.1.0-pr1', 'v0.1.0', '01.1.0', '0.1')) {
 Set-Content "$fixture/Cargo.toml" "[package]`nversion = `"0.2.0`""
 Assert-Rejected { Get-ReleaseVersion $fixture }
 $commit = 'a' * 40
-Set-Content "$fixture/Typlo-0.1.0-Portable-win-x64.zip" 'portable fixture'
 Set-Content "$fixture/typlo-rust-win-x64.zip" 'update fixture'
 $digest = (Get-FileHash "$fixture/typlo-rust-win-x64.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content "$fixture/typlo-rust-win-x64.zip.sha256" "$digest  typlo-rust-win-x64.zip"
-$assets = @('Typlo-0.1.0-Portable-win-x64.zip', 'typlo-rust-win-x64.zip', 'typlo-rust-win-x64.zip.sha256') | ForEach-Object {
+$assets = @('typlo-rust-win-x64.zip', 'typlo-rust-win-x64.zip.sha256') | ForEach-Object {
     [pscustomobject]@{ name = $_; sha256 = (Get-FileHash (Join-Path $fixture $_) -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
-@{ version = '0.1.0'; commit = $commit; assets = @($assets) } | ConvertTo-Json -Depth 5 | Set-Content "$fixture/release-manifest.json"
+@{ schema_version = 1; platform = 'windows-x64'; version = '0.1.0'; commit = $commit; assets = @($assets) } | ConvertTo-Json -Depth 5 | Set-Content "$fixture/release-manifest.json"
 $manifest = Read-ReleaseManifest $fixture $commit '0.1.0'
 Assert-Rejected { Read-ReleaseManifest $fixture ('b' * 40) '0.1.0' }
 Assert-Rejected { Read-ReleaseManifest $fixture $commit '0.2.0' }
+$manifest.platform = 'linux-x64'
+$manifest | ConvertTo-Json -Depth 5 | Set-Content "$fixture/release-manifest.json"
+Assert-Rejected { Read-ReleaseManifest $fixture $commit '0.1.0' }
+$manifest.platform = 'windows-x64'
+$manifest.schema_version = 2
+$manifest | ConvertTo-Json -Depth 5 | Set-Content "$fixture/release-manifest.json"
+Assert-Rejected { Read-ReleaseManifest $fixture $commit '0.1.0' }
+$manifest.schema_version = 1
+$manifest | ConvertTo-Json -Depth 5 | Set-Content "$fixture/release-manifest.json"
+$legacyDirectory = Join-Path $fixture 'legacy'
+[void](New-Item -ItemType Directory $legacyDirectory)
+foreach ($name in $assets.name) { Copy-Item (Join-Path $fixture $name) $legacyDirectory }
+Set-Content "$legacyDirectory/Typlo-0.1.0-Portable-win-x64.zip" 'historical portable fixture'
+$portable = [pscustomobject]@{ name = 'Typlo-0.1.0-Portable-win-x64.zip'; sha256 = (Get-FileHash "$legacyDirectory/Typlo-0.1.0-Portable-win-x64.zip" -Algorithm SHA256).Hash.ToLowerInvariant() }
+@{ version = '0.1.0'; commit = $commit; assets = @($portable) + @($assets) } | ConvertTo-Json -Depth 5 | Set-Content "$legacyDirectory/release-manifest.json"
+Assert-Rejected { Read-ReleaseManifest $legacyDirectory $commit '0.1.0' }
+[void](Read-ReleaseManifest $legacyDirectory $commit '0.1.0' -AllowLegacy)
 $manifestHash = (Get-FileHash "$fixture/release-manifest.json" -Algorithm SHA256).Hash.ToLowerInvariant()
 $uploaded = @($assets | ForEach-Object { [pscustomobject]@{ name = $_.name; digest = "sha256:$($_.sha256)"; state = 'uploaded' } })
 $uploaded += [pscustomobject]@{ name = 'release-manifest.json'; digest = "sha256:$manifestHash"; state = 'uploaded' }
 Test-UploadedAssets $uploaded $manifest $manifestHash
-Assert-Rejected { Test-UploadedAssets $uploaded[0..2] $manifest $manifestHash }
+Assert-Rejected { Test-UploadedAssets $uploaded[0..1] $manifest $manifestHash }
 $uploaded[0].digest = 'sha256:' + ('0' * 64)
 Assert-Rejected { Test-UploadedAssets $uploaded $manifest $manifestHash }
 $uploaded[0].digest = $null
@@ -110,12 +126,53 @@ function gh {
     throw "Unexpected mock gh call: $key"
 }
 $global:TyploReleaseMock = @{ releases = @(); tag = $null; writes = 0; published = $false }
+$legacyPublisher = Join-Path $fixture 'legacy-publisher'
+[void](New-Item -ItemType Directory "$legacyPublisher/tools" -Force)
+[void](New-Item -ItemType Directory "$legacyPublisher/dist" -Force)
+Copy-Item "$mockRoot/tools/*" "$legacyPublisher/tools"
+Copy-Item "$mockRoot/Cargo.toml","$mockRoot/Cargo.lock" $legacyPublisher
+Copy-Item "$legacyDirectory/*" "$legacyPublisher/dist"
+Assert-Rejected { & "$legacyPublisher/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit }
+if ($global:TyploReleaseMock.writes) { throw 'Legacy candidate was published' }
 & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit
-if (!$global:TyploReleaseMock.published -or $global:TyploReleaseMock.writes -ne 6) { throw 'Draft publication sequence failed' }
+if (!$global:TyploReleaseMock.published -or $global:TyploReleaseMock.writes -ne 5) { throw 'Draft publication sequence failed' }
 $global:TyploReleaseMock.releases = @($global:TyploReleaseMock.release)
 $global:TyploReleaseMock.writes = 0
 & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit
 if ($global:TyploReleaseMock.writes) { throw 'Published rerun mutated release' }
+# Historical releases keep all original assets, including their second ZIP.
+$newAssets = $global:TyploReleaseMock.release.assets
+$legacyManifest = Read-ReleaseManifest $legacyDirectory $commit '0.1.0' -AllowLegacy
+$global:TyploReleaseMock.release.assets = @($legacyManifest.assets | ForEach-Object { [pscustomobject]@{ name = $_.name; digest = "sha256:$($_.sha256)"; state = 'uploaded' } })
+$legacyHash = (Get-FileHash "$legacyDirectory/release-manifest.json" -Algorithm SHA256).Hash.ToLowerInvariant()
+$global:TyploReleaseMock.release.assets += [pscustomobject]@{ name = 'release-manifest.json'; digest = "sha256:$legacyHash"; state = 'uploaded' }
+$global:TyploReleaseMockDirectory = $legacyDirectory
+& "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit
+if ($global:TyploReleaseMock.writes -or $global:TyploReleaseMock.release.assets.Count -ne 4) { throw 'Historical release assets changed' }
+# A later main commit with the same Cargo version is a separate, verified no-op.
+$currentManifestPath = "$mockRoot/dist/release-manifest.json"
+$currentManifestText = Get-Content $currentManifestPath -Raw
+$laterManifest = $currentManifestText | ConvertFrom-Json
+$laterManifest.commit = 'b' * 40
+$laterManifest | ConvertTo-Json -Depth 5 | Set-Content $currentManifestPath
+& "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit ('b' * 40)
+if ($global:TyploReleaseMock.writes -or $global:TyploReleaseMock.release.assets.Count -ne 4) { throw 'Same-version new-commit no-op mutated historical assets' }
+$legacyManifestText = Get-Content "$legacyDirectory/release-manifest.json" -Raw
+$legacyManifest.commit = 'c' * 40
+$legacyManifest | ConvertTo-Json -Depth 5 | Set-Content "$legacyDirectory/release-manifest.json"
+Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit ('b' * 40) }
+[IO.File]::WriteAllText("$legacyDirectory/release-manifest.json", $legacyManifestText)
+$global:TyploReleaseMock.release.target_commitish = 'c' * 40
+Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit ('b' * 40) }
+$global:TyploReleaseMock.release.target_commitish = $commit
+$oldDigest = $global:TyploReleaseMock.release.assets[0].digest
+$global:TyploReleaseMock.release.assets[0].digest = 'sha256:' + ('0' * 64)
+Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit ('b' * 40) }
+$global:TyploReleaseMock.release.assets[0].digest = $oldDigest
+if ($global:TyploReleaseMock.writes) { throw 'Invalid historical release was mutated' }
+[IO.File]::WriteAllText($currentManifestPath, $currentManifestText)
+$global:TyploReleaseMockDirectory = "$mockRoot/dist"
+$global:TyploReleaseMock.release.assets = $newAssets
 # Retry after creation succeeded but its response was lost: empty draft, no tag.
 $empty = $global:TyploReleaseMock.release | ConvertTo-Json -Depth 15 | ConvertFrom-Json
 $empty.draft = $true
@@ -123,14 +180,14 @@ $empty.published_at = $null
 $empty.assets = @()
 $global:TyploReleaseMock = @{ releases = @($empty); release = $empty; tag = $null; writes = 0; published = $false }
 & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit
-if (!$global:TyploReleaseMock.published -or $global:TyploReleaseMock.writes -ne 5) { throw 'Empty draft retry failed' }
+if (!$global:TyploReleaseMock.published -or $global:TyploReleaseMock.writes -ne 4) { throw 'Empty draft retry failed' }
 $partial = $global:TyploReleaseMock.release | ConvertTo-Json -Depth 15 | ConvertFrom-Json
 $partial.draft = $true
 $partial.published_at = $null
 $partial.assets = @($partial.assets[0])
 $global:TyploReleaseMock = @{ releases = @($partial); release = $partial; tag = $null; writes = 0; published = $false }
 & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit
-if (!$global:TyploReleaseMock.published -or $global:TyploReleaseMock.writes -ne 4) { throw 'Partial draft resume failed' }
+if (!$global:TyploReleaseMock.published -or $global:TyploReleaseMock.writes -ne 3) { throw 'Partial draft resume failed' }
 $global:TyploReleaseMock.writes = 0
 $global:TyploReleaseMock.tag = 'b' * 40
 Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit }
@@ -142,14 +199,14 @@ $global:TyploReleaseMock = @{ releases = @($partial); release = $partial; tag = 
 Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit }
 if ($global:TyploReleaseMock.writes) { throw 'Foreign draft mutated release' }
 # Retry the same artifacts after a partial upload, with no published tag.
-$global:TyploReleaseMock = @{ releases = @(); tag = $null; writes = 0; published = $false; failUpload = 'typlo-rust-win-x64.zip' }
+$global:TyploReleaseMock = @{ releases = @(); tag = $null; writes = 0; published = $false; failUpload = 'typlo-rust-win-x64.zip.sha256' }
 Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit }
 if ($global:TyploReleaseMock.published -or @($global:TyploReleaseMock.release.assets).Count -ne 1) { throw 'Interrupted draft state incorrect' }
 $global:TyploReleaseMock.releases = @($global:TyploReleaseMock.release)
 $global:TyploReleaseMock.failUpload = $null
 $global:TyploReleaseMock.writes = 0
 & "$mockRoot/tools/publish-windows-release.ps1" -Repository example/repo -Commit $commit
-if (!$global:TyploReleaseMock.published -or $global:TyploReleaseMock.writes -ne 4) { throw 'Interrupted draft retry failed' }
+if (!$global:TyploReleaseMock.published -or $global:TyploReleaseMock.writes -ne 3) { throw 'Interrupted draft retry failed' }
 # A same-name asset with different bytes must fail before any upload/overwrite.
 $conflict = $global:TyploReleaseMock.release | ConvertTo-Json -Depth 15 | ConvertFrom-Json
 $conflict.draft = $true
@@ -162,6 +219,7 @@ Assert-Rejected { & "$mockRoot/tools/publish-windows-release.ps1" -Repository ex
 if ($global:TyploReleaseMock.published) { throw 'Bad digest was published' }
 Write-Host 'PASS draft publication, published rerun, conflicting SHA and bad remote digest (mock GitHub)'
 Write-Host 'PASS draft-by-ID creation/upload, tag endpoint 404, interrupted retry, foreign draft and no overwrite'
+Write-Host 'PASS one Windows package, platform schema, legacy assets and verified same-version new-commit no-op'
 Assert-Rejected { & "$PSScriptRoot/package-windows.ps1" -PayloadDirectory $fixture -OutputDirectory "$fixture/output" -Version '0.1.0-rc1' }
 Assert-Rejected { & "$PSScriptRoot/package-windows.ps1" -PayloadDirectory $fixture -OutputDirectory "$fixture/output" -Version '0.1.0' }
 Write-Host 'PASS packaging refuses preview versions and nested archive directories'

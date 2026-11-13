@@ -43,7 +43,12 @@ pub fn check(installed: &str, asset_name: &str) -> io::Result<Option<Update>> {
     download(FEED, &response, 2 * 1024 * 1024, 20)?;
     let releases: Vec<Release> =
         serde_json::from_reader(File::open(response)?).map_err(io::Error::other)?;
-    Ok(releases
+    Ok(select_update(releases, installed, asset_name))
+}
+
+// Startup and manual checks share this selection contract on every platform.
+fn select_update(releases: Vec<Release>, installed: [u32; 3], asset_name: &str) -> Option<Update> {
+    releases
         .into_iter()
         .filter(|release| !release.draft && !release.prerelease)
         .filter_map(|release| {
@@ -74,7 +79,7 @@ pub fn check(installed: &str, asset_name: &str) -> io::Result<Option<Update>> {
             ))
         })
         .max_by_key(|(version, _)| *version)
-        .map(|(_, update)| update))
+        .map(|(_, update)| update)
 }
 
 pub fn download(url: &str, path: &Path, max: u64, seconds: u32) -> io::Result<()> {
@@ -325,4 +330,94 @@ pub fn valid_hash(digest: &str) -> bool {
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn release(tag: &str, name: &str) -> Value {
+        json!({
+            "tag_name": tag, "draft": false, "prerelease": false,
+            "published_at": "2026-11-13T00:00:00Z",
+            "assets": [{ "name": name,
+                "browser_download_url": format!("{RELEASES}{tag}/{name}"),
+                "digest": format!("sha256:{}", "a".repeat(64)), "size": 42 }]
+        })
+    }
+
+    fn select(values: Vec<Value>, asset: &str) -> Option<Update> {
+        select_update(
+            serde_json::from_value(json!(values)).unwrap(),
+            [0, 1, 0],
+            asset,
+        )
+    }
+
+    #[test]
+    fn windows_checks_use_one_exact_installation_and_update_asset() {
+        let name = "typlo-rust-win-x64.zip";
+        let chosen = select(
+            vec![
+                release("v0.1.1", name),
+                release("v0.2.0", "Typlo-0.2.0-Portable-win-x64.zip"),
+                release("v0.3.0", "typlo-rust-linux-x64.zip"),
+                release("v0.1.0", name),
+            ],
+            name,
+        )
+        .unwrap();
+        assert_eq!(chosen.version, "0.1.1");
+        assert_eq!(chosen.url, format!("{RELEASES}v0.1.1/{name}"));
+        assert_eq!(chosen.sha256, "a".repeat(64));
+    }
+
+    #[test]
+    fn release_identity_and_digest_rules_remain_strict() {
+        let name = "typlo-rust-win-x64.zip";
+        for tag in [
+            "0.1.1",
+            "v0.1.1-rc1",
+            "v0.1.1-pr2",
+            "v01.1.1",
+            "v0.1",
+            "v0.1.0",
+        ] {
+            assert!(select(vec![release(tag, name)], name).is_none(), "{tag}");
+        }
+        for (field, value) in [("draft", json!(true)), ("prerelease", json!(true))] {
+            let mut item = release("v0.1.1", name);
+            item[field] = value;
+            assert!(select(vec![item], name).is_none());
+        }
+        for (field, value) in [
+            ("digest", Value::Null),
+            ("digest", json!("sha256:bad")),
+            ("size", json!(0)),
+            ("size", json!(MAX_PACKAGE + 1)),
+            (
+                "browser_download_url",
+                json!("https://example.com/update.zip"),
+            ),
+        ] {
+            let mut item = release("v0.1.1", name);
+            item["assets"][0][field] = value;
+            assert!(select(vec![item], name).is_none(), "{field}");
+        }
+    }
+
+    #[test]
+    fn platform_asset_selection_stays_separate() {
+        for name in [
+            "typlo-rust-linux-x64.zip",
+            "typlo-rust-linux-arm64.zip",
+            "typlo-rust-macos-x64.zip",
+            "typlo-rust-macos-arm64.zip",
+        ] {
+            let found = select(vec![release("v0.1.1", name)], name).unwrap();
+            assert!(found.url.ends_with(name));
+            assert!(select(vec![release("v0.1.1", name)], "typlo-rust-win-x64.zip").is_none());
+        }
+    }
 }
