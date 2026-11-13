@@ -213,7 +213,9 @@ impl Fallback {
             });
         }
         if let Err(error) = clipboard.restore() {
-            eprintln!("Typlo Rust: restoring the clipboard after a fallback edit: {error}");
+            crate::runtime_error!(
+                "Typlo Rust: restoring the clipboard after a fallback edit: {error}"
+            );
         }
         timing.phase("clipboard restoration");
         Ok(language)

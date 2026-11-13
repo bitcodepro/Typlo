@@ -822,6 +822,8 @@ fn run_resident(
     } else {
         Some(SingleInstance::acquire()?)
     };
+    let _session =
+        (!probe && !measured).then(|| crate::runtime_log::ResidentSession::start(profile));
     let instance = unsafe { GetModuleHandleW(null_mut()) };
     let class = wide(if probe {
         "TyploRustBenchmark"
@@ -865,12 +867,12 @@ fn run_resident(
             if settings.keep_screen_on
                 && let Err(error) = session_options::keep_screen_on(true)
             {
-                eprintln!("Typlo Rust: {error}");
+                crate::runtime_error!("Typlo Rust: {error}");
             }
             if settings.start_with_windows
                 && let Err(error) = session_options::startup(true)
             {
-                eprintln!("Typlo Rust: {error}");
+                crate::runtime_error!("Typlo Rust: {error}");
             }
         }
         let snippets = Snippets::compile_for(&settings.snippets, &available_layouts())?;
@@ -885,7 +887,7 @@ fn run_resident(
         }
         let mut lan_listener = None;
         if !probe && let Err(error) = lan_clipboard::Listener::refresh(&mut lan_listener, profile) {
-            eprintln!("Typlo LAN clipboard: {error}");
+            crate::runtime_error!("Typlo LAN clipboard: {error}");
         }
         let drawing = (!settings_window_focused()).then_some(settings.drawing_shortcut);
         RESIDENT.replace(Some(Resident {
@@ -896,7 +898,7 @@ fn run_resident(
                 None
             } else {
                 input::Hooks::start(window, hook_bindings(&bindings, &direct, drawing))
-                    .map_err(|error| eprintln!("Typlo Rust keyboard hook: {error}"))
+                    .map_err(|error| crate::runtime_error!("Typlo Rust keyboard hook: {error}"))
                     .ok()
             },
             bindings,
@@ -920,7 +922,7 @@ fn run_resident(
                 None
             } else {
                 history_monitor::Monitor::start(profile.to_owned())
-                    .map_err(|error| eprintln!("Typlo Rust history monitor: {error}"))
+                    .map_err(|error| crate::runtime_error!("Typlo Rust history monitor: {error}"))
                     .ok()
             },
             history_pause: None,
@@ -931,10 +933,17 @@ fn run_resident(
         }));
         if !probe {
             if unsafe { AddClipboardFormatListener(window) } == 0 {
-                eprintln!("Typlo Rust: Windows did not register clipboard notifications");
+                crate::runtime_error!(
+                    "Typlo Rust: Windows did not register clipboard notifications"
+                );
             }
             if unsafe { Shell_NotifyIconW(NIM_ADD, &icon) } == 0 && !measured {
-                eprintln!("Typlo Rust: Unable to create the tray icon");
+                crate::runtime_error!(
+                    "Unable to create the tray icon: {}",
+                    io::Error::last_os_error()
+                );
+            } else if !measured {
+                crate::runtime_log::write("INFO", format_args!("Tray icon registered"));
             }
             foreground_hook = unsafe {
                 SetWinEventHook(
@@ -948,7 +957,7 @@ fn run_resident(
                 )
             };
             if foreground_hook.is_null() {
-                eprintln!(
+                crate::runtime_error!(
                     "Typlo Rust foreground monitor: {}",
                     io::Error::last_os_error()
                 );
@@ -1052,7 +1061,7 @@ fn install_hotkeys(
 
 fn report_conflicts(actions: &[Action]) {
     for action in actions {
-        eprintln!(
+        crate::runtime_error!(
             "Typlo Rust: Windows rejected the shortcut for {}",
             action.label()
         );
@@ -1108,7 +1117,7 @@ fn install_direct(
             active.push(binding);
         } else {
             success = false;
-            eprintln!(
+            crate::runtime_error!(
                 "Typlo Rust: Windows rejected the shortcut for {}",
                 binding.layout.name()
             );
@@ -1227,7 +1236,9 @@ unsafe extern "system" fn window_proc(
                 resident.recent.reset();
             }
         });
-        eprintln!("Typlo Rust: Windows command {message:#x} was interrupted and recovered");
+        crate::runtime_error!(
+            "Typlo Rust: Windows command {message:#x} was interrupted and recovered"
+        );
         0
     })
 }
@@ -1237,8 +1248,16 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
     let taskbar_created = *TASKBAR_CREATED
         .get_or_init(|| unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) });
     if message != 0 && message == taskbar_created {
-        unsafe {
-            Shell_NotifyIconW(NIM_ADD, &tray_data(window));
+        if unsafe { Shell_NotifyIconW(NIM_ADD, &tray_data(window)) } == 0 {
+            crate::runtime_error!(
+                "Explorer restarted; could not restore the tray icon: {}",
+                io::Error::last_os_error()
+            );
+        } else {
+            crate::runtime_log::write(
+                "INFO",
+                format_args!("Tray icon restored after Explorer restart"),
+            );
         }
         return 0;
     }
@@ -1563,7 +1582,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             });
             if let Err(error) = result {
                 // A rejected target must not take focus away from the application.
-                eprintln!("Typlo Rust: {error}");
+                crate::runtime_error!("Typlo Rust: {error}");
             }
             0
         }
@@ -1575,7 +1594,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                         &resident.profile,
                     )
                 {
-                    eprintln!("Typlo LAN clipboard: {error}");
+                    crate::runtime_error!("Typlo LAN clipboard: {error}");
                 }
             });
             0
@@ -1599,14 +1618,14 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                                 && let Err(error) =
                                     session_options::keep_screen_on(settings.keep_screen_on)
                             {
-                                eprintln!("Typlo Rust: {error}");
+                                crate::runtime_error!("Typlo Rust: {error}");
                             }
                             sync_activity_timer(window, settings.keep_screen_on);
                             if settings.start_with_windows != resident.settings.start_with_windows
                                 && let Err(error) =
                                     session_options::startup(settings.start_with_windows)
                             {
-                                eprintln!("Typlo Rust: {error}");
+                                crate::runtime_error!("Typlo Rust: {error}");
                             }
                             if !resident.hotkeys_suspended {
                                 let prior_static = resident.bindings.clone();
@@ -1644,7 +1663,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                                 hooks.update(resident.hook_bindings());
                             }
                         }
-                        Err(error) => eprintln!("Typlo Rust: {error}"),
+                        Err(error) => crate::runtime_error!("Typlo Rust: {error}"),
                     }
                 }
             });
@@ -1714,7 +1733,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             if let Some(profile) = profile
                 && let Err(error) = snippet_menu::show(window, &profile)
             {
-                eprintln!("Typlo Rust snippet menu: {error}");
+                crate::runtime_error!("Typlo Rust snippet menu: {error}");
             }
             0
         }
@@ -1780,7 +1799,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                 Ok(())
             });
             if let Err(error) = result {
-                eprintln!("Typlo Rust snippet insertion: {error}");
+                crate::runtime_error!("Typlo Rust snippet insertion: {error}");
             }
             0
         }
@@ -1864,7 +1883,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                         Err(error) => {
                             resident.spelling = None;
                             if error.kind() != io::ErrorKind::Interrupted {
-                                eprintln!("Typlo Rust: {error}");
+                                crate::runtime_error!("Typlo Rust: {error}");
                             }
                         }
                     }
@@ -1881,7 +1900,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                         Ok(true) => resident.tools = None,
                         Err(error) => {
                             resident.tools = None;
-                            eprintln!("Typlo Rust: {error}");
+                            crate::runtime_error!("Typlo Rust: {error}");
                         }
                     }
                 }
@@ -1897,7 +1916,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                         io::ErrorKind::Interrupted | io::ErrorKind::Unsupported
                     )
                 {
-                    eprintln!("Typlo Rust: {error}");
+                    crate::runtime_error!("Typlo Rust: {error}");
                 }
             });
             0
@@ -1915,7 +1934,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                         .is_none_or(input::Hooks::is_finished)
                 {
                     resident.input = input::Hooks::start(window, resident.hook_bindings())
-                        .map_err(|error| eprintln!("Typlo Rust keyboard hook: {error}"))
+                        .map_err(|error| crate::runtime_error!("Typlo Rust keyboard hook: {error}"))
                         .ok();
                 }
             });
@@ -1929,11 +1948,11 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                 .name("typlo-auto-update".into())
                 .spawn(|| {
                     if let Err(error) = update::auto_install_in_helper() {
-                        eprintln!("Typlo update: {error}");
+                        crate::runtime_error!("Typlo update: {error}");
                     }
                 })
             {
-                eprintln!("Typlo update worker: {error}");
+                crate::runtime_error!("Typlo update worker: {error}");
             }
             0
         }
@@ -1947,6 +1966,12 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             0
         }
         WM_CLOSE => {
+            let reason = if wparam == update::SHUTDOWN_FOR_UPDATE {
+                "Shutdown requested by updater"
+            } else {
+                "Shutdown requested by Windows or another process"
+            };
+            crate::runtime_log::write("INFO", format_args!("{reason}"));
             unsafe { PostQuitMessage(0) };
             0
         }
@@ -2130,6 +2155,7 @@ fn tray_menu(window: HWND) {
             Ok(())
         }
         QUIT => {
+            crate::runtime_log::write("INFO", format_args!("Quit selected in the tray menu"));
             unsafe {
                 PostQuitMessage(0);
             }
@@ -2177,7 +2203,7 @@ fn tray_menu(window: HWND) {
         }),
     };
     if let Err(error) = result {
-        eprintln!("Typlo: {error}");
+        crate::runtime_error!("Typlo: {error}");
     }
 }
 
@@ -2289,7 +2315,7 @@ fn open_ui(mode: &str) {
             .spawn()
     });
     if let Err(error) = result {
-        eprintln!("Typlo: cannot open UI: {error}");
+        crate::runtime_error!("Typlo: cannot open UI: {error}");
     }
 }
 

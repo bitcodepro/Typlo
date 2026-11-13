@@ -903,8 +903,7 @@ fn fixture_printable(key: &KBDLLHOOKSTRUCT) -> bool {
     target.is_some_and(|hwnd| hwnd != 0 && hwnd == unsafe { GetForegroundWindow() } as usize)
         && key.dwExtraInfo == 0
         && (is_cycle_modifier(key.vkCode as u16)
-            || (matches!(key.vkCode, 0x20 | 0x41..=0x5a | 0xba..=0xe2)
-                && system_modifiers() == 0))
+            || (matches!(key.vkCode, 0x20 | 0x41..=0x5a | 0xba..=0xe2) && system_modifiers() == 0))
 }
 
 #[cfg(not(debug_assertions))]
@@ -1190,7 +1189,7 @@ impl Hooks {
                     WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
                 );
                 if clicks.is_null() {
-                    eprintln!("Typlo Rust mouse hook: {}", io::Error::last_os_error());
+                    crate::runtime_error!("Typlo Rust mouse hook: {}", io::Error::last_os_error());
                 }
                 KEYBOARD_HOOK_LIVE.store(true, Ordering::Release);
                 if ready.send(Ok(GetCurrentThreadId())).is_ok() {

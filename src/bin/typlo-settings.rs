@@ -13,6 +13,13 @@ use typlo_rust::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    typlo_rust::runtime_log::initialize(&config::profile(), "ui");
+    run().inspect_err(|error| {
+        typlo_rust::runtime_log::write("ERROR", format_args!("UI failed: {error}"));
+    })
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let mode = args.next();
     #[cfg(unix)]
@@ -1493,6 +1500,11 @@ impl eframe::App for Workspace {
                         heading(ui, tr("tools.measurements", "Measurements"));
                         #[cfg(windows)]
                         self.performance_report(ui);
+                        if ui.button(tr("rust.logs.open", "Open diagnostic logs")).clicked()
+                            && let Err(error) = open_diagnostic_logs(&self.profile)
+                        {
+                            self.status = error.to_string();
+                        }
                         hint(ui, tr("tools.noProbe", "Run the field compatibility shortcut in the target editor to inspect it."));
                         shortcut_row(ui, &self.settings.hotkeys.tools, tr("tools.title", "Typlo tools"));
                         self.backup(ui, true);
@@ -1516,6 +1528,18 @@ impl eframe::App for Workspace {
             self.report = None;
         }
     }
+}
+
+#[cfg(windows)]
+fn open_diagnostic_logs(profile: &std::path::Path) -> std::io::Result<()> {
+    let directory = profile.join("logs");
+    std::fs::create_dir_all(&directory)?;
+    let explorer = std::env::var_os("SystemRoot")
+        .ok_or_else(|| std::io::Error::other("Windows directory is unavailable"))?;
+    std::process::Command::new(PathBuf::from(explorer).join("explorer.exe"))
+        .arg(directory)
+        .spawn()?;
+    Ok(())
 }
 
 fn heading(ui: &mut Ui, label: &str) {

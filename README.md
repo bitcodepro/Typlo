@@ -4,6 +4,8 @@ Typlo2.0 is the Rust version of Typlo. [Original C# project](https://github.com/
 
 On Windows, run `typlo-rust.exe` and open Settings from the notification area. Keep `typlo-settings.exe` and the `resources` folder beside the executable. The profile lives in `%LOCALAPPDATA%\Typlo-Rust`. New profiles use English. Change it under **Settings → Interface language**.
 
+If Typlo disappears from the notification area, reopen it and select **Typlo tools → Open diagnostic logs**. Windows logs are stored in `%LOCALAPPDATA%\Typlo-Rust\logs`. Typlo keeps the current log and one previous log, up to 256 KiB each.
+
 | Windows shortcut | Action |
 |---|---|
 | Ctrl+Shift | Switch layouts using the current app's rule |

@@ -184,7 +184,7 @@ impl Worker {
                                     io::ErrorKind::Interrupted | io::ErrorKind::Unsupported
                                 )
                             {
-                                eprintln!("Typlo Rust Notepad++: {error}");
+                                crate::runtime_error!("Typlo Rust Notepad++: {error}");
                             }
                             return;
                         }
@@ -205,7 +205,7 @@ impl Worker {
                                     io::ErrorKind::Interrupted | io::ErrorKind::Unsupported
                                 )
                             {
-                                eprintln!("Typlo Rust spelling: {error}");
+                                crate::runtime_error!("Typlo Rust spelling: {error}");
                             }
                             return;
                         }
@@ -221,7 +221,7 @@ impl Worker {
                                 error.kind(),
                                 io::ErrorKind::Interrupted | io::ErrorKind::Unsupported
                             ) {
-                                eprintln!("Typlo Rust selection tools: {error}");
+                                crate::runtime_error!("Typlo Rust selection tools: {error}");
                             }
                             return;
                         }
@@ -238,7 +238,7 @@ impl Worker {
                             error.kind(),
                             io::ErrorKind::Unsupported | io::ErrorKind::Interrupted
                         ) {
-                            eprintln!("Typlo Rust accessible editor: {error}");
+                            crate::runtime_error!("Typlo Rust accessible editor: {error}");
                         }
                     }));
                     if processed.is_err() {
@@ -247,7 +247,9 @@ impl Worker {
                         fallback = super::clipboard_edit::Fallback::default();
                         scintilla = super::scintilla::Edits::default();
                         vocabulary = Vocabulary::installed().ok();
-                        eprintln!("Typlo Rust editor worker recovered after a failed command");
+                        crate::runtime_error!(
+                            "Typlo Rust editor worker recovered after a failed command"
+                        );
                     }
                 }
                 drop(automation);
@@ -451,7 +453,7 @@ fn start_spelling(
                     }
                 }
                 Err(error) if error.kind() != io::ErrorKind::Interrupted => {
-                    eprintln!("Typlo Rust spelling: {error}")
+                    crate::runtime_error!("Typlo Rust spelling: {error}")
                 }
                 _ => {}
             },
@@ -583,7 +585,7 @@ fn start_tools(
                     }
                 }
                 Err(error) if error.kind() != io::ErrorKind::Interrupted => {
-                    eprintln!("Typlo Rust selection tools: {error}")
+                    crate::runtime_error!("Typlo Rust selection tools: {error}")
                 }
                 _ => {}
             }
@@ -1314,7 +1316,7 @@ impl Editor for Accessible<'_> {
         if let Err(error) = clipboard.restore() {
             // The document already changed. Let the clipboard guard retry on drop
             // without losing the confirmed edit or its Undo record.
-            eprintln!("Typlo Rust: restoring the clipboard after an edit: {error}");
+            crate::runtime_error!("Typlo Rust: restoring the clipboard after an edit: {error}");
         }
         Ok(())
     }

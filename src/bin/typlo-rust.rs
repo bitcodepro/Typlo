@@ -11,8 +11,24 @@ use typlo_rust::{
 };
 
 fn main() {
+    let mode = env::args_os().nth(1);
+    if mode.as_deref().is_none_or(|mode| {
+        matches!(
+            mode.to_str(),
+            Some(
+                "--updated-resident"
+                    | "--restart-previous"
+                    | "--auto-update"
+                    | "--install-update"
+                    | "--lan-send"
+                    | "--lan-retry"
+            )
+        )
+    }) {
+        typlo_rust::runtime_log::initialize(&config::profile(), "resident");
+    }
     if let Err(error) = run() {
-        eprintln!("Typlo Rust: {error}");
+        typlo_rust::runtime_error!("Typlo Rust: {error}");
         std::process::exit(1);
     }
 }

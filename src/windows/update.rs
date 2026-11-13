@@ -21,6 +21,7 @@ use windows_sys::Win32::{
 pub(crate) const ASSET: &str = "typlo-win-x64.zip";
 const RESIDENT_EXE: &str = "typlo-rust.exe";
 const MARKER: &str = "rust-current.txt";
+pub(super) const SHUTDOWN_FOR_UPDATE: usize = 0x5459;
 #[cfg(test)]
 const REQUIRED: [&str; 9] = [
     "typlo-rust.exe",
@@ -56,6 +57,10 @@ pub(super) fn auto_install_in_helper() -> io::Result<()> {
 pub fn auto_install() -> io::Result<()> {
     let _lock = InstallLock::acquire()?;
     let Some(update) = check()? else {
+        crate::runtime_log::write(
+            "INFO",
+            format_args!("Startup update check found no newer release"),
+        );
         return Ok(());
     };
     install(&update, |_| {})
@@ -123,9 +128,14 @@ fn install(update: &Update, status: impl Fn(&str)) -> io::Result<()> {
     }
     let workspace = tempfile::tempdir()?;
     let archive = workspace.path().join("update.zip");
+    crate::runtime_log::write(
+        "INFO",
+        format_args!("Downloading update v{}", update.version),
+    );
     status("download");
     download(&update.url, &archive, MAX_PACKAGE, 120)?;
     status("verify");
+    crate::runtime_log::write("INFO", format_args!("Verifying update v{}", update.version));
     let new_executable = stage(&root, &archive, &update.version, &update.sha256)?;
     let probe = workspace.path().join("probe-ready.txt");
     let isolated = workspace.path().join("isolated-profile");
@@ -139,6 +149,10 @@ fn install(update: &Update, status: impl Fn(&str)) -> io::Result<()> {
     let _ = child.wait();
     probe_result?;
     status("restart");
+    crate::runtime_log::write(
+        "INFO",
+        format_args!("Restarting for update v{}", update.version),
+    );
     let stopped = stop_resident(&old_executable)?;
     activate(
         &root,
@@ -163,7 +177,12 @@ fn install(update: &Update, status: impl Fn(&str)) -> io::Result<()> {
             }
             Ok(())
         },
-    )
+    )?;
+    crate::runtime_log::write(
+        "INFO",
+        format_args!("Update v{} is running", update.version),
+    );
+    Ok(())
 }
 
 fn activate(
@@ -343,7 +362,7 @@ fn stop_resident(executable: &Path) -> io::Result<bool> {
     if process.is_null() {
         return Err(io::Error::last_os_error());
     }
-    let result = if unsafe { PostMessageW(window, WM_CLOSE, 0, 0) } == 0 {
+    let result = if unsafe { PostMessageW(window, WM_CLOSE, SHUTDOWN_FOR_UPDATE, 0) } == 0 {
         Err(io::Error::last_os_error())
     } else if unsafe { WaitForSingleObject(process, 10_000) } != WAIT_OBJECT_0 {
         Err(io::Error::other("Previous Typlo Rust process did not exit"))
