@@ -2,6 +2,7 @@
 name = "typlo-rust"
 version = "0.1.2"
 edition = "2024"
+rust-version = "1.100"
 license = "MIT"
 
 [features]

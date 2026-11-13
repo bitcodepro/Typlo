@@ -14,7 +14,7 @@ fn paths(bytes: &[u8]) -> Option<Clip> {
         .take(256)
     {
         let path = line.strip_prefix("file://")?;
-        let path = path.strip_prefix("localhost").unwrap_or(path);
+        let path = path.trim_prefix("localhost");
         if !path.starts_with('/') || path.contains(['#', '?']) {
             return None;
         }

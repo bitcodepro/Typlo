@@ -208,7 +208,7 @@ fn process_key(value: &str) -> String {
         .next()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    name.strip_suffix(".exe").unwrap_or(&name).to_owned()
+    name.trim_suffix(".exe").to_owned()
 }
 
 impl Default for Config {

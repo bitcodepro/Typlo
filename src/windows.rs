@@ -740,6 +740,9 @@ impl Resident {
             return Ok(());
         }
         self.cancel_typing_edit(window);
+        if self.hotkeys_suspended || settings_window_focused() {
+            return Ok(());
+        }
         let mut editor = WinEdit {
             sequence: Some(sequence),
             ..Default::default()
@@ -1789,6 +1792,9 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                 resident.foreground_changed(window);
                 resident.recent.reset();
                 resident.cancel_typing_edit(window);
+                if let Some(worker) = &mut resident.accessible {
+                    worker.cancel_typing();
+                }
                 if resident.spelling.as_ref().is_some_and(|job| !job.review) {
                     resident.spelling = None;
                 }

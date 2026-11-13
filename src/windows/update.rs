@@ -4,6 +4,7 @@ use crate::update_package::{self, MAX_PACKAGE, download, version as parse_versio
 use std::{
     fs,
     io::{self, Write},
+    mem::DropGuard,
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -139,15 +140,17 @@ fn install(update: &Update, status: impl Fn(&str)) -> io::Result<()> {
     let new_executable = stage(&root, &archive, &update.version, &update.sha256)?;
     let probe = workspace.path().join("probe-ready.txt");
     let isolated = workspace.path().join("isolated-profile");
-    let mut child = hidden(&new_executable)
-        .arg("--background-probe")
-        .arg(isolated)
-        .arg(&probe)
-        .spawn()?;
-    let probe_result = ready(&mut child, &probe, Duration::from_secs(12));
-    let _ = child.kill();
-    let _ = child.wait();
-    probe_result?;
+    {
+        let mut child = DropGuard::new(
+            hidden(&new_executable)
+                .arg("--background-probe")
+                .arg(isolated)
+                .arg(&probe)
+                .spawn()?,
+            stop_child,
+        );
+        ready(&mut child, &probe, Duration::from_secs(12))?;
+    }
     status("restart");
     crate::runtime_log::write(
         "INFO",
@@ -160,15 +163,15 @@ fn install(update: &Update, status: impl Fn(&str)) -> io::Result<()> {
         previous.as_deref(),
         || {
             let marker = workspace.path().join("resident-ready.txt");
-            let mut child = hidden(&new_executable)
-                .arg("--updated-resident")
-                .arg(&marker)
-                .spawn()?;
-            if let Err(error) = ready(&mut child, &marker, Duration::from_secs(12)) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
+            let mut child = DropGuard::new(
+                hidden(&new_executable)
+                    .arg("--updated-resident")
+                    .arg(&marker)
+                    .spawn()?,
+                stop_child,
+            );
+            ready(&mut child, &marker, Duration::from_secs(12))?;
+            drop(DropGuard::dismiss(child));
             Ok(())
         },
         || {
@@ -183,6 +186,11 @@ fn install(update: &Update, status: impl Fn(&str)) -> io::Result<()> {
         format_args!("Update v{} is running", update.version),
     );
     Ok(())
+}
+
+fn stop_child(mut child: Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn activate(

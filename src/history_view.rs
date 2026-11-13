@@ -560,7 +560,11 @@ impl Window {
             }
         }
         self.recent = items;
-        self.total = self.store.stats()?.0;
+        self.total = if self.more {
+            self.store.count()?
+        } else {
+            self.recent.len()
+        };
         Ok(())
     }
 
@@ -610,7 +614,7 @@ impl Window {
                 )
                 .clicked()
             {
-                self.received_only = !self.received_only;
+                self.received_only.toggle();
                 self.filter(ui.ctx());
                 self.select_first_match();
                 if self.received_only {
