@@ -116,6 +116,7 @@ pub fn run(
                 legacy_size_job: None,
                 ocr: None,
                 viewer: None,
+                edit: None,
                 focus_seen: false,
                 focus_search: true,
                 closing: false,
@@ -164,6 +165,7 @@ struct Window {
     legacy_size_job: Option<(i64, mpsc::Receiver<io::Result<u64>>)>,
     ocr: Option<Ocr>,
     viewer: Option<Viewer>,
+    edit: Option<EntryEdit>,
     focus_seen: bool,
     focus_search: bool,
     closing: bool,
@@ -286,7 +288,11 @@ fn search_history(
         } else {
             let preview = entry.preview.to_lowercase();
             let source = entry.source.as_deref().unwrap_or_default().to_lowercase();
-            let long = entry.kind != Kind::Image && entry.preview.chars().count() >= 400;
+            let long = entry.preview.chars().count() >= 400
+                || entry
+                    .preview
+                    .split_once('\0')
+                    .is_some_and(|(paths, _)| paths.chars().count() >= 200);
             SearchEntry {
                 entry,
                 revision,
@@ -343,7 +349,7 @@ fn search_revision(row: &rusqlite::Row<'_>) -> rusqlite::Result<(i64, [u8; 32])>
 fn full_search_text(store: &History, id: i64) -> io::Result<String> {
     Ok(store
         .load(id)?
-        .map_or_else(String::new, |clip| clip.text().to_lowercase()))
+        .map_or_else(String::new, |clip| clip.searchable_text().to_lowercase()))
 }
 
 fn start_history_search(
@@ -417,12 +423,22 @@ struct Viewer {
     image: Option<egui::TextureHandle>,
 }
 
+struct EntryEdit {
+    id: i64,
+    kind: Kind,
+    original: String,
+    text: String,
+    error: String,
+}
+
 #[derive(Clone, Copy)]
 enum Choice {
     Paste(i64, bool),
+    Copy(i64),
     Pin(i64, bool),
     Remove(i64),
     View(i64),
+    Edit(i64),
     Ocr(i64),
     Send(i64),
     ShowReceived(i64),
@@ -444,6 +460,7 @@ impl eframe::App for Window {
         self.poll_received_delete(root.ctx());
         if self.previous.try_recv().is_ok()
             && self.viewer.is_none()
+            && self.edit.is_none()
             && self.delete_received.is_none()
             && let Ok(Some(id)) = self.store.previous()
         {
@@ -466,6 +483,9 @@ impl eframe::App for Window {
             return;
         }
         if root.input(|input| input.key_pressed(egui::Key::Escape)) {
+            if self.edit.take().is_some() {
+                return;
+            }
             if self.delete_received.take().is_some() {
                 return;
             }
@@ -488,7 +508,7 @@ impl eframe::App for Window {
                 ui.set_min_size(ui.available_size());
                 self.search_box(ui, &palette);
                 self.received_filter(ui);
-                let command = if self.delete_received.is_some() { None } else { self.keys(ui) };
+                let command = if self.delete_received.is_some() || self.edit.is_some() { None } else { self.keys(ui) };
                 let footer = tr("history.hints", "Enter paste · Shift+Enter plain · Ctrl+T text from image · Ctrl+P pin · Del delete · right click: more");
                 egui::Panel::bottom("history-footer")
                     .resizable(false)
@@ -508,6 +528,7 @@ impl eframe::App for Window {
                 }
             });
         self.confirm_received_delete(root);
+        self.edit_dialog(root);
     }
 }
 
@@ -893,7 +914,13 @@ impl Window {
             let height = match entry.kind {
                 Kind::Text => 46.,
                 Kind::Files => 65.,
-                Kind::Image => 145.,
+                Kind::Image => {
+                    if entry.preview.is_empty() {
+                        145.
+                    } else {
+                        162.
+                    }
+                }
             };
             offsets.push(offsets.last().copied().unwrap_or_default() + height);
         }
@@ -976,9 +1003,17 @@ impl Window {
                 if send.clicked() {
                     choice = Some(Choice::Send(entry.id));
                 }
+                let edit_area = send_area.translate(egui::vec2(-26., 0.));
+                if ui
+                    .put(edit_area, egui::Button::new("✎").small())
+                    .on_hover_text(tr("rust.history.edit", "Edit clipboard item"))
+                    .clicked()
+                {
+                    choice = Some(Choice::Edit(entry.id));
+                }
                 if entry.pinned {
                     ui.painter().text(
-                        egui::pos2(row.right() - 32., y),
+                        egui::pos2(row.right() - 58., y),
                         egui::Align2::RIGHT_TOP,
                         "📌",
                         egui::FontId::proportional(13.),
@@ -987,7 +1022,7 @@ impl Window {
                 }
                 let content = egui::Rect::from_min_max(
                     egui::pos2(x + 28., y),
-                    egui::pos2(row.right() - 50., row.bottom() - 2.),
+                    egui::pos2(row.right() - 76., row.bottom() - 2.),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
                     ui.set_clip_rect(ui.clip_rect().intersect(content));
@@ -1008,7 +1043,7 @@ impl Window {
                     let meta = match entry.kind {
                         Kind::Image => {
                             self.request_thumbnail(entry.id, ui.ctx());
-                            match self.thumbnails.get(&entry.id) {
+                            let meta = match self.thumbnails.get(&entry.id) {
                                 Some(Some(thumbnail)) => {
                                     let border = egui::Stroke::new(1_f32, palette.border);
                                     egui::Frame::new().stroke(border).corner_radius(6).show(
@@ -1038,10 +1073,23 @@ impl Window {
                                     ui.spinner();
                                     size
                                 }
+                            };
+                            if !entry.preview.is_empty() {
+                                ui.add(
+                                    egui::Label::new(
+                                        entry.preview.lines().next().unwrap_or_default(),
+                                    )
+                                    .truncate(),
+                                );
                             }
+                            meta
                         }
                         Kind::Files => {
-                            let files = entry.preview.lines().collect::<Vec<_>>();
+                            let (paths, caption) = entry
+                                .preview
+                                .split_once('\0')
+                                .unwrap_or((&entry.preview, ""));
+                            let files = paths.lines().collect::<Vec<_>>();
                             let count = entry.files.unwrap_or(files.len());
                             let label = files
                                 .iter()
@@ -1062,6 +1110,12 @@ impl Window {
                                 )
                                 .truncate(),
                             );
+                            if !caption.is_empty() {
+                                ui.add(
+                                    egui::Label::new(caption.lines().next().unwrap_or_default())
+                                        .truncate(),
+                                );
+                            }
                             if count == 1 {
                                 tr("history.file", "File").to_owned()
                             } else {
@@ -1147,6 +1201,12 @@ impl Window {
                         true,
                     );
                     item(
+                        tr("rust.history.copy", "Copy"),
+                        "",
+                        Choice::Copy(entry.id),
+                        true,
+                    );
+                    item(
                         tr("history.ctx.view", "View…"),
                         "Ctrl+O",
                         Choice::View(entry.id),
@@ -1212,8 +1272,8 @@ impl Window {
                         menu.close();
                     }
                 });
-                if entry.kind != Kind::Image {
-                    response.on_hover_text(entry.preview);
+                if !entry.preview.is_empty() {
+                    response.on_hover_text(entry.preview.replace('\0', "\n"));
                 }
             }
         });
@@ -1244,6 +1304,7 @@ impl Window {
         let viewer = self.viewer.as_mut().expect("viewer open");
         let id = viewer.id;
         let mut paste = false;
+        let mut copy = false;
         let mut close = false;
         egui::Frame::new()
             .fill(ui.visuals().panel_fill)
@@ -1254,7 +1315,8 @@ impl Window {
                     .show(ui, |ui| {
                         if let Some(image) = &viewer.image {
                             ui.image((image.id(), image.size_vec2()));
-                        } else {
+                        }
+                        if !viewer.text.is_empty() {
                             ui.add(
                                 egui::TextEdit::multiline(&mut viewer.text.as_str())
                                     .font(egui::TextStyle::Monospace)
@@ -1266,11 +1328,15 @@ impl Window {
                 ui.separator();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     paste = ui.button(tr("history.ctx.paste", "Paste")).clicked();
+                    copy = ui.button(tr("rust.history.copy", "Copy")).clicked();
                     close = ui.button(tr("update.close", "Close")).clicked();
                 });
             });
         if paste {
             self.apply(Choice::Paste(id, false), ui, window);
+        }
+        if copy {
+            self.apply(Choice::Copy(id), ui, window);
         }
         if close {
             self.close(ui);
@@ -1286,6 +1352,12 @@ impl Window {
                 self.close(ui);
                 Ok(())
             }
+            Choice::Copy(id) => {
+                let clip = self.store.load(id)?.ok_or_else(missing)?;
+                windows::clipio::publish(window, &clip, false)?;
+                self.close(ui);
+                Ok(())
+            }
             Choice::View(id) => {
                 let clip = self.store.load(id)?.ok_or_else(missing)?;
                 let image = if clip.kind == Kind::Image {
@@ -1295,7 +1367,7 @@ impl Window {
                 };
                 self.viewer = Some(Viewer {
                     id,
-                    text: clip.text(),
+                    text: clip.searchable_text(),
                     image,
                 });
                 let ctx = ui.ctx();
@@ -1310,6 +1382,18 @@ impl Window {
                 if unsafe { GetPhysicalCursorPos(&mut cursor) } != 0 {
                     place(window, cursor, [640, 520], true);
                 }
+                Ok(())
+            }
+            Choice::Edit(id) => {
+                let clip = self.store.load(id)?.ok_or_else(missing)?;
+                let text = clip.editable_text();
+                self.edit = Some(EntryEdit {
+                    id,
+                    kind: clip.kind,
+                    original: text.clone(),
+                    text,
+                    error: String::new(),
+                });
                 Ok(())
             }
             Choice::Pin(id, pinned) => {
@@ -1521,6 +1605,55 @@ impl Window {
                 }
             });
         });
+    }
+
+    fn edit_dialog(&mut self, ui: &egui::Ui) {
+        let Some(edit) = &mut self.edit else { return };
+        let mut save = false;
+        let mut cancel = false;
+        let dialog = egui::Modal::new(ui.id().with("edit-clipboard-item")).show(ui.ctx(), |ui| {
+            ui.set_width(310.);
+            ui.heading(if edit.kind == Kind::Text {
+                tr("rust.history.editText", "Edit clipboard text")
+            } else {
+                tr("rust.history.caption", "Attachment caption")
+            });
+            ui.add(
+                crate::appearance::text_area(&mut edit.text)
+                    .desired_rows(5)
+                    .desired_width(f32::INFINITY),
+            );
+            if !edit.error.is_empty() {
+                ui.label(&edit.error);
+            }
+            ui.horizontal(|ui| {
+                save = ui.button(tr("settings.save", "Save")).clicked();
+                cancel = ui.button(tr("settings.cancel", "Cancel")).clicked();
+            });
+        });
+        if cancel || dialog.should_close() {
+            self.edit = None;
+        } else if save {
+            let limits = Limits {
+                max_items: self.config.history_items,
+                max_total: u64::from(self.config.history_total_mib) * 1024 * 1024,
+                max_image: self.config.history_image_mib as usize * 1024 * 1024,
+                max_text: self.config.history_text_kib as usize * 1024 * 1024,
+            };
+            match self
+                .store
+                .edit_text(edit.id, &edit.original, &edit.text, limits)
+            {
+                Ok(()) => {
+                    self.edit = None;
+                    if let Err(error) = self.reload() {
+                        self.status = error.to_string();
+                    }
+                    self.filter(ui.ctx());
+                }
+                Err(error) => edit.error = error.to_string(),
+            }
+        }
     }
 
     fn poll_received_delete(&mut self, ctx: &egui::Context) {

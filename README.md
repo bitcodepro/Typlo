@@ -27,6 +27,8 @@ On Windows, letters, top-row digits, and supported punctuation in shortcuts refe
 
 Clipboard history opens near the cursor. Its item menu supports viewing, pasting, pinning, and deleting items. You can paste formatted content as plain text and extract text from images. `Ctrl+O` opens the viewer, `Ctrl+T` runs OCR, and `Ctrl+1`–`Ctrl+9` paste items by position.
 
+Select the pencil to edit a text item or add a caption to an image or file selection. Typlo copies and shares the attachment and caption as one entry. When pasting, the destination app chooses which Windows clipboard formats it can use. Update Typlo2.0 on both computers to share entries with captions.
+
 ## Share clipboard items between Windows computers
 
 1. On both computers, open **Clipboard sharing with another computer** at the top of **Settings**. Copy each computer's code into the other computer and select **Pair computer**.

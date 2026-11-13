@@ -59,6 +59,8 @@ pub struct Clip {
     formats: Vec<(Format, Vec<u8>)>,
 }
 
+pub(super) const MAX_CAPTION_BYTES: usize = 64 * 1024;
+
 pub(super) struct ImagePreview {
     pub dimensions: (u32, u32),
     pub png: Vec<u8>,
@@ -137,12 +139,17 @@ impl Clip {
     }
 
     pub(super) fn normalize_image(
-        self,
+        mut self,
         limit: usize,
     ) -> io::Result<Option<(Self, Option<ImagePreview>)>> {
         if self.kind != Kind::Image {
             return Ok(Some((self, None)));
         }
+        let caption = self
+            .formats
+            .iter()
+            .position(|(format, _)| *format == Format::Text)
+            .map(|index| self.formats.remove(index));
         for (format, bytes) in self.formats {
             let Ok(image) = decode_image(format, &bytes) else {
                 continue;
@@ -152,7 +159,7 @@ impl Clip {
             } else {
                 encode_png(&image)?
             };
-            if png.len() <= limit {
+            if png.len() + caption.as_ref().map_or(0, |(_, text)| text.len()) <= limit {
                 let preview = ImagePreview {
                     dimensions: (image.width(), image.height()),
                     png: encode_png(&preview_bitmap(&image))?,
@@ -160,7 +167,7 @@ impl Clip {
                 return Ok(Some((
                     Self {
                         kind: Kind::Image,
-                        formats: vec![(Format::Png, png)],
+                        formats: std::iter::once((Format::Png, png)).chain(caption).collect(),
                     },
                     Some(preview),
                 )));
@@ -195,6 +202,65 @@ impl Clip {
 
     pub fn identity(&self) -> &[u8] {
         self.formats.first().map_or(&[], |(_, data)| data)
+    }
+
+    pub(super) fn caption_bytes(&self) -> Option<&[u8]> {
+        (self.kind != Kind::Text)
+            .then(|| self.formats.last())
+            .flatten()
+            .filter(|(format, _)| *format == Format::Text)
+            .map(|(_, bytes)| bytes.as_slice())
+    }
+
+    pub fn editable_text(&self) -> String {
+        if self.kind == Kind::Text {
+            self.text()
+        } else {
+            self.caption_bytes()
+                .map_or_else(String::new, |data| decode_wide(data, false))
+        }
+    }
+
+    pub(super) fn set_editable_text(&mut self, text: &str) -> io::Result<()> {
+        if text.contains('\0') || (self.kind == Kind::Text && text.trim().is_empty()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Clipboard text must be nonempty and contain no NUL characters",
+            ));
+        }
+        if self.kind == Kind::Text {
+            *self = Self::from_text(text);
+        } else {
+            let bytes = wide(text)
+                .into_iter()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>();
+            if bytes.len() > MAX_CAPTION_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Clipboard caption is too long",
+                ));
+            }
+            self.formats.retain(|(format, _)| *format != Format::Text);
+            if !text.is_empty() {
+                self.formats.push((Format::Text, bytes));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn searchable_text(&self) -> String {
+        let text = self.text();
+        if let Some(caption) = self.caption_bytes() {
+            let caption = decode_wide(caption, false);
+            if text.is_empty() {
+                caption
+            } else {
+                format!("{text}\n{caption}")
+            }
+        } else {
+            text
+        }
     }
 
     pub fn size(&self) -> usize {
@@ -255,6 +321,26 @@ impl Clip {
         if !data.is_empty() || formats.is_empty() {
             return Err(invalid_clip());
         }
+        let attachment_formats = if kind != Kind::Text
+            && let Some((Format::Text, text)) = formats.last()
+        {
+            let (units, rest) = text.as_chunks::<2>();
+            if text.len() > MAX_CAPTION_BYTES
+                || !rest.is_empty()
+                || !units.split_last().is_some_and(|(last, body)| {
+                    *last == [0, 0]
+                        && !body.is_empty()
+                        && body.iter().all(|unit| *unit != [0, 0])
+                        && char::decode_utf16(body.iter().copied().map(u16::from_le_bytes))
+                            .all(|unit| unit.is_ok())
+                })
+            {
+                return Err(invalid_clip());
+            }
+            &formats[..formats.len() - 1]
+        } else {
+            &formats[..]
+        };
         let valid = match kind {
             Kind::Text => {
                 formats[0].0 == Format::Text
@@ -263,10 +349,15 @@ impl Clip {
                         .skip(1)
                         .all(|(format, _)| matches!(format, Format::Html | Format::Rtf))
             }
-            Kind::Image => formats
-                .iter()
-                .all(|(format, _)| matches!(format, Format::Png | Format::DibV5 | Format::Dib)),
-            Kind::Files => formats.len() == 1 && formats[0].0 == Format::Files,
+            Kind::Image => {
+                !attachment_formats.is_empty()
+                    && attachment_formats.iter().all(|(format, _)| {
+                        matches!(format, Format::Png | Format::DibV5 | Format::Dib)
+                    })
+            }
+            Kind::Files => {
+                attachment_formats.len() == 1 && attachment_formats[0].0 == Format::Files
+            }
         };
         if !valid {
             return Err(invalid_clip());
@@ -274,7 +365,6 @@ impl Clip {
         Ok(Self { kind, formats })
     }
 
-    #[cfg(any(test, feature = "gui"))]
     pub fn from_text(text: &str) -> Self {
         Self {
             kind: Kind::Text,

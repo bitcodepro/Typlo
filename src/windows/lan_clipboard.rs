@@ -836,22 +836,28 @@ mod tests {
         image::RgbaImage::from_pixel(2, 3, image::Rgba([22, 44, 66, 255]))
             .write_to(&mut png, image::ImageFormat::Png)
             .unwrap();
-        let clip = Clip::from_legacy(2, png.into_inner(), None).unwrap();
+        let mut clip = Clip::from_legacy(2, png.into_inner(), None).unwrap();
+        clip.set_editable_text("Image caption 🙂").unwrap();
         let (sent, received) = pair.send(&clip, &identity);
         sent.unwrap();
         received.unwrap();
-        assert_eq!(pair.receive_clip(Kind::Image).identity(), clip.identity());
+        let received_image = pair.receive_clip(Kind::Image);
+        assert_eq!(received_image.identity(), clip.identity());
+        assert_eq!(received_image.editable_text(), "Image caption 🙂");
 
         let folder = pair.sender.path().join("Файлы");
         let nested = folder.join("Sub");
         fs::create_dir_all(&nested).unwrap();
         fs::write(nested.join("data.bin"), b"contents").unwrap();
-        let clip =
+        let mut clip =
             Clip::from_legacy(3, folder.to_str().unwrap().as_bytes().to_vec(), None).unwrap();
+        clip.set_editable_text("Folder caption\nSecond line")
+            .unwrap();
         let (sent, received) = pair.send(&clip, &identity);
         sent.unwrap();
         received.unwrap();
         let clip = pair.receive_clip(Kind::Files);
+        assert_eq!(clip.editable_text(), "Folder caption\nSecond line");
         let saved = PathBuf::from(clip.text());
         assert!(saved.starts_with(received_folder(pair.receiver.path())));
         assert_eq!(fs::read(saved.join("Sub/data.bin")).unwrap(), b"contents");
