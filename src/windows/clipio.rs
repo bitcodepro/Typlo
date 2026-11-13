@@ -952,9 +952,10 @@ fn decode_wide(bytes: &[u8], multiple: bool) -> String {
             data.push(word);
         }
     }
+    if multiple && data.last() == Some(&u16::from(b'\n')) {
+        data.pop();
+    }
     String::from_utf16_lossy(&data)
-        .trim_end_matches('\n')
-        .to_owned()
 }
 
 fn invalid_clip() -> io::Error {

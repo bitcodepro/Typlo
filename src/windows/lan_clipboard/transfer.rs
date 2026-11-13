@@ -300,12 +300,7 @@ fn history_limits(profile: &Path) -> io::Result<Limits> {
             "Clipboard history is disabled",
         ));
     }
-    Ok(Limits {
-        max_items: settings.history_items,
-        max_total: u64::from(settings.history_total_mib) * 1024 * 1024,
-        max_image: settings.history_image_mib as usize * 1024 * 1024,
-        max_text: settings.history_text_kib as usize * 1024,
-    })
+    Ok(Limits::from_config(&settings))
 }
 
 fn receive_files(

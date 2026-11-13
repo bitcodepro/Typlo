@@ -25,6 +25,17 @@ pub struct Limits {
     pub max_text: usize,
 }
 
+impl Limits {
+    pub(crate) fn from_config(settings: &crate::config::Config) -> Self {
+        Self {
+            max_items: settings.history_items,
+            max_total: u64::from(settings.history_total_mib) * 1024 * 1024,
+            max_image: settings.history_image_mib as usize * 1024 * 1024,
+            max_text: settings.history_text_kib as usize * 1024,
+        }
+    }
+}
+
 pub struct History {
     db: Connection,
     key: [u8; 32],
@@ -868,6 +879,50 @@ fn crypt(input: &[u8], encrypt: bool, entropy: Option<&[u8]>) -> io::Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editing_enforces_the_configured_kibibyte_limit() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut history = History::open(profile.path()).unwrap();
+        let limits = Limits::from_config(&crate::config::Config {
+            history_text_kib: 1,
+            ..Default::default()
+        });
+        history.store(&Clip::from_text("original"), limits).unwrap();
+        let id = history.list(0).unwrap()[0].id;
+        let fits = "a".repeat(511);
+        history.edit_text(id, "original", &fits, limits).unwrap();
+        let error = history
+            .edit_text(id, &fits, &"a".repeat(512), limits)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(history.load(id).unwrap().unwrap().text(), fits);
+    }
+
+    #[test]
+    fn editing_preserves_trailing_line_endings_in_text_and_captions() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut history = History::open(profile.path()).unwrap();
+        let limits = Limits::from_config(&crate::config::Config::default());
+        for ending in ["\n", "\r\n", "\r\n\n"] {
+            let original = format!("line{ending}");
+            let edited = format!("edited{ending}");
+            let mut file = Clip::from_legacy(3, b"C:\\Test\\file.txt".to_vec(), None).unwrap();
+            file.set_editable_text(&original).unwrap();
+            for clip in [Clip::from_text(&original), file] {
+                history.store(&clip, limits).unwrap();
+                let id = history.list(0).unwrap()[0].id;
+                let loaded = history.load(id).unwrap().unwrap();
+                assert_eq!(loaded.editable_text(), original);
+                if clip.kind == Kind::Files {
+                    assert_eq!(loaded.text(), r"C:\Test\file.txt");
+                }
+                history.edit_text(id, &original, &edited, limits).unwrap();
+                assert_eq!(history.load(id).unwrap().unwrap().editable_text(), edited);
+                history.remove(id).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn editing_an_entry_preserves_its_identity_in_history_and_checks_stale_edits() {

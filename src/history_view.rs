@@ -1634,12 +1634,7 @@ impl Window {
         if cancel || dialog.should_close() {
             self.edit = None;
         } else if save {
-            let limits = Limits {
-                max_items: self.config.history_items,
-                max_total: u64::from(self.config.history_total_mib) * 1024 * 1024,
-                max_image: self.config.history_image_mib as usize * 1024 * 1024,
-                max_text: self.config.history_text_kib as usize * 1024 * 1024,
-            };
+            let limits = Limits::from_config(&self.config);
             match self
                 .store
                 .edit_text(edit.id, &edit.original, &edit.text, limits)
@@ -1778,12 +1773,7 @@ impl Window {
             Ok(text) if text.trim().is_empty() => tr("history.ocrNone", "No text found").into(),
             Ok(text) => {
                 let clip = Clip::from_text(&text);
-                let limits = Limits {
-                    max_items: self.config.history_items,
-                    max_total: u64::from(self.config.history_total_mib) * 1024 * 1024,
-                    max_image: self.config.history_image_mib as usize * 1024 * 1024,
-                    max_text: self.config.history_text_kib as usize * 1024,
-                };
+                let limits = Limits::from_config(&self.config);
                 let result = self
                     .store
                     .store(&clip, limits)

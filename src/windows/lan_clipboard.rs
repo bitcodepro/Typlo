@@ -837,13 +837,13 @@ mod tests {
             .write_to(&mut png, image::ImageFormat::Png)
             .unwrap();
         let mut clip = Clip::from_legacy(2, png.into_inner(), None).unwrap();
-        clip.set_editable_text("Image caption 🙂").unwrap();
+        clip.set_editable_text("Image caption 🙂\n").unwrap();
         let (sent, received) = pair.send(&clip, &identity);
         sent.unwrap();
         received.unwrap();
         let received_image = pair.receive_clip(Kind::Image);
         assert_eq!(received_image.identity(), clip.identity());
-        assert_eq!(received_image.editable_text(), "Image caption 🙂");
+        assert_eq!(received_image.editable_text(), "Image caption 🙂\n");
 
         let folder = pair.sender.path().join("Файлы");
         let nested = folder.join("Sub");
@@ -851,13 +851,13 @@ mod tests {
         fs::write(nested.join("data.bin"), b"contents").unwrap();
         let mut clip =
             Clip::from_legacy(3, folder.to_str().unwrap().as_bytes().to_vec(), None).unwrap();
-        clip.set_editable_text("Folder caption\nSecond line")
+        clip.set_editable_text("Folder caption\nSecond line\r\n")
             .unwrap();
         let (sent, received) = pair.send(&clip, &identity);
         sent.unwrap();
         received.unwrap();
         let clip = pair.receive_clip(Kind::Files);
-        assert_eq!(clip.editable_text(), "Folder caption\nSecond line");
+        assert_eq!(clip.editable_text(), "Folder caption\nSecond line\r\n");
         let saved = PathBuf::from(clip.text());
         assert!(saved.starts_with(received_folder(pair.receiver.path())));
         assert_eq!(fs::read(saved.join("Sub/data.bin")).unwrap(), b"contents");
