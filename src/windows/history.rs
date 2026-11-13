@@ -577,9 +577,11 @@ impl History {
 
     #[cfg(feature = "gui")]
     pub(crate) fn count(&self) -> io::Result<usize> {
-        self.db
-            .query_row("SELECT COUNT(*) FROM clips", [], |row| row.get(0))
-            .map_err(io::Error::other)
+        let count = self
+            .db
+            .query_row("SELECT COUNT(*) FROM clips", [], |row| row.get::<_, i64>(0))
+            .map_err(io::Error::other)?;
+        usize::try_from(count).map_err(io::Error::other)
     }
 
     #[cfg(feature = "gui")]
