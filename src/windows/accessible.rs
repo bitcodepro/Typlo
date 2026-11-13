@@ -696,7 +696,7 @@ fn run_edit(
         let document_wrapper = control == UIA_DocumentControlTypeId && partial_selection;
         // ProseMirror exposes the text and caret through UIA, but selecting a
         // range through that provider can fail to update the editor selection.
-        let keyboard_selection = matches!(host, Some(ClipboardHost::ChatGpt))
+        let keyboard_selection = (chromium || matches!(host, Some(ClipboardHost::ChatGpt)))
             && matches!(
                 job.command,
                 Command::Typing { word: Some(_), .. } | Command::Undo
@@ -1212,11 +1212,6 @@ impl Editor for Accessible<'_> {
             }
             thread::sleep(Duration::from_millis(8));
         }
-        let lease;
-        let mut clipboard = TemporaryText::capture(self.owner)?;
-        if self.snapshot()? != *expected {
-            return Err(changed());
-        }
         let keyboard_selection = self
             .keyboard_word_selection
             .then(|| keyboard_word_selection(expected, &range))
@@ -1230,8 +1225,13 @@ impl Editor for Accessible<'_> {
         } else {
             None
         };
+        if self.snapshot()? != *expected || modifiers_down() {
+            return Err(changed());
+        }
+        let lease;
+        let mut clipboard = TemporaryText::capture(self.owner)?;
         clipboard.publish(replacement)?;
-        if !clipboard.still_owns() || self.snapshot()? != *expected || modifiers_down() {
+        if !clipboard.still_owns() || modifiers_down() {
             return Err(changed());
         }
         lease = input::SelectionLease::start(
@@ -1240,17 +1240,19 @@ impl Editor for Accessible<'_> {
             self.canceled.clone(),
         )?;
         let operation = (|| {
+            if self.focused()?.0 != expected.target {
+                return Err(changed());
+            }
             if let Some(selection) = &proposed {
                 unsafe { selection.Select() }.map_err(io::Error::other)?;
-                self.confirm_selection(expected, range.clone())?;
             } else if let Some((skip, width)) = keyboard_selection {
                 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_LEFT, VK_SHIFT};
                 if skip > 0 {
                     input::send_selection_keys(None, VK_LEFT, skip, false)?;
                 }
                 input::send_selection_keys(Some(VK_SHIFT), VK_LEFT, width, false)?;
-                self.confirm_selection(expected, range.clone())?;
             }
+            self.confirm_selection(expected, range.clone())?;
             lease.arm_focus();
             if !lease.still_quiet()
                 || !clipboard.still_owns()

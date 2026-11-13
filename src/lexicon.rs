@@ -238,6 +238,19 @@ impl Vocabulary {
             return Ok((None, Decision::AlreadyRecognized));
         }
         let mut candidates = Vec::new();
+        // A dot inside a long word can be a Cyrillic letter on the same key.
+        let misplaced_dot = typed.len() >= 8
+            && typed.split_once('.').is_some_and(|(before, after)| {
+                !before.is_empty()
+                    && !after.is_empty()
+                    && before
+                        .bytes()
+                        .chain(after.bytes())
+                        .all(|byte| byte.is_ascii_alphabetic())
+            });
+        let weak_cyrillic_source = current == 0
+            && typed.len() >= 4
+            && (misplaced_dot || typed.bytes().all(|byte| byte.is_ascii_alphabetic()));
         for &target in allowed
             .iter()
             .filter(|&&target| target != source && target.convertible())
@@ -247,20 +260,8 @@ impl Vocabulary {
                 continue;
             }
             let score = self.score(personal, &result, target)?;
-            // A dot inside a long word can be a Cyrillic letter on the same key.
-            let misplaced_dot = typed.len() >= 8
-                && typed.split_once('.').is_some_and(|(before, after)| {
-                    !before.is_empty()
-                        && !after.is_empty()
-                        && before
-                            .bytes()
-                            .chain(after.bytes())
-                            .all(|byte| byte.is_ascii_alphabetic())
-                });
             let weak_cyrillic = score >= if misplaced_dot { 100 } else { 110 }
-                && current == 0
-                && typed.len() >= 4
-                && (misplaced_dot || typed.bytes().all(|byte| byte.is_ascii_alphabetic()))
+                && weak_cyrillic_source
                 && result
                     .chars()
                     .all(|c| ('\u{0400}'..='\u{04ff}').contains(&c));
@@ -431,6 +432,7 @@ mod tests {
         for (typed, source, result, target) in [
             ("ghbdtn", Language::En, "привет", Language::Ru),
             ("rfr", Language::En, "как", Language::Ru),
+            ("xnj", Language::En, "что", Language::Ru),
             ("yt", Language::En, "не", Language::Ru),
             ("gjlrk.xbnm", Language::En, "подключить", Language::Ru),
             ("rjvgm.nth", Language::En, "компьютер", Language::Ru),

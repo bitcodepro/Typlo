@@ -41,6 +41,8 @@ pub struct History {
     key: [u8; 32],
 }
 
+const SCHEMA_VERSION: u32 = 1;
+
 #[derive(Clone)]
 pub struct Entry {
     pub id: i64,
@@ -146,9 +148,36 @@ impl History {
         db.busy_timeout(Duration::from_millis(250))
             .map_err(io::Error::other)?;
         db.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA secure_delete=ON; PRAGMA mmap_size=0; PRAGMA foreign_keys=ON;
-             PRAGMA cache_size=-128; PRAGMA trusted_schema=OFF;
-             CREATE TABLE IF NOT EXISTS metadata(id INTEGER PRIMARY KEY CHECK(id=1), secret BLOB NOT NULL);
+            "PRAGMA secure_delete=ON; PRAGMA mmap_size=0; PRAGMA foreign_keys=ON;
+             PRAGMA cache_size=-128; PRAGMA trusted_schema=OFF;",
+        )
+        .map_err(io::Error::other)?;
+        let version: u32 = db
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(io::Error::other)?;
+        if version > SCHEMA_VERSION {
+            return Err(io::Error::other(
+                "Unsupported clipboard history schema version",
+            ));
+        }
+        if version == SCHEMA_VERSION {
+            let secret: Vec<u8> = db
+                .query_row("SELECT secret FROM metadata WHERE id=1", [], |row| {
+                    row.get(0)
+                })
+                .map_err(io::Error::other)?;
+            return Ok(Self {
+                db,
+                key: decode_key(&secret)?,
+            });
+        }
+        db.pragma_update(None, "journal_mode", "WAL")
+            .map_err(io::Error::other)?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(io::Error::other)?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS metadata(id INTEGER PRIMARY KEY CHECK(id=1), secret BLOB NOT NULL);
              CREATE TABLE IF NOT EXISTS clips(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, fingerprint BLOB NOT NULL UNIQUE,
                 payload BLOB NOT NULL, preview BLOB NOT NULL, bytes INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
@@ -169,9 +198,6 @@ impl History {
              CREATE TABLE IF NOT EXISTS order_clock(id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
              INSERT OR IGNORE INTO order_clock VALUES(1,0);"
         ).map_err(io::Error::other)?;
-        let tx = db
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(io::Error::other)?;
         let secret: Option<Vec<u8>> = tx
             .query_row("SELECT secret FROM metadata WHERE id=1", [], |row| {
                 row.get(0)
@@ -179,9 +205,7 @@ impl History {
             .optional()
             .map_err(io::Error::other)?;
         let key = if let Some(secret) = secret {
-            unprotect(&secret)?
-                .try_into()
-                .map_err(|_| io::Error::other("Invalid history key"))?
+            decode_key(&secret)?
         } else {
             let mut key = [0; 32];
             let status = unsafe {
@@ -201,6 +225,8 @@ impl History {
                 .map_err(io::Error::other)?;
             key
         };
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(io::Error::other)?;
         tx.commit().map_err(io::Error::other)?;
         Ok(Self { db, key })
     }
@@ -546,8 +572,10 @@ impl History {
     }
 
     #[cfg(feature = "gui")]
-    pub fn stats(&self) -> io::Result<(usize, u64)> {
-        Self::query_stats(&self.db)
+    pub(crate) fn count(&self) -> io::Result<usize> {
+        self.db
+            .query_row("SELECT COUNT(*) FROM clips", [], |row| row.get(0))
+            .map_err(io::Error::other)
     }
 
     #[cfg(feature = "gui")]
@@ -777,6 +805,12 @@ impl History {
     }
 }
 
+fn decode_key(secret: &[u8]) -> io::Result<[u8; 32]> {
+    unprotect(secret)?
+        .try_into()
+        .map_err(|_| io::Error::other("Invalid history key"))
+}
+
 fn fingerprint(key: &[u8; 32], clip: &Clip) -> [u8; 32] {
     let mut hash = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("valid HMAC key");
     hash.update(&[clip.kind as u8]);
@@ -933,6 +967,26 @@ fn crypt(input: &[u8], encrypt: bool, entropy: Option<&[u8]>) -> io::Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reopening_history_reads_during_a_write_and_preserves_legacy_data() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut writer = History::open(profile.path()).unwrap();
+        let limits = Limits::from_config(&crate::config::Config::default());
+        writer
+            .store(&Clip::from_text("existing entry"), limits)
+            .unwrap();
+        writer.db.pragma_update(None, "user_version", 0).unwrap();
+        let mut writer = History::open(profile.path()).unwrap();
+        let transaction = writer
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let reader = History::open(profile.path()).unwrap();
+        let id = reader.list(0).unwrap()[0].id;
+        assert_eq!(reader.load(id).unwrap().unwrap().text(), "existing entry");
+        transaction.rollback().unwrap();
+    }
 
     #[test]
     fn editing_enforces_the_configured_kibibyte_limit() {
