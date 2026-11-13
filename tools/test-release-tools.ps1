@@ -5,6 +5,10 @@ function Assert-Rejected([scriptblock]$Action) {
     try { & $Action | Out-Null } catch { $rejected = $true }
     if (!$rejected) { throw 'Expected rejection' }
 }
+Test-WindowsImports @('KERNEL32.dll', 'api-ms-win-core-synch-l1-2-0.dll')
+Assert-Rejected { Test-WindowsImports @('vcruntime140.dll') }
+Assert-Rejected { Test-WindowsImports @('sqlite3.dll') }
+Assert-Rejected { Test-WindowsImports @() }
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('TyploReleaseTests-' + [guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory $fixture)
 Set-Content "$fixture/Cargo.toml" "[package]`nname = `"typlo-rust`"`nversion = `"0.1.0`""

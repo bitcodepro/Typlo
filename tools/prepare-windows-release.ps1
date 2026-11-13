@@ -23,10 +23,7 @@ foreach ($name in @('typlo-rust.exe', 'typlo-settings.exe')) {
     $imports = & $dumpbin.FullName /dependents (Join-Path $payload $name)
     if ($LASTEXITCODE -ne 0) { throw 'dumpbin failed' }
     $dlls = @($imports | ForEach-Object { if ($_ -match '^\s+([\w.-]+\.dll)\s*$') { $Matches[1] } })
-    if (!$dlls.Count) { throw 'No PE dependencies detected' }
-    foreach ($dll in $dlls) {
-        if ($dll -match '^(vcruntime|msvcp|concrt|msvcr)' -or !(Test-Path "$env:WINDIR/System32/$dll")) { throw "Unpackaged runtime dependency: $dll" }
-    }
+    Test-WindowsImports $dlls
     Write-Host "$name imports: $($dlls -join ', ')"
 }
 # Consolidate notices to stay below updater's 128-entry ceiling.

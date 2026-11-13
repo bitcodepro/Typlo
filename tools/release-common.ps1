@@ -1,4 +1,13 @@
 $ErrorActionPreference = 'Stop'
+function Test-WindowsImports {
+    param([string[]]$Dlls)
+    if (!$Dlls.Count) { throw 'No PE dependencies detected' }
+    $system = @('advapi32.dll', 'bcrypt.dll', 'bcryptprimitives.dll', 'combase.dll', 'comdlg32.dll', 'crypt32.dll', 'dwmapi.dll', 'gdi32.dll', 'imm32.dll', 'iphlpapi.dll', 'kernel32.dll', 'ntdll.dll', 'ole32.dll', 'oleaut32.dll', 'opengl32.dll', 'shell32.dll', 'shlwapi.dll', 'user32.dll', 'uxtheme.dll', 'ws2_32.dll')
+    foreach ($dll in $Dlls) {
+        # Core API sets are virtual Windows contracts, not files in System32.
+        if ($dll -notin $system -and $dll -notmatch '^api-ms-win-core-[a-z0-9-]+\.dll$') { throw "Unpackaged runtime dependency: $dll" }
+    }
+}
 function Get-ReleaseVersion {
     param([string]$Root = (Split-Path $PSScriptRoot))
     $manifest = Get-Content (Join-Path $Root 'Cargo.toml') -Raw
