@@ -182,6 +182,8 @@ enum SettingsTab {
     Shortcuts,
     Applications,
     Clipboard,
+    #[cfg(windows)]
+    Computers,
     Snippets,
     #[cfg(windows)]
     Capture,
@@ -198,6 +200,8 @@ impl SettingsTab {
         Self::Shortcuts,
         Self::Applications,
         Self::Clipboard,
+        #[cfg(windows)]
+        Self::Computers,
         Self::Snippets,
         #[cfg(windows)]
         Self::Capture,
@@ -214,6 +218,8 @@ impl SettingsTab {
             Self::Shortcuts => tr("rust.tabs.shortcuts", "Shortcuts"),
             Self::Applications => tr("rust.tabs.apps", "Apps"),
             Self::Clipboard => tr("rust.tabs.clipboard", "Clipboard"),
+            #[cfg(windows)]
+            Self::Computers => tr("rust.tabs.computers", "Computers"),
             Self::Snippets => tr("rust.tabs.snippets", "Snippets"),
             #[cfg(windows)]
             Self::Capture => tr("rust.tabs.capture", "Screenshots"),
@@ -513,8 +519,21 @@ impl Workspace {
             .inner_margin(Margin::symmetric(20, 8))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
+                    let widgets = &mut ui.visuals_mut().widgets;
+                    let border_width = widgets.inactive.bg_stroke.width;
+                    for state in [
+                        &mut widgets.inactive,
+                        &mut widgets.hovered,
+                        &mut widgets.active,
+                        &mut widgets.open,
+                    ] {
+                        state.expansion = 0.;
+                        state.bg_stroke.width = border_width;
+                    }
                     for &tab in SettingsTab::ALL {
-                        ui.selectable_value(&mut self.tab, tab, tab.label());
+                        if settings_tab_button(ui, tab, self.tab == tab).clicked() {
+                            self.tab = tab;
+                        }
                     }
                 });
             });
@@ -549,9 +568,16 @@ impl Workspace {
                 }
             }
             SettingsTab::Applications => self.applications(ui),
-            SettingsTab::Clipboard => {
-                self.clipboard_history(ui);
-                #[cfg(windows)]
+            SettingsTab::Clipboard => self.clipboard_history(ui),
+            #[cfg(windows)]
+            SettingsTab::Computers => {
+                heading(
+                    ui,
+                    tr(
+                        "rust.lan.heading",
+                        "Clipboard sharing with another computer",
+                    ),
+                );
                 self.lan_clipboard.show(ui, &self.profile);
             }
             SettingsTab::Snippets => self.snippets(ui),
@@ -1654,6 +1680,15 @@ fn open_diagnostic_logs(profile: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+fn settings_tab_button(ui: &mut Ui, tab: SettingsTab, selected: bool) -> egui::Response {
+    ui.add(
+        egui::Button::new(tab.label())
+            .selected(selected)
+            .frame(true)
+            .wrap_mode(egui::TextWrapMode::Extend),
+    )
+}
+
 fn heading(ui: &mut Ui, label: &str) {
     ui.add_space(8.);
     ui.label(RichText::new(label).size(16.).strong());
@@ -2037,6 +2072,59 @@ fn available_choices() -> Vec<Language> {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+
+    #[test]
+    fn settings_tabs_keep_their_positions_on_hover_and_selection() {
+        let folder = tempfile::tempdir().unwrap();
+        for language in ["en", "ru", "uk"] {
+            let mut workspace = Workspace::new(folder.path().into(), None, Page::Settings);
+            locale::set_language(language);
+            let context = egui::Context::default();
+            typlo_rust::appearance::configure(&context);
+            let render = |workspace: &mut Workspace, events| {
+                context
+                    .run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(560., 400.),
+                            )),
+                            events,
+                            ..Default::default()
+                        },
+                        |ui| workspace.settings_tabs(ui),
+                    )
+                    .shapes
+                    .into_iter()
+                    .filter_map(|shape| match shape.shape {
+                        egui::Shape::Text(text) => Some(text.pos + text.galley.size() * 0.5),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let initial = render(&mut workspace, vec![]);
+            assert_eq!(initial.len(), SettingsTab::ALL.len());
+            for &position in &initial {
+                let hover = render(&mut workspace, vec![egui::Event::PointerMoved(position)]);
+                assert_eq!(hover, initial, "{language}: hover moved a tab");
+            }
+            let position = initial[1];
+            render(&mut workspace, vec![egui::Event::PointerMoved(position)]);
+            for pressed in [true, false] {
+                render(
+                    &mut workspace,
+                    vec![egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+            assert!(workspace.tab == SettingsTab::Text);
+            assert_eq!(render(&mut workspace, vec![]), initial);
+        }
+    }
 
     #[test]
     fn backup_tab_shows_one_confirmation_for_each_import_format() {
