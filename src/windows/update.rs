@@ -20,11 +20,13 @@ use windows_sys::Win32::{
 };
 
 pub(crate) const ASSET: &str = "typlo-win-x64.zip";
-const RESIDENT_EXE: &str = "typlo-rust.exe";
+pub const RESIDENT_EXE: &str = "Typlo.exe";
+const LEGACY_LAUNCHER: &str = "typlo-rust.exe";
 const MARKER: &str = "rust-current.txt";
 pub(super) const SHUTDOWN_FOR_UPDATE: usize = 0x5459;
 #[cfg(test)]
-const REQUIRED: [&str; 9] = [
+const REQUIRED: [&str; 10] = [
+    "Typlo.exe",
     "typlo-rust.exe",
     "typlo-settings.exe",
     "resources/language-detection/words.sqlite3",
@@ -38,7 +40,9 @@ const REQUIRED: [&str; 9] = [
 
 pub fn check() -> io::Result<Option<Update>> {
     let root = installation_root()?;
-    let installed = current(&root)?.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+    let installed =
+        selected_version_for(&root, &std::env::current_exe()?, env!("CARGO_PKG_VERSION"))?
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
     update_package::check(&installed, ASSET)
 }
 
@@ -64,7 +68,7 @@ pub fn auto_install() -> io::Result<()> {
         );
         return Ok(());
     };
-    install(&update, |_| {})
+    install(&update, |_| {}, &_lock)
 }
 
 pub fn install_selected(version: &str, hash: &str) -> io::Result<()> {
@@ -82,11 +86,15 @@ pub fn install_selected_with_status(
         .ok_or_else(|| {
             io::Error::other("The selected update is no longer available. Check again.")
         })?;
-    install(&update, |phase| {
-        if let Some(path) = status {
-            let _ = fs::write(path, phase);
-        }
-    })
+    install(
+        &update,
+        |phase| {
+            if let Some(path) = status {
+                let _ = fs::write(path, phase);
+            }
+        },
+        &_lock,
+    )
 }
 
 #[cfg(feature = "gui")]
@@ -110,9 +118,9 @@ pub fn spawn_installer(update: &Update, status: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn install(update: &Update, status: impl Fn(&str)) -> io::Result<()> {
+fn install(update: &Update, status: impl Fn(&str), lock: &InstallLock) -> io::Result<()> {
     let root = installation_root()?;
-    let previous = current(&root)?;
+    let previous = active_version(&root, lock)?;
     let base = root.join(RESIDENT_EXE);
     let old_executable = previous
         .as_deref()
@@ -247,7 +255,11 @@ impl Drop for InstallLock {
 
 pub fn launch_installed() -> io::Result<bool> {
     let root = installation_root()?;
-    let Some(version) = current(&root)? else {
+    let selected = {
+        let lock = InstallLock::acquire()?;
+        active_version(&root, &lock)?
+    };
+    let Some(version) = selected else {
         return Ok(false);
     };
     let executable = installed_executable(&root, &version);
@@ -294,7 +306,7 @@ fn stage(root: &Path, archive: &Path, version: &str, digest: &str) -> io::Result
         archive,
         version,
         digest,
-        [RESIDENT_EXE, "typlo-settings.exe"],
+        [RESIDENT_EXE, "typlo-settings.exe", LEGACY_LAUNCHER],
     )
 }
 
@@ -312,6 +324,63 @@ fn current(root: &Path) -> io::Result<Option<String>> {
     }
 }
 
+fn active_version(root: &Path, _lock: &InstallLock) -> io::Result<Option<String>> {
+    reconcile_base_version(root, &std::env::current_exe()?, env!("CARGO_PKG_VERSION"))
+}
+
+fn reconcile_base_version(
+    root: &Path,
+    executable: &Path,
+    package: &str,
+) -> io::Result<Option<String>> {
+    let active = current(root)?;
+    if base_upgrade_needed(root, executable, package, active.as_deref()) {
+        set_current(root, None)?;
+        return Ok(None);
+    }
+    Ok(active)
+}
+
+fn selected_version_for(
+    root: &Path,
+    executable: &Path,
+    package: &str,
+) -> io::Result<Option<String>> {
+    let active = current(root)?;
+    if base_upgrade_needed(root, executable, package, active.as_deref()) {
+        return Ok(None);
+    }
+    Ok(active)
+}
+
+fn base_upgrade_needed(
+    root: &Path,
+    executable: &Path,
+    package: &str,
+    active: Option<&str>,
+) -> bool {
+    let base_binary = executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case(RESIDENT_EXE)
+                || name.eq_ignore_ascii_case("typlo-settings.exe")
+        });
+    // A manually replaced base takes precedence over an older installation's
+    // marker. Staged probes must leave activation and rollback state untouched.
+    executable.parent() == Some(root)
+        && base_binary
+        && root.join(RESIDENT_EXE).is_file()
+        && active
+            .and_then(parse_version)
+            .zip(parse_version(package))
+            .is_some_and(|(old, new)| old < new)
+}
+
+pub(crate) fn startup_executable_for(executable: &Path) -> io::Result<PathBuf> {
+    Ok(installation_root_for(executable)?.join(RESIDENT_EXE))
+}
+
 fn set_current(root: &Path, version: Option<&str>) -> io::Result<()> {
     let marker = root.join(MARKER);
     if let Some(version) = version {
@@ -326,7 +395,13 @@ fn set_current(root: &Path, version: Option<&str>) -> io::Result<()> {
 }
 
 fn installed_executable(root: &Path, version: &str) -> PathBuf {
-    root.join("versions").join(version).join(RESIDENT_EXE)
+    let directory = root.join("versions").join(version);
+    let preferred = directory.join(RESIDENT_EXE);
+    if preferred.is_file() {
+        preferred
+    } else {
+        directory.join(LEGACY_LAUNCHER)
+    }
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -400,9 +475,106 @@ mod tests {
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     #[test]
+    fn manual_base_upgrade_clears_only_older_markers_and_keeps_profile() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(RESIDENT_EXE), "new base").unwrap();
+        fs::create_dir(root.path().join("data")).unwrap();
+        fs::write(root.path().join("data/settings.json"), "profile").unwrap();
+        set_current(root.path(), Some("0.1.7")).unwrap();
+        assert!(
+            selected_version_for(root.path(), &root.path().join(RESIDENT_EXE), "0.1.8")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            current(root.path()).unwrap().as_deref(),
+            Some("0.1.7"),
+            "read-only checks must not mutate activation state"
+        );
+        // A staged probe cannot change selection before verified activation.
+        let probe = root.path().join("versions/0.1.8/Typlo.exe");
+        assert_eq!(
+            reconcile_base_version(root.path(), &probe, "0.1.8")
+                .unwrap()
+                .as_deref(),
+            Some("0.1.7")
+        );
+        assert!(
+            reconcile_base_version(root.path(), &root.path().join(RESIDENT_EXE), "0.1.8")
+                .unwrap()
+                .is_none()
+        );
+        assert!(current(root.path()).unwrap().is_none());
+        assert_eq!(
+            fs::read_to_string(root.path().join("data/settings.json")).unwrap(),
+            "profile"
+        );
+        set_current(root.path(), Some("0.1.9")).unwrap();
+        assert_eq!(
+            reconcile_base_version(root.path(), &root.path().join(RESIDENT_EXE), "0.1.8")
+                .unwrap()
+                .as_deref(),
+            Some("0.1.9")
+        );
+        fs::write(root.path().join(MARKER), "../../bad").unwrap();
+        assert!(
+            reconcile_base_version(root.path(), &root.path().join(RESIDENT_EXE), "0.1.8").is_err()
+        );
+    }
+
+    #[test]
+    fn rollback_resolves_legacy_versions_and_startup_uses_the_root_launcher() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("versions/0.1.7");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join(LEGACY_LAUNCHER), "old resident").unwrap();
+        assert_eq!(
+            installed_executable(root.path(), "0.1.7"),
+            old.join(LEGACY_LAUNCHER)
+        );
+        fs::write(old.join(RESIDENT_EXE), "new resident").unwrap();
+        assert_eq!(
+            installed_executable(root.path(), "0.1.7"),
+            old.join(RESIDENT_EXE)
+        );
+        for exe in [
+            root.path().join(RESIDENT_EXE),
+            old.join(RESIDENT_EXE),
+            old.join("typlo-settings.exe"),
+        ] {
+            assert_eq!(
+                startup_executable_for(&exe).unwrap(),
+                root.path().join(RESIDENT_EXE)
+            );
+        }
+    }
+
+    #[test]
+    fn renamed_archive_requires_primary_settings_and_legacy_shortcut_launcher() {
+        for missing in [RESIDENT_EXE, "typlo-settings.exe", LEGACY_LAUNCHER] {
+            let root = tempfile::tempdir().unwrap();
+            let file = root.path().join("incomplete.zip");
+            let mut archive = ZipWriter::new(File::create(&file).unwrap());
+            for name in REQUIRED.into_iter().filter(|name| *name != missing) {
+                archive
+                    .start_file(name, SimpleFileOptions::default())
+                    .unwrap();
+                archive.write_all(name.as_bytes()).unwrap();
+            }
+            archive.finish().unwrap();
+            let hash = format!("{:x}", Sha256::digest(fs::read(&file).unwrap()));
+            assert!(
+                stage(root.path(), &file, "0.1.8", &hash).is_err(),
+                "missing {missing}"
+            );
+            assert!(!root.path().join("versions/0.1.8").exists());
+        }
+    }
+
+    #[test]
     fn updated_executables_resolve_the_same_portable_profile_root() {
         let root = Path::new(r"C:\Apps\Typlo");
-        for exe in ["typlo-rust.exe", "typlo-settings.exe"] {
+        for exe in [RESIDENT_EXE, LEGACY_LAUNCHER, "typlo-settings.exe"] {
             assert_eq!(installation_root_for(&root.join(exe)).unwrap(), root);
             assert_eq!(
                 installation_root_for(&root.join("versions/0.1.3").join(exe)).unwrap(),

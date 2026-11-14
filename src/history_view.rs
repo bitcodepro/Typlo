@@ -1462,14 +1462,15 @@ impl Window {
             .into();
             return Ok(());
         }
-        let child =
-            std::process::Command::new(std::env::current_exe()?.with_file_name("typlo-rust.exe"))
-                .arg(if retry { "--lan-retry" } else { "--lan-send" })
-                .arg(&self.profile)
-                .arg(id.to_string())
-                .stderr(std::process::Stdio::piped())
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()?;
+        let child = std::process::Command::new(
+            std::env::current_exe()?.with_file_name(crate::windows::update::RESIDENT_EXE),
+        )
+        .arg(if retry { "--lan-retry" } else { "--lan-send" })
+        .arg(&self.profile)
+        .arg(id.to_string())
+        .stderr(std::process::Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()?;
         let (sender, receiver) = mpsc::sync_channel(1);
         std::thread::spawn(move || {
             let result = child.wait_with_output().and_then(|output| {

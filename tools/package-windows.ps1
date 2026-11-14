@@ -14,7 +14,7 @@ if (![IO.Path]::IsPathRooted($relative) -and $relative -notmatch '^\.\.([\\/]|$)
     throw 'Put the archives outside the payload directory'
 }
 [IO.Directory]::CreateDirectory($output) | Out-Null
-$resident = Join-Path $payload 'typlo-rust.exe'
+$resident = Join-Path $payload $(if (Test-Path (Join-Path $payload 'Typlo.exe')) { 'Typlo.exe' } else { 'typlo-rust.exe' })
 $update = Join-Path $output 'typlo-win-x64.zip'
 foreach ($file in @($update, "$update.sha256")) {
     if (Test-Path -LiteralPath $file) { throw "Already exists: $file" }

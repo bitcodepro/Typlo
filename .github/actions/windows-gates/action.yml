@@ -37,12 +37,13 @@ runs:
     - name: Native editor replacement and Undo
       shell: pwsh
       run: |
-        $exe = (Resolve-Path "target/x86_64-pc-windows-msvc/release/typlo-rust.exe").Path
+        $built = if (Test-Path src/bin/typlo.rs) { "typlo.exe" } else { "typlo-rust.exe" }
+        $exe = (Resolve-Path "target/x86_64-pc-windows-msvc/release/$built").Path
         $probeDir = Join-Path $env:RUNNER_TEMP "typlo-native-probe"
         New-Item -ItemType Directory -Path "$probeDir/resources" | Out-Null
-        Copy-Item -LiteralPath $exe -Destination $probeDir
+        Copy-Item -LiteralPath $exe -Destination "$probeDir/Typlo.exe"
         Copy-Item -LiteralPath resources/language-detection -Destination "$probeDir/resources" -Recurse
-        $exe = Join-Path $probeDir "typlo-rust.exe"
+        $exe = Join-Path $probeDir "Typlo.exe"
         $probe = Start-Process -FilePath $exe -ArgumentList '--native-self-test' -WorkingDirectory $PWD.Path `
           -WindowStyle Hidden -PassThru -RedirectStandardError "$probeDir/stderr.txt" `
           -RedirectStandardOutput "$probeDir/stdout.txt"
@@ -59,9 +60,10 @@ runs:
       shell: pwsh
       run: |
         # Older queued sources predate the dictionary benchmark.
-        if (!(Select-String -LiteralPath src/bin/typlo-rust.rs -SimpleMatch '"--dictionary-bench"' -Quiet)) { exit 0 }
+        $cli = if (Test-Path src/resident_cli.rs) { "src/resident_cli.rs" } else { "src/bin/typlo-rust.rs" }
+        if (!(Select-String -LiteralPath $cli -SimpleMatch '"--dictionary-bench"' -Quiet)) { exit 0 }
         $probeDir = Join-Path $env:RUNNER_TEMP "typlo-native-probe"
-        $probe = Start-Process -FilePath "$probeDir/typlo-rust.exe" -ArgumentList '--dictionary-bench','9000' `
+        $probe = Start-Process -FilePath "$probeDir/Typlo.exe" -ArgumentList '--dictionary-bench','9000' `
           -WindowStyle Hidden -PassThru -RedirectStandardError "$probeDir/dictionary-stderr.txt" `
           -RedirectStandardOutput "$probeDir/dictionary-stdout.txt"
         if (!$probe.WaitForExit(30000)) {
@@ -73,7 +75,7 @@ runs:
           Get-Content "$probeDir/dictionary-stderr.txt"
           throw 'Dictionary benchmark failed'
         }
-        $probe = Start-Process -FilePath "$probeDir/typlo-rust.exe" -ArgumentList '--measure-native','100' `
+        $probe = Start-Process -FilePath "$probeDir/Typlo.exe" -ArgumentList '--measure-native','100' `
           -WindowStyle Hidden -PassThru -RedirectStandardError "$probeDir/edit-stderr.txt" `
           -RedirectStandardOutput "$probeDir/edit-stdout.txt"
         if (!$probe.WaitForExit(30000)) {

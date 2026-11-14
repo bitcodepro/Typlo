@@ -2,7 +2,7 @@
 
 Typlo2.0 is the Rust version of Typlo. [Project and releases](https://github.com/bitcodepro/Typlo/releases)
 
-On Windows, extract Typlo to a writable folder and run `typlo-rust.exe`. Keep `typlo-settings.exe` and `resources` beside it. Typlo keeps its profile in `data` beside the original executable. Versions installed by the updater share that same folder. New profiles use English. Change it under **Settings → Interface language**.
+On Windows, extract Typlo to a writable folder and run `Typlo.exe`. Keep `typlo-settings.exe` and `resources` beside it. Typlo keeps its profile in `data` beside the original executable. Versions installed by the updater share that same folder. New profiles use English. Change it under **Settings → Interface language**.
 
 If Typlo disappears from the notification area, reopen it and select **Typlo tools → Open diagnostic logs**. Typlo keeps the current log and one previous log under `data/logs`, up to 256 KiB each.
 
@@ -61,38 +61,46 @@ Run `./typlo-rust` and open Settings from the tray menu or with `./typlo-rust --
 Pass `--import-history` the original Typlo folder containing `history.db` and `history.key`. In a portable installation this is usually the `data` folder beside the original executable.
 
 ```powershell
-.\typlo-rust.exe --import-history "C:\path\to\Typlo\data"
+.\Typlo.exe --import-history "C:\path\to\Typlo\data"
 ```
 
 ## Windows releases
 
-### One-time manual update after the repository rename
+### Primary executable and older installations
 
-The project now publishes at [bitcodepro/Typlo](https://github.com/bitcodepro/Typlo/releases). Older builds pin update URLs to `bitcodepro/Typlo2.0` and reject the renamed repository's asset URLs, even though GitHub redirects the old feed. Install a release containing this fix manually once; downloading an older build does not repair its updater. Subsequent startup and manual checks use the exact new repository URL, tag, `typlo-win-x64.zip` filename and SHA-256 digest.
+Run **`Typlo.exe`**. The single `typlo-win-x64.zip` contains this primary application, `typlo-settings.exe`, resources/licenses, and a small `typlo-rust.exe` compatibility launcher. The old-name launcher only forwards to the adjacent `Typlo.exe`; it keeps existing root shortcuts usable and forwards helper arguments and exit codes. New shortcuts and Windows startup entries target the root `Typlo.exe`. The existing startup registry value name is retained to avoid duplicate entries. Unix continues to use `typlo-rust`.
 
-1. Download `typlo-win-x64.zip` from a published release containing this fix at the new address, and extract it into a separate writable folder.
+Clients predating this executable rename (including published v0.1.7) reject `Typlo.exe` as an unknown ZIP entry. They **cannot automatically install this renamed archive**, despite the unchanged ZIP name and valid SHA256. Install a release containing this change manually once: exit the old process, back up the installation, and extract the entire ZIP. In-place extraction retains `data` and replaces the old root EXE with the compatibility launcher; launching `Typlo.exe` clears only an older version marker, retaining the profile and old version files. Alternatively use a new writable folder and copy the complete `data` folder after exit. Update custom shortcuts pointing directly inside `versions` to the root `Typlo.exe`. Never mix files from different releases.
+
+Subsequent updates use the new three-EXE archive contract and still require the exact repository URL, tag, filename, SHA256 and safe archive entries. Rollback can resolve both legacy and renamed installed versions. Older published assets remain immutable. Package/launcher tests do not establish a live end-to-end upgrade.
+
+### One-time manual update after repository and executable changes
+
+The project now publishes at [bitcodepro/Typlo](https://github.com/bitcodepro/Typlo/releases). Older builds pin update URLs to `bitcodepro/Typlo2.0` and reject the renamed repository's asset URLs, even though GitHub redirects the old feed. Install a current release containing both the repository URL fix and the `Typlo.exe` rename manually once; downloading an older build does not repair its updater. Subsequent startup and manual checks use the exact new repository URL, tag, `typlo-win-x64.zip` filename and SHA-256 digest.
+
+1. Download `typlo-win-x64.zip` from a current published release containing `Typlo.exe` at the new address, and extract it into a separate writable folder.
 2. Exit the old Typlo process using its tray **Exit** command before copying any profile files.
 3. If the old installation has a `data` folder, copy the entire folder into the new installation, retaining the old installation as a backup. Do not copy `rust-current.txt` or `versions`, which could select an older executable. For installations still using `%LOCALAPPDATA%\Typlo-Rust`, the existing first-launch profile migration remains available.
-4. Run the new `typlo-rust.exe` and update any startup shortcut to its new path. Keep both EXEs and `resources` together. The executable names, ZIP name and profile format are unchanged.
+4. Run the new `Typlo.exe` and update any startup shortcut to its new path. Keep all EXEs and `resources` together. The ZIP name and profile format are unchanged; see the executable migration above for older clients.
 
-### Manual migration from v0.1.0 to v0.1.1
+### Manual migration from v0.1.0 to the current release
 
-1. Download **`typlo-win-x64.zip`** from the published **v0.1.1** release when it is available. The old client cannot discover this renamed asset automatically.
-2. Extract the entire ZIP into a **separate new writable folder**. Keep `typlo-rust.exe`, `typlo-settings.exe` and `resources` together; do not copy the old `rust-current.txt` or `versions` directory into it.
+1. Download **`typlo-win-x64.zip`** from a current published release containing `Typlo.exe`. The old client cannot discover this renamed asset automatically.
+2. Extract the entire ZIP into a **separate new writable folder**. Keep `Typlo.exe`, `typlo-settings.exe`, the `typlo-rust.exe` compatibility launcher and `resources` together; do not copy the old `rust-current.txt` or `versions` directory into it.
 3. Exit the old Typlo process using its tray **Exit** command.
-4. Run `typlo-rust.exe` from the new folder. On the first launch with portable storage, Typlo copies the old Windows profile from `%LOCALAPPDATA%\Typlo-Rust` into `data` and updates the received-file paths in history. The old profile remains available to the previous installation. Update any startup shortcut to the new executable path.
+4. Run `Typlo.exe` from the new folder. On the first launch with portable storage, Typlo copies the old Windows profile from `%LOCALAPPDATA%\Typlo-Rust` into `data` and updates the received-file paths in history. The old profile remains available to the previous installation. Update any startup shortcut to the new executable path.
 
-The published v0.1.0 ZIPs, tag and assets are retained. This is a manual handoff, not an automatic v0.1.0 upgrade. Once on v0.1.1, future update checks select `typlo-win-x64.zip`.
+The published v0.1.0 ZIPs, tag and assets are retained. This is a manual handoff, not an automatic v0.1.0 upgrade. Once on the current renamed build, future update checks select `typlo-win-x64.zip` and require the new executable layout.
 
 ### Installation and update contract
 
-Download **`typlo-win-x64.zip`** from a published release. For a fresh/manual installation, extract it into a new writable folder and run `typlo-rust.exe`. Both EXEs, `resources`, README and licenses are directly in the ZIP root. From v0.1.1 onward, this is also the exact ZIP used by the in-app updater. New releases have one Windows ZIP; all historical v0.1.0 assets remain unchanged. The `.sha256` file and `release-manifest.json` are verification metadata outside the ZIP.
+Download **`typlo-win-x64.zip`** from a published release. For a fresh/manual installation, extract it into a writable folder and run `Typlo.exe`. All three EXEs, `resources`, README and licenses are directly in the ZIP root. The archive name remains the same; clients with the previous executable layout need the manual handoff above before they can use future automatic updates. New releases have one Windows ZIP; historical assets remain unchanged. The `.sha256` file and `release-manifest.json` are verification metadata outside the ZIP.
 
 On Windows, Typlo checks for updates in the background about two seconds after startup. When a newer release is available, Typlo downloads and verifies it, tests the new executable, and restarts automatically without prompting. If the new version fails to start, Typlo restores the previous version.
 
 For a manual check, open **Settings → Check for updates**. If an update is available, select **Install now**. The window shows download, verification, and restart progress, and closes once the new version starts. Both update paths use `typlo-win-x64.zip`. For the v0.1.0 migration, follow the manual steps above.
 
-The Windows workflow tests and lints every PR, push to `main`, and manual run, then builds both x64 executables with a static CRT. Packaging checks PE runtime dependencies, includes resources and dependency licenses, runs `tools/windows-ui-smoke.ps1`, and verifies the updater ZIP with the release executable. A failed gate prevents artifact upload and publication. Hosted CI runs UI smoke in a temporary copy with a SHA256-pinned Mesa llvmpipe driver (`tools/windows-software-gl-smoke.ps1`); this test driver is excluded from release archives. Artifacts are retained for seven days; PRs receive artifacts only.
+The Windows workflow tests and lints every PR, push to `main`, and manual run, then builds the x64 resident, Settings and compatibility launcher with a static CRT. Packaging checks PE runtime dependencies, includes resources and dependency licenses, runs `tools/windows-ui-smoke.ps1`, and verifies the updater ZIP with the release executable. A failed gate prevents artifact upload and publication. Hosted CI runs UI smoke in a temporary copy with a SHA256-pinned Mesa llvmpipe driver (`tools/windows-software-gl-smoke.ps1`); this test driver is excluded from release archives. Artifacts are retained for seven days; PRs receive artifacts only.
 
 After merge, the Windows worker automatically assigns the next numeric patch version, starting at `0.1.3` after the immutable published `v0.1.2` baseline. Each first-parent main commit gets a deterministic release child commit with matching Cargo.toml, Cargo.lock, binary and manifest versions. No version bump or bot push to protected main is required. Squash/merge PRs each produce one entry; rebase merges can produce multiple entries. The tag points to the exact tested versioned child commit. Main retains its development baseline version.
 
@@ -100,7 +108,7 @@ The serialized publication worker processes the oldest unfinished entry on each 
 
 New manifests declare `schema_version: 1` and `platform: windows-x64`, and contain hashes for one ZIP and its checksum file. Windows build, package and compatibility gates are platform-specific. Linux/Ubuntu and macOS source/updater code remains available, but this workflow produces no tested release packages for them; future platforms require their own build/runtime/package gates before their manifests are accepted.
 
-Verification levels: Rust tests cover feed selection, version/digest rules, staging and rollback; offline mocks cover draft publication, retry, no-overwrite and both no-op cases. Packaging runs the current executable's verifier and `tools/test-windows-package-compat.ps1` runs the SHA256-pinned published v0.1.0 verifier against the internal ZIP format and extracts it into an isolated manual-install folder. This is not proof of old-client discovery: v0.1.0 will not find the new asset name. UI smoke checks release binaries. These checks do not establish a live end-to-end upgrade to a newer published version; no live upgrade or publication is performed while preparing this PR.
+Verification levels: Rust tests cover feed selection, version/digest rules, staging and rollback; offline mocks cover draft publication, retry, no-overwrite and both no-op cases. Packaging runs the current executable's verifier and `tools/test-windows-package-compat.ps1` confirms that the SHA256-pinned published v0.1.7 client rejects the renamed archive, extracts it into an isolated manual-install folder, and checks legacy-launcher arguments and success/failure codes. This is a manual handoff, not an automatic old-client upgrade. UI smoke checks release binaries. These checks do not establish a live end-to-end upgrade to a newer published version; no live upgrade or publication is performed while preparing this PR.
 
 For local release validation use PowerShell 7, Visual Studio C++ tools, and the MSVC Rust toolchain pinned in `rust-toolchain.toml` with `clippy` and `rust-docs` components. Set `CARGO_BUILD_TARGET=x86_64-pc-windows-msvc` and `RUSTFLAGS=-C target-feature=+crt-static`, run the commands below, then `./tools/test-release-tools.ps1` and `./tools/prepare-windows-release.ps1` from a clean checkout. The latter requires absent `package/Typlo-X.Y.Z` and `dist` directories. Publication requires GitHub CLI authentication and is reserved for CI on `main`.
 
@@ -112,6 +120,8 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo build --release --locked --features gui --bins
 ```
 
-For a Windows package, put both executables in the same folder with the resources. `tools/package-windows.ps1` creates the single installation/update archive `typlo-win-x64.zip` and its SHA256 checksum, then verifies the archive with the application itself. `tools/measure-full-windows.ps1` measures the C# and Rust background processes with history enabled and includes a separate run with Rust clipboard sharing paired. Run `typlo-rust.exe --measure-native 100` for confirmed replacement and Undo timings in native Edit and RichEdit fields.
+The Windows primary Cargo target is `typlo` (for example, `cargo run --features gui --bin typlo`); release packaging gives it the exact filename `Typlo.exe`. The Windows `typlo-rust` target is only the compatibility launcher. On Unix the existing `typlo-rust` target remains the resident.
+
+For a Windows package, put all three Windows executables in the same folder with the resources. `tools/package-windows.ps1` creates the single installation/update archive `typlo-win-x64.zip` and its SHA256 checksum, then verifies the archive with the application itself. `tools/measure-full-windows.ps1` measures the C# and Rust background processes with history enabled and includes a separate run with Rust clipboard sharing paired. Run `Typlo.exe --measure-native 100` for confirmed replacement and Undo timings in native Edit and RichEdit fields.
 
 [Migration status and known differences](docs/parity.md) · [Early benchmark results](docs/comparison.md)

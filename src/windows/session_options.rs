@@ -38,7 +38,7 @@ pub fn startup(enabled: bool) -> io::Result<()> {
     let path = wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
     let label = wide("Typlo-Rust");
     let result = if enabled {
-        let path_to_exe = std::env::current_exe()?;
+        let path_to_exe = super::update::startup_executable_for(&std::env::current_exe()?)?;
         let quote = u16::from(b'"');
         let executable: Vec<_> = [quote]
             .into_iter()
