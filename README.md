@@ -33,7 +33,7 @@ Select the pencil to edit a text item or add a caption to an image or file selec
 
 ## Share clipboard items between Windows computers
 
-1. On both computers, open **Clipboard sharing with another computer** at the top of **Settings**. Select **Show pairing code**, enter each code on the other computer, then select **Pair computer**. Use **Copy code** if you can transfer the code between computers.
+1. On both computers, open **Settings → Computers**. Select **Show pairing code**, enter each code on the other computer, then select **Pair computer**. Use **Copy code** if you can transfer the code between computers.
 2. Open history with `Ctrl+Shift+V` and select ↗ beside the item. Typlo2.0 can send text, images, files, and folders. The receiving computer adds the item to its history. Use **Open received files** to find saved files.
 
 The computers discover each other on the local network. If discovery fails, enter a private IPv4 address manually. Allow Typlo2.0 through Windows Firewall on private networks to receive items. Transfers use TLS on TCP 49237, and discovery uses UDP 49237. You can pair with one other computer. The file transfer limit is 512 MiB. Received files are saved as ordinary files under `data/Received files` and stay there until deleted.

@@ -51,7 +51,7 @@ impl Settings {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
-        ui.collapsing(tr("rust.lan.heading", "Clipboard sharing with another computer"), |ui| {
+        ui.scope(|ui| {
             ui.label(tr(
                 "rust.lan.instructions",
                 "On both computers, show the pairing code and enter it on the other computer. Then use ↗ next to an item in history to send it.",
