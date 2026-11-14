@@ -1,6 +1,6 @@
 # Typlo2.0
 
-Typlo2.0 is the Rust version of Typlo. [Original C# project](https://github.com/bitcodepro/Typlo)
+Typlo2.0 is the Rust version of Typlo. [Project and releases](https://github.com/bitcodepro/Typlo/releases)
 
 On Windows, extract Typlo to a writable folder and run `typlo-rust.exe`. Keep `typlo-settings.exe` and `resources` beside it. Typlo keeps its profile in `data` beside the original executable. Versions installed by the updater share that same folder. New profiles use English. Change it under **Settings → Interface language**.
 
@@ -65,6 +65,15 @@ Pass `--import-history` the original Typlo folder containing `history.db` and `h
 ```
 
 ## Windows releases
+
+### One-time manual update after the repository rename
+
+The project now publishes at [bitcodepro/Typlo](https://github.com/bitcodepro/Typlo/releases). Older builds pin update URLs to `bitcodepro/Typlo2.0` and reject the renamed repository's asset URLs, even though GitHub redirects the old feed. Install a release containing this fix manually once; downloading an older build does not repair its updater. Subsequent startup and manual checks use the exact new repository URL, tag, `typlo-win-x64.zip` filename and SHA-256 digest.
+
+1. Download `typlo-win-x64.zip` from a published release containing this fix at the new address, and extract it into a separate writable folder.
+2. Exit the old Typlo process using its tray **Exit** command before copying any profile files.
+3. If the old installation has a `data` folder, copy the entire folder into the new installation, retaining the old installation as a backup. Do not copy `rust-current.txt` or `versions`, which could select an older executable. For installations still using `%LOCALAPPDATA%\Typlo-Rust`, the existing first-launch profile migration remains available.
+4. Run the new `typlo-rust.exe` and update any startup shortcut to its new path. Keep both EXEs and `resources` together. The executable names, ZIP name and profile format are unchanged.
 
 ### Manual migration from v0.1.0 to v0.1.1
 

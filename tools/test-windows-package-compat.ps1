@@ -8,7 +8,7 @@ $temporary = Join-Path ([IO.Path]::GetTempPath()) ('TyploLegacyPackage-' + [guid
 [void](New-Item -ItemType Directory $temporary)
 $legacy = Join-Path $temporary 'v0.1.0.zip'
 # Published v0.1.0 from 43b5643; pin its bytes, never modify its release assets.
-Invoke-WebRequest 'https://github.com/bitcodepro/Typlo2.0/releases/download/v0.1.0/typlo-rust-win-x64.zip' -OutFile $legacy -TimeoutSec 180
+Invoke-WebRequest 'https://github.com/bitcodepro/Typlo/releases/download/v0.1.0/typlo-rust-win-x64.zip' -OutFile $legacy -TimeoutSec 180
 if ((Get-FileHash $legacy -Algorithm SHA256).Hash.ToLowerInvariant() -cne '35517d4b707d87b280dd1451be070a7735ed5c9264ec71a762242d650b81c25d') { throw 'Published v0.1.0 ZIP SHA256 mismatch' }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead($legacy)
