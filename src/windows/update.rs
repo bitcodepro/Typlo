@@ -40,7 +40,9 @@ const REQUIRED: [&str; 10] = [
 
 pub fn check() -> io::Result<Option<Update>> {
     let root = installation_root()?;
-    let installed = active_version(&root)?.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+    let installed =
+        selected_version_for(&root, &std::env::current_exe()?, env!("CARGO_PKG_VERSION"))?
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
     update_package::check(&installed, ASSET)
 }
 
@@ -66,7 +68,7 @@ pub fn auto_install() -> io::Result<()> {
         );
         return Ok(());
     };
-    install(&update, |_| {})
+    install(&update, |_| {}, &_lock)
 }
 
 pub fn install_selected(version: &str, hash: &str) -> io::Result<()> {
@@ -84,11 +86,15 @@ pub fn install_selected_with_status(
         .ok_or_else(|| {
             io::Error::other("The selected update is no longer available. Check again.")
         })?;
-    install(&update, |phase| {
-        if let Some(path) = status {
-            let _ = fs::write(path, phase);
-        }
-    })
+    install(
+        &update,
+        |phase| {
+            if let Some(path) = status {
+                let _ = fs::write(path, phase);
+            }
+        },
+        &_lock,
+    )
 }
 
 #[cfg(feature = "gui")]
@@ -112,9 +118,9 @@ pub fn spawn_installer(update: &Update, status: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn install(update: &Update, status: impl Fn(&str)) -> io::Result<()> {
+fn install(update: &Update, status: impl Fn(&str), lock: &InstallLock) -> io::Result<()> {
     let root = installation_root()?;
-    let previous = active_version(&root)?;
+    let previous = active_version(&root, lock)?;
     let base = root.join(RESIDENT_EXE);
     let old_executable = previous
         .as_deref()
@@ -249,7 +255,11 @@ impl Drop for InstallLock {
 
 pub fn launch_installed() -> io::Result<bool> {
     let root = installation_root()?;
-    let Some(version) = active_version(&root)? else {
+    let selected = {
+        let lock = InstallLock::acquire()?;
+        active_version(&root, &lock)?
+    };
+    let Some(version) = selected else {
         return Ok(false);
     };
     let executable = installed_executable(&root, &version);
@@ -314,7 +324,7 @@ fn current(root: &Path) -> io::Result<Option<String>> {
     }
 }
 
-fn active_version(root: &Path) -> io::Result<Option<String>> {
+fn active_version(root: &Path, _lock: &InstallLock) -> io::Result<Option<String>> {
     reconcile_base_version(root, &std::env::current_exe()?, env!("CARGO_PKG_VERSION"))
 }
 
@@ -324,6 +334,31 @@ fn reconcile_base_version(
     package: &str,
 ) -> io::Result<Option<String>> {
     let active = current(root)?;
+    if base_upgrade_needed(root, executable, package, active.as_deref()) {
+        set_current(root, None)?;
+        return Ok(None);
+    }
+    Ok(active)
+}
+
+fn selected_version_for(
+    root: &Path,
+    executable: &Path,
+    package: &str,
+) -> io::Result<Option<String>> {
+    let active = current(root)?;
+    if base_upgrade_needed(root, executable, package, active.as_deref()) {
+        return Ok(None);
+    }
+    Ok(active)
+}
+
+fn base_upgrade_needed(
+    root: &Path,
+    executable: &Path,
+    package: &str,
+    active: Option<&str>,
+) -> bool {
     let base_binary = executable
         .file_name()
         .and_then(|name| name.to_str())
@@ -333,19 +368,13 @@ fn reconcile_base_version(
         });
     // A manually replaced base takes precedence over an older installation's
     // marker. Staged probes must leave activation and rollback state untouched.
-    if executable.parent() == Some(root)
+    executable.parent() == Some(root)
         && base_binary
         && root.join(RESIDENT_EXE).is_file()
         && active
-            .as_deref()
             .and_then(parse_version)
             .zip(parse_version(package))
             .is_some_and(|(old, new)| old < new)
-    {
-        set_current(root, None)?;
-        return Ok(None);
-    }
-    Ok(active)
 }
 
 pub(crate) fn startup_executable_for(executable: &Path) -> io::Result<PathBuf> {
@@ -452,6 +481,16 @@ mod tests {
         fs::create_dir(root.path().join("data")).unwrap();
         fs::write(root.path().join("data/settings.json"), "profile").unwrap();
         set_current(root.path(), Some("0.1.7")).unwrap();
+        assert!(
+            selected_version_for(root.path(), &root.path().join(RESIDENT_EXE), "0.1.8")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            current(root.path()).unwrap().as_deref(),
+            Some("0.1.7"),
+            "read-only checks must not mutate activation state"
+        );
         // A staged probe cannot change selection before verified activation.
         let probe = root.path().join("versions/0.1.8/Typlo.exe");
         assert_eq!(
