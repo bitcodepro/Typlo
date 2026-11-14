@@ -316,19 +316,11 @@ impl Edits {
                 let Some(token) = word.strip_suffix(' ') else {
                     return Ok(None);
                 };
-                let space_start = view.message(POSITION_BEFORE, before.caret, 0)?;
-                let separator = view.read(&mut clipboard, space_start..before.caret, &before)?;
-                if !matches!(separator.as_str(), " " | "\u{a0}") {
-                    return Ok(None);
-                }
-                let Some(start) = space_start.checked_sub(token.len()) else {
+                let Some((range, original)) = view.recent_word(&mut clipboard, &before, word)?
+                else {
                     return Ok(None);
                 };
-                let range = start..before.caret;
-                let original = view.read(&mut clipboard, range.clone(), &before)?;
-                if original.strip_suffix(&separator) != Some(token)
-                    || !view.word_boundaries(&mut clipboard, &range, &before)?
-                {
+                if !view.word_boundaries(&mut clipboard, &range, &before)? {
                     return Ok(None);
                 }
                 let (suggestion, reason) =
@@ -338,36 +330,32 @@ impl Edits {
                 let Some((mut corrected, language)) = suggestion else {
                     return Ok(None);
                 };
-                corrected.push_str(&separator);
+                corrected.push_str(&original[token.len()..]);
                 (range, original, corrected, Some(language))
             }
             Command::Convert | Command::To(_) => {
-                let mut range = before.range();
+                let range = before.range();
                 let mut hint = source;
-                if range.is_empty() {
+                let (range, original) = if range.is_empty() {
                     if let Some(recent) = job.recent {
-                        let Some(found) = suffix_range(before.caret, recent) else {
+                        let Some(found) = view.recent_word(&mut clipboard, &before, recent)? else {
                             return Ok(None);
                         };
-                        range = found;
+                        found
                     } else if let Some(last) = last {
-                        range = last.range.clone();
+                        let original = view.read(&mut clipboard, last.range.clone(), &before)?;
+                        if original != last.replacement {
+                            return Err(interrupted());
+                        }
                         hint = last.layout.or(hint);
+                        (last.range.clone(), original)
                     } else {
                         return Ok(None);
                     }
-                }
-                let original = view.read(&mut clipboard, range.clone(), &before)?;
-                if before.range().is_empty() && job.recent.is_some_and(|recent| recent != original)
-                {
-                    return Ok(None);
-                }
-                if before.range().is_empty()
-                    && job.recent.is_none()
-                    && last.is_some_and(|edit| edit.replacement != original)
-                {
-                    return Err(interrupted());
-                }
+                } else {
+                    let original = view.read(&mut clipboard, range.clone(), &before)?;
+                    (range, original)
+                };
                 let language = match job.command {
                     Command::To(target) => *target,
                     _ => {
@@ -547,6 +535,35 @@ impl View {
         Ok(text)
     }
 
+    fn recent_word(
+        &self,
+        clipboard: &mut Clipboard,
+        state: &State,
+        expected: &str,
+    ) -> io::Result<Option<(Range<usize>, String)>> {
+        let word = expected.trim_end_matches(' ');
+        let mut word_end = state.caret;
+        for _ in word.len()..expected.len() {
+            let start = self.message(POSITION_BEFORE, word_end, 0)?;
+            if !matches!(
+                self.read(clipboard, start..word_end, state)?.as_str(),
+                " " | "\u{a0}"
+            ) {
+                return Ok(None);
+            }
+            word_end = start;
+        }
+        let Some(range) = suffix_range(word_end, word) else {
+            return Ok(None);
+        };
+        if self.message(GET_CHAR, range.start, 0)? as u8 & 0xc0 == 0x80 {
+            return Ok(None);
+        }
+        let range = range.start..state.caret;
+        let text = self.read(clipboard, range.clone(), state)?;
+        Ok(matches_recent_word(&text, expected).then_some((range, text)))
+    }
+
     fn word_boundaries(
         &self,
         clipboard: &mut Clipboard,
@@ -643,6 +660,14 @@ fn suffix_range(caret: usize, text: &str) -> Option<Range<usize>> {
     (!text.is_empty()).then_some(caret.checked_sub(text.len())?..caret)
 }
 
+fn matches_recent_word(actual: &str, expected: &str) -> bool {
+    let word = expected.trim_end_matches(' ');
+    actual.strip_prefix(word).is_some_and(|spaces| {
+        spaces.chars().count() == expected.len() - word.len()
+            && spaces.chars().all(|ch| matches!(ch, ' ' | '\u{a0}'))
+    })
+}
+
 fn preserves_endings(text: &str, mode: usize) -> bool {
     let mut bytes = text.bytes().peekable();
     while let Some(byte) = bytes.next() {
@@ -672,5 +697,15 @@ mod tests {
         assert!(preserves_endings("hi\r\nthere", 0));
         assert!(preserves_endings("hi\nthere", 2));
         assert!(!preserves_endings("hi\r\nthere\n", 0));
+    }
+
+    #[test]
+    fn scintilla_recent_word_checks_text_and_preserves_mixed_spaces() {
+        assert!(matches_recent_word("rfr\u{a0} ", "rfr  "));
+        assert!(matches_recent_word(",", ","));
+        assert!(!matches_recent_word("rfr\u{a0}x", "rfr  "));
+        assert!(!matches_recent_word("rfr\u{202f}", "rfr "));
+        assert!(!matches_recent_word("rfr ", "rfr  "));
+        assert!(!matches_recent_word("rfR\u{a0}", "rfr "));
     }
 }
