@@ -313,17 +313,24 @@ impl Edits {
                 if !before.range().is_empty() {
                     return Ok(None);
                 }
-                let Some(range) = suffix_range(before.caret, word) else {
+                let Some(token) = word.strip_suffix(' ') else {
                     return Ok(None);
                 };
-                if view.read(&mut clipboard, range.clone(), &before)? != *word
+                let space_start = view.message(POSITION_BEFORE, before.caret, 0)?;
+                let separator = view.read(&mut clipboard, space_start..before.caret, &before)?;
+                if !matches!(separator.as_str(), " " | "\u{a0}") {
+                    return Ok(None);
+                }
+                let Some(start) = space_start.checked_sub(token.len()) else {
+                    return Ok(None);
+                };
+                let range = start..before.caret;
+                let original = view.read(&mut clipboard, range.clone(), &before)?;
+                if original.strip_suffix(&separator) != Some(token)
                     || !view.word_boundaries(&mut clipboard, &range, &before)?
                 {
                     return Ok(None);
                 }
-                let Some(token) = word.strip_suffix(' ') else {
-                    return Ok(None);
-                };
                 let (suggestion, reason) =
                     vocabulary.decision(dictionary, token, source, job.cycle, *protect)?;
                 timing.phase("dictionary");
@@ -331,8 +338,8 @@ impl Edits {
                 let Some((mut corrected, language)) = suggestion else {
                     return Ok(None);
                 };
-                corrected.push(' ');
-                (range, word.clone(), corrected, Some(language))
+                corrected.push_str(&separator);
+                (range, original, corrected, Some(language))
             }
             Command::Convert | Command::To(_) => {
                 let mut range = before.range();
@@ -342,9 +349,6 @@ impl Edits {
                         let Some(found) = suffix_range(before.caret, recent) else {
                             return Ok(None);
                         };
-                        if view.read(&mut clipboard, found.clone(), &before)? != recent {
-                            return Ok(None);
-                        }
                         range = found;
                     } else if let Some(last) = last {
                         range = last.range.clone();
@@ -354,6 +358,10 @@ impl Edits {
                     }
                 }
                 let original = view.read(&mut clipboard, range.clone(), &before)?;
+                if before.range().is_empty() && job.recent.is_some_and(|recent| recent != original)
+                {
+                    return Ok(None);
+                }
                 if before.range().is_empty()
                     && job.recent.is_none()
                     && last.is_some_and(|edit| edit.replacement != original)
@@ -549,7 +557,8 @@ impl View {
         let end = self.message(POSITION_AFTER, range.end, 0)?;
         let left = self.read(clipboard, start..range.start, state)?;
         let right = self.read(clipboard, range.end..end, state)?;
-        Ok(left.chars().all(boundary) && right.chars().all(boundary))
+        Ok(left.chars().all(crate::typing::word_boundary)
+            && right.chars().all(crate::typing::word_boundary))
     }
 
     fn replace(
@@ -628,10 +637,6 @@ fn interrupted() -> io::Error {
         io::ErrorKind::Interrupted,
         "Notepad++ text or focus changed",
     )
-}
-
-fn boundary(value: char) -> bool {
-    value.is_whitespace() || "(［[{\"«»”’.,!?;:".contains(value)
 }
 
 fn suffix_range(caret: usize, text: &str) -> Option<Range<usize>> {

@@ -1,7 +1,7 @@
 use super::{Target, WinEdit, accessible, clipio, diagnostics, input};
 use crate::{
     layout::{self, Language},
-    text_tools,
+    text_tools, typing,
 };
 use std::{
     cell::Cell,
@@ -71,6 +71,7 @@ impl Fallback {
         let target = editor.target()?;
         let sequence = editor.sequence.unwrap_or_else(input::sequence);
         let undoing = matches!(command, Command::Undo);
+        let automatic = matches!(command, Command::Automatic(..));
         let undo = self.undo.as_ref().filter(|edit| {
             edit.target == target
                 && edit.sequence == sequence
@@ -154,6 +155,11 @@ impl Fallback {
             .strip_suffix(&original)
             .ok_or_else(interrupted)?
             .to_owned();
+        // After a click, recent input can be only the suffix of a word already
+        // in the field. Check the actual text before replacing that suffix.
+        if automatic && !prefix.chars().next_back().is_none_or(typing::word_boundary) {
+            return Err(interrupted());
+        }
         if undoing && undo.as_ref().is_some_and(|edit| edit.prefix != prefix) {
             return Err(interrupted());
         }
@@ -426,12 +432,15 @@ fn width(text: &str) -> io::Result<usize> {
 }
 
 fn equivalent(actual: &str, expected: &str) -> bool {
-    actual
-        .chars()
-        .map(|c| if c == '\u{a0}' { ' ' } else { c })
-        .eq(expected
-            .chars()
-            .map(|c| if c == '\u{a0}' { ' ' } else { c }))
+    if actual == expected {
+        return true;
+    }
+    let word = expected.trim_end_matches(' ');
+    let Some(separators) = actual.strip_prefix(word) else {
+        return false;
+    };
+    separators.chars().count() == expected.len() - word.len()
+        && separators.chars().all(|c| matches!(c, ' ' | '\u{a0}'))
 }
 
 fn interrupted() -> io::Error {
@@ -447,6 +456,8 @@ mod tests {
         assert!(equivalent("ghbdtn\u{a0}", "ghbdtn "));
         assert!(!equivalent("ghbdtn", "ghbdtn "));
         assert!(!equivalent("keep ghbdtn ", "ghbdtn "));
+        assert!(!equivalent("keep\u{a0}ghbdtn ", "keep ghbdtn "));
+        assert!(equivalent("ghbdtn \u{a0}", "ghbdtn  "));
         assert!(width("ghbdtn ").is_ok());
         assert_eq!(width("first\nsecond").unwrap(), 12);
         assert!(width(&"x".repeat(MAX_SELECTION + 1)).is_err());

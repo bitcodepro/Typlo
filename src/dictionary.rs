@@ -181,7 +181,7 @@ impl Dictionary {
 
     pub fn is_excluded(&self, word: &str) -> io::Result<bool> {
         let full = normalize(word);
-        let token = full.trim_matches(|c: char| ".,!?;:\"()[]{}«»…".contains(c));
+        let token = full.trim_matches(|c: char| ".,!?;:\"“”„()[]{}«»…".contains(c));
         self.access(false, |connection| {
             connection
                 .prepare_cached(

@@ -369,10 +369,7 @@ impl<T: Clone + Eq> Session<T> {
 }
 
 fn boundary(unit: Option<u16>) -> bool {
-    unit.is_none_or(|unit| {
-        char::from_u32(unit.into())
-            .is_some_and(|c| c.is_whitespace() || "(［[{\"«»”’.,!?;:".contains(c))
-    })
+    unit.is_none_or(|unit| char::from_u32(unit.into()).is_some_and(crate::typing::word_boundary))
 }
 
 fn invalid_range() -> io::Error {
