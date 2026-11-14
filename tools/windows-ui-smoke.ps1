@@ -86,12 +86,40 @@ public static class TyploUiSmoke {
         }
     }
 
+    static bool ResidentReady(string log, uint pid) {
+        try {
+            using var input = new FileStream(log, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(input);
+            return reader.ReadToEnd().Contains($"pid={pid} Resident ready");
+        } catch (IOException) {
+            // The writer may create or rotate the log between polling attempts.
+            return false;
+        }
+    }
+
+    static void CheckReadinessLogSharing(string fixture) {
+        string log = Path.Combine(fixture, "readiness-sharing.log");
+        using var output = new FileStream(log, FileMode.Create, FileAccess.Write,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var writer = new StreamWriter(output);
+        writer.WriteLine("pid=42 Starting");
+        writer.Flush();
+        if (ResidentReady(log, 42)) throw new InvalidOperationException("Resident declared ready before marker");
+        writer.WriteLine("pid=42 Resident ready");
+        writer.Flush();
+        if (!ResidentReady(log, 42) || ResidentReady(log, 43))
+            throw new InvalidOperationException("Readiness log sharing or PID validation failed");
+        Console.WriteLine("PASS readiness polling reads a live writer's log and requires the matching PID marker");
+    }
+
     public static void VerifyPortableStartup(string resident, string settings, string fixture) {
         string install = Path.Combine(fixture, "portable");
         string appData = Path.Combine(fixture, "local");
         string legacy = Path.Combine(appData, "Typlo-Rust");
         Directory.CreateDirectory(install);
         Directory.CreateDirectory(legacy);
+        CheckReadinessLogSharing(fixture);
         File.WriteAllText(Path.Combine(legacy, "settings.json"), "{\"ui_language\":\"ru\",\"history_items\":73}");
         string settingsCopy = Path.Combine(install, Path.GetFileName(settings));
         string residentCopy = Path.Combine(install, Path.GetFileName(resident));
@@ -135,7 +163,7 @@ public static class TyploUiSmoke {
             try {
                 string log = Path.Combine(data, "logs", "typlo.log");
                 for (int i = 0; i < 100; i++) {
-                    if (File.Exists(log) && File.ReadAllText(log).Contains($"pid={background.Pid} Resident ready")) {
+                    if (ResidentReady(log, background.Pid)) {
                         Console.WriteLine("PASS first launch through --history migrates the profile before resident startup");
                         return;
                     }
