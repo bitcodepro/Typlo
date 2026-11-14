@@ -37,12 +37,12 @@ runs:
     - name: Native editor replacement and Undo
       shell: pwsh
       run: |
-        $exe = (Resolve-Path "target/x86_64-pc-windows-msvc/release/typlo-rust.exe").Path
+        $exe = (Resolve-Path "target/x86_64-pc-windows-msvc/release/typlo.exe").Path
         $probeDir = Join-Path $env:RUNNER_TEMP "typlo-native-probe"
         New-Item -ItemType Directory -Path "$probeDir/resources" | Out-Null
-        Copy-Item -LiteralPath $exe -Destination $probeDir
+        Copy-Item -LiteralPath $exe -Destination "$probeDir/Typlo.exe"
         Copy-Item -LiteralPath resources/language-detection -Destination "$probeDir/resources" -Recurse
-        $exe = Join-Path $probeDir "typlo-rust.exe"
+        $exe = Join-Path $probeDir "Typlo.exe"
         $probe = Start-Process -FilePath $exe -ArgumentList '--native-self-test' -WorkingDirectory $PWD.Path `
           -WindowStyle Hidden -PassThru -RedirectStandardError "$probeDir/stderr.txt" `
           -RedirectStandardOutput "$probeDir/stdout.txt"

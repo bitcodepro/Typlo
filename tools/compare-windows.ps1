@@ -7,7 +7,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$rust = (Resolve-Path (Join-Path $root 'target/release/typlo-rust.exe')).Path
+$rust = (Resolve-Path (Join-Path $root 'target/release/Typlo.exe')).Path
 $fixture = Join-Path $PSScriptRoot 'fixtures.tsv'
 $TyploReleaseExe = (Resolve-Path -LiteralPath $TyploReleaseExe).Path
 $DotNetBenchmarkExe = (Resolve-Path -LiteralPath $DotNetBenchmarkExe).Path

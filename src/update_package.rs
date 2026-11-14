@@ -150,14 +150,14 @@ const RESOURCES: [&str; 7] = [
     "resources/spelling/uk_UA.dic",
 ];
 
-pub fn stage(
+pub fn stage<const N: usize>(
     root: &Path,
     archive: &Path,
     name: &str,
     digest: &str,
-    binaries: [&str; 2],
+    binaries: [&str; N],
 ) -> io::Result<PathBuf> {
-    if version(name).is_none() || !valid_hash(digest) {
+    if binaries.is_empty() || version(name).is_none() || !valid_hash(digest) {
         return Err(invalid("Invalid update identity"));
     }
     let mut file = File::open(archive)?;

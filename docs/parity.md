@@ -34,8 +34,8 @@ Run manual conversion immediately after pressing Space. If autocorrection has no
 
 ### Automated checks before manual testing
 
-- `typlo-rust.exe --native-self-test` checks native fields, protected fields, and Undo.
-- `typlo-rust.exe --measure-native 200` emits JSON with the confirmed replacement count and P50/P95 timings. It checks the complete text and caret, including autocorrection with ordinary and non-breaking spaces.
+- `Typlo.exe --native-self-test` checks native fields, protected fields, and Undo.
+- `Typlo.exe --measure-native 200` emits JSON with the confirmed replacement count and P50/P95 timings. It checks the complete text and caret, including autocorrection with ordinary and non-breaking spaces.
 - `tools/WebViewProbe` exercises autocorrection, Undo, selection with a trailing space, and a second Undo in two textarea variants and a contenteditable field. It uses Typlo2.0's UI Automation ranges and reproduces space trimming inside the test field.
 - `cargo test --locked --features gui --lib measure_large_clipboard_search -- --ignored --nocapture` compares paginated scans, cold searches, repeat searches, and searches after copying a new item across 1,500 encrypted entries. Timings exclude interface latency. The history window keeps a 2 MiB cache and reuses unchanged data while refreshing the order after database changes.
 - `cargo test --locked --features gui --lib measure_drawing_bounds -- --ignored --nocapture` measures stroke bounds and repainting the changed region in a GDI bitmap. Test the physical gesture and scaling separately on two monitors.

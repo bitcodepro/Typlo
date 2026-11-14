@@ -11,7 +11,7 @@ $output = [IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $output) { throw 'Choose a fresh output directory' }
 [IO.Directory]::CreateDirectory($output) | Out-Null
 if (Get-Process -Name 'Typlo' -ErrorAction SilentlyContinue) {
-    throw 'An existing C# Typlo holds its session-wide mutex'
+    throw 'An existing Typlo process holds its session-wide mutex'
 }
 
 Add-Type @'

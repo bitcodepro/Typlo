@@ -22,7 +22,7 @@ At the time of the benchmark, the Rust background executable was 443,904 bytes a
 Build both engines in release mode. Point the C# benchmark to a checkout of the baseline commit.
 
 ```powershell
-cargo build --release --locked --bin typlo-rust
+cargo build --release --locked --bin typlo
 dotnet publish .\tools\TyploBench\TyploBench.csproj -c Release -r win-x64 -p:PublishAot=true -p:TyploSource="C:\path\to\Typlo" -o .\target\dotnet-bench
 .\tools\compare-windows.ps1 -TyploReleaseExe "C:\path\to\Typlo.exe" -DotNetBenchmarkExe .\target\dotnet-bench\TyploBench.exe
 ```
