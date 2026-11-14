@@ -280,7 +280,7 @@ impl Editor for WinEdit {
     }
 
     fn recent_range(&self, snapshot: &Snapshot<Target>) -> Option<Range<usize>> {
-        typing::verified_suffix(
+        typing::verified_recent_word(
             &snapshot.document,
             snapshot.selection.end,
             self.recent.as_deref()?,
@@ -3062,6 +3062,20 @@ fn check_native_fixture(mode: &str, window: HWND, editor: &mut WinEdit) -> io::R
                     "ghbdtn autocorrection or Undo did not preserve the typed space",
                 ));
             }
+        }
+        let original = "keep rfr\u{a0} TAIL";
+        let text = wide(original);
+        send_fixture(window, WM_SETTEXT, 0, text.as_ptr() as LPARAM)?;
+        send_fixture(window, EM_SETSEL, 10, 10)?;
+        editor.recent = Some("rfr  ".into());
+        if session.convert_to(editor, Language::Ru, Some(Language::En))? != Some(Language::Ru)
+            || !expected(editor, "keep как\u{a0} TAIL", 10)?
+            || !session.undo(editor)?
+            || !expected(editor, original, 10)?
+        {
+            return Err(io::Error::other(
+                "Manual conversion changed the existing spaces",
+            ));
         }
         return Ok(());
     }

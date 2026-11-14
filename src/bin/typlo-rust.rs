@@ -34,6 +34,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         [mode, fixture, iterations] if mode == "--engine-bench" => {
             benchmark(Path::new(fixture), iterations.parse()?)?
         }
+        [mode, iterations] if mode == "--dictionary-bench" => {
+            benchmark_dictionary(iterations.parse()?)?
+        }
         [mode, profile] if mode == "--spelling-worker" => {
             typlo_rust::spelling::worker(Path::new(profile))?
         }
@@ -275,5 +278,60 @@ fn benchmark(fixture: &Path, iterations: usize) -> io::Result<()> {
         iterations,
         start.elapsed().as_secs_f64() * 1000.0
     );
+    Ok(())
+}
+
+fn benchmark_dictionary(iterations: usize) -> io::Result<()> {
+    use typlo_rust::{dictionary::Dictionary, lexicon::Vocabulary};
+
+    if !(1..=100_000).contains(&iterations) {
+        return Err(io::Error::other("Choose 1 to 100000 iterations"));
+    }
+    let profile = tempfile::tempdir()?;
+    let dictionary = Dictionary::new(profile.path());
+    dictionary.set_correction("helo", "hello")?;
+    let mut vocabulary = Vocabulary::installed()?;
+    let cases = [
+        ("rfr", Language::En, Language::Ru, Some("как")),
+        ("xnj", Language::En, Language::Ru, Some("что")),
+        ("gjlrk.xbnm", Language::En, Language::Ru, Some("подключить")),
+        ("ghbdsn", Language::En, Language::Uk, Some("привіт")),
+        ("ыйд", Language::Ru, Language::En, Some("sql")),
+        ("“Ghbdtn”", Language::En, Language::Ru, Some("“Привет”")),
+        ("https://example.org", Language::En, Language::Ru, None),
+        ("hello", Language::En, Language::Ru, None),
+        ("x123", Language::En, Language::Ru, None),
+    ];
+    let mut matched = 0;
+    let mut samples = Vec::with_capacity(iterations);
+    for attempt in 0..iterations {
+        let (typed, source, target, expected) = cases[attempt % cases.len()];
+        let start = Instant::now();
+        let decision = vocabulary.suggest(
+            &dictionary,
+            black_box(typed),
+            source,
+            &[source, target],
+            true,
+        )?;
+        samples.push(start.elapsed().as_secs_f64() * 1_000.);
+        matched += usize::from(
+            decision
+                .as_ref()
+                .map(|(text, language)| (text.as_str(), *language))
+                == expected.map(|text| (text, target)),
+        );
+    }
+    samples.sort_unstable_by(f64::total_cmp);
+    println!(
+        "{}",
+        serde_json::json!({
+            "attempts": iterations, "matched": matched,
+            "p50_ms": samples[iterations.div_ceil(2) - 1], "p95_ms": samples[(iterations * 95).div_ceil(100) - 1]
+        })
+    );
+    if matched != iterations {
+        return Err(io::Error::other("Unexpected dictionary results"));
+    }
     Ok(())
 }

@@ -177,9 +177,6 @@ pub(super) fn convert_settings(old: &Value) -> io::Result<(Config, Pairs)> {
     let mut direct = Vec::new();
     for item in items(old, "layoutHotkeys")? {
         let shortcut = as_text(&item["hotkey"])?;
-        if shortcut.is_empty() {
-            continue;
-        }
         let layout = parse_layout(as_text(&item["layoutId"])?)?;
         direct.push(json!({"layout": layout, "hotkey": shortcut}));
     }
@@ -391,7 +388,10 @@ mod tests {
             .unwrap();
         archive.finish().unwrap();
 
-        let backup = crate::backup::Backup::read(&path).unwrap();
+        let backup = crate::backup::Backup::read_with_layouts(&path, || {
+            vec![Language::Windows(0x04090409), Language::Windows(0x04190419)]
+        })
+        .unwrap();
         assert_eq!(backup.summary(), (1, 1, 1, 1));
         let output = temp.path().join("output");
         let loaded = backup.restore(&output).unwrap();

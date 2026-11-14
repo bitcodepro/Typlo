@@ -38,6 +38,13 @@ enum RestoreMode {
 
 impl Backup {
     pub fn read(path: &Path) -> io::Result<Self> {
+        Self::read_with_layouts(path, || config::detected_layouts().unwrap_or_default())
+    }
+
+    pub(super) fn read_with_layouts(
+        path: &Path,
+        installed: impl FnOnce() -> Vec<crate::layout::Language>,
+    ) -> io::Result<Self> {
         let mut file = File::open(path)?;
         if file.metadata()?.len() > MAX_BYTES {
             return Err(io::Error::new(
@@ -82,7 +89,7 @@ impl Backup {
                 }
             }
         };
-        config::resolve_saved_layouts(&mut backup.settings);
+        config::restrict_imported_layouts(&mut backup.settings, &installed());
         backup.validate()?;
         Ok(backup)
     }
@@ -197,6 +204,7 @@ fn invalid() -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::Language;
 
     #[test]
     fn restore_keeps_settings_and_dictionary_in_one_transaction() {
@@ -280,7 +288,8 @@ mod tests {
             "maxItems": 321, "screenshotShape": 1, "screenshotEditorAfterCopy": true,
         })).unwrap();
         std::fs::write(&source, payload).unwrap();
-        let imported = Backup::read(&source).unwrap();
+        let installed = || vec![Language::Windows(0x04090409), Language::Windows(0x04190419)];
+        let imported = Backup::read_with_layouts(&source, installed).unwrap();
         assert!(imported.settings_only());
         let mut settings = imported.restore(&profile).unwrap();
         assert_eq!(settings.snippets.len(), 2);
@@ -309,7 +318,10 @@ mod tests {
         assert_eq!(json["layouts"][1], "win:04190419");
         assert_eq!(json["layoutHotkeys"][0]["layoutId"], "win:04190419");
         assert_eq!(json["spellingCorrections"][0]["correction"], "hello");
-        let round_trip = Backup::read(&export).unwrap().restore(&profile).unwrap();
+        let round_trip = Backup::read_with_layouts(&export, installed)
+            .unwrap()
+            .restore(&profile)
+            .unwrap();
         assert_eq!(
             serde_json::to_value(&round_trip.snippets).unwrap(),
             serde_json::to_value(&settings.snippets).unwrap()
@@ -320,7 +332,7 @@ mod tests {
         let full = folder.path().join("full.typlo");
         Backup::export(&profile, &full).unwrap();
         let restored_profile = folder.path().join("restored");
-        let restored = Backup::read(&full)
+        let restored = Backup::read_with_layouts(&full, installed)
             .unwrap()
             .restore(&restored_profile)
             .unwrap();
@@ -331,5 +343,85 @@ mod tests {
         let restored_dictionary = Dictionary::new(&restored_profile);
         assert!(restored_dictionary.contains("typlofixture", "en").unwrap());
         assert!(restored_dictionary.is_excluded("github").unwrap());
+    }
+
+    #[test]
+    fn imports_shortcuts_snippets_and_only_supported_application_rules() {
+        use crate::config::{ApplicationRule, LayoutShortcut};
+        use crate::snippets::Snippet;
+
+        let folder = tempfile::tempdir().unwrap();
+        let source = folder.path().join("old-install");
+        let en = Language::Windows(0x04090409);
+        let ru = Language::Windows(0x04190419);
+        let uk = Language::Windows(0x04220422);
+        let shortcut = |layout, hotkey: &str| LayoutShortcut {
+            layout,
+            hotkey: hotkey.into(),
+        };
+        let rule = |process: &str, cycle| ApplicationRule {
+            process: process.into(),
+            cycle,
+            auto_correct: Some(false),
+            snippets: Some(true),
+            enabled: process != "Code.exe",
+        };
+        let mut settings = Config {
+            cycle: vec![uk, en, ru],
+            layout_hotkeys: vec![
+                shortcut(en, "Ctrl+Shift+1"),
+                shortcut(ru, ""),
+                shortcut(uk, "Ctrl+Shift+3"),
+            ],
+            applications: vec![
+                rule("Teams.exe", vec![ru, en]),
+                rule("Code.exe", vec![en]),
+                rule("Notepad++.exe", vec![]),
+                rule("Missing.exe", vec![uk]),
+                rule("Mixed.exe", vec![en, uk]),
+            ],
+            snippets: vec![Snippet {
+                name: "Example".into(),
+                trigger: ";example".into(),
+                text: "Hello {name}\n{cursor}Second line".into(),
+                parameters: true,
+            }],
+            ..Config::default()
+        };
+        settings.hotkeys.convert = "Ctrl+Alt+F8".into();
+        settings.hotkeys.undo.clear();
+        config::save(&source, &settings).unwrap();
+        let json = folder.path().join("settings.json");
+        let full = folder.path().join("backup.typlo");
+        Backup::export_settings(&source, &settings, &json).unwrap();
+        Backup::export(&source, &full).unwrap();
+
+        for (index, path) in [json, full].into_iter().enumerate() {
+            let profile = folder.path().join(format!("new-install-{index}"));
+            let all = Backup::read_with_layouts(&path, || vec![en, ru, uk]).unwrap();
+            assert_eq!(
+                serde_json::to_value(all.settings).unwrap(),
+                serde_json::to_value(&settings).unwrap()
+            );
+            let backup = Backup::read_with_layouts(&path, || vec![en, ru]).unwrap();
+            let mut expected = settings.clone();
+            expected.cycle.remove(0);
+            expected.layout_hotkeys.pop();
+            expected.applications.truncate(3);
+            let restored = backup.restore(&profile).unwrap();
+            let expected = serde_json::to_value(expected).unwrap();
+            assert_eq!(serde_json::to_value(restored).unwrap(), expected);
+            let persisted = Dictionary::new(&profile).read_settings().unwrap().unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&persisted).unwrap(),
+                expected
+            );
+            let fr = Language::Windows(0x040c040c);
+            let foreign = Backup::read_with_layouts(&path, || vec![fr]).unwrap();
+            assert_eq!(foreign.settings.cycle, [fr]);
+            assert!(foreign.settings.layout_hotkeys.is_empty());
+            assert_eq!(foreign.settings.applications.len(), 1);
+            assert_eq!(foreign.settings.applications[0].process, "Notepad++.exe");
+        }
     }
 }
