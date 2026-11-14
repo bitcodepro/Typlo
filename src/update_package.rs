@@ -10,8 +10,8 @@ use std::{
 
 pub const MAX_PACKAGE: u64 = 128 * 1024 * 1024;
 const MAX_EXPANDED: u64 = 256 * 1024 * 1024;
-const FEED: &str = "https://api.github.com/repos/bitcodepro/Typlo2.0/releases?per_page=20";
-const RELEASES: &str = "https://github.com/bitcodepro/Typlo2.0/releases/download/";
+const FEED: &str = "https://api.github.com/repos/bitcodepro/Typlo/releases?per_page=20";
+const RELEASES: &str = "https://github.com/bitcodepro/Typlo/releases/download/";
 
 #[derive(Clone)]
 pub struct Update {
@@ -380,6 +380,44 @@ mod tests {
         assert_eq!(chosen.version, "0.1.1");
         assert_eq!(chosen.url, format!("{RELEASES}v0.1.1/{name}"));
         assert_eq!(chosen.sha256, "a".repeat(64));
+    }
+
+    #[test]
+    fn renamed_repository_uses_the_exact_canonical_feed_and_asset_url() {
+        assert_eq!(
+            FEED,
+            "https://api.github.com/repos/bitcodepro/Typlo/releases?per_page=20"
+        );
+        let mut item = release("v0.1.7", "typlo-win-x64.zip");
+        let url = "https://github.com/bitcodepro/Typlo/releases/download/v0.1.7/typlo-win-x64.zip";
+        item["assets"][0]["browser_download_url"] = json!(url);
+        item["assets"][0]["digest"] = json!(format!("sha256:{}", "A".repeat(64)));
+        let chosen = select(vec![item], "typlo-win-x64.zip").unwrap();
+        assert_eq!(chosen.version, "0.1.7");
+        assert_eq!(chosen.url, url);
+        assert_eq!(chosen.sha256, "a".repeat(64));
+    }
+
+    #[test]
+    fn repository_rename_does_not_allow_url_aliases_or_other_sources() {
+        for url in [
+            "https://github.com/bitcodepro/Typlo2.0/releases/download/v0.1.7/typlo-win-x64.zip",
+            "https://github.com/other/Typlo/releases/download/v0.1.7/typlo-win-x64.zip",
+            "https://github.com/bitcodepro/Other/releases/download/v0.1.7/typlo-win-x64.zip",
+            "https://github.com.evil.example/bitcodepro/Typlo/releases/download/v0.1.7/typlo-win-x64.zip",
+            "https://github.com@evil.example/bitcodepro/Typlo/releases/download/v0.1.7/typlo-win-x64.zip",
+            "http://github.com/bitcodepro/Typlo/releases/download/v0.1.7/typlo-win-x64.zip",
+            "https://github.com/bitcodepro/Typlo/releases/download/v0.1.8/typlo-win-x64.zip",
+            "https://github.com/bitcodepro/Typlo/releases/download/v0.1.7/typlo-rust-win-x64.zip",
+            "https://github.com/bitcodepro/Typlo/releases/download/v0.1.7/typlo-win-x64.zip?download=1",
+            "https://github.com/bitcodepro/Typlo/releases/download/v0.1.7/typlo-win-x64.zip#asset",
+            "https://github.com/bitcodepro/Typlo/releases/download/v0.1.7/%74yplo-win-x64.zip",
+            "https://github.com/bitcodepro/Typlo/releases/download/v0.1.7/../v0.1.7/typlo-win-x64.zip",
+        ] {
+            let mut item = release("v0.1.7", "typlo-win-x64.zip");
+            item["assets"][0]["browser_download_url"] = json!(url);
+            assert!(select(vec![item], "typlo-win-x64.zip").is_none(), "{url}");
+        }
     }
 
     #[test]
