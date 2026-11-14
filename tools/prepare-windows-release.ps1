@@ -11,7 +11,9 @@ if ((Test-Path $payload) -or (Test-Path $output)) { throw 'Package/output direct
 [void](New-Item -ItemType Directory -Path $payload)
 Copy-Item resources $payload -Recurse
 Copy-Item README.md,LICENSE $payload
-foreach ($name in @('Typlo.exe', 'typlo-settings.exe', 'typlo-rust.exe')) {
+$renamed = Test-Path (Join-Path $root 'src/bin/typlo.rs')
+$binaries = if ($renamed) { @('Typlo.exe', 'typlo-settings.exe', 'typlo-rust.exe') } else { @('typlo-rust.exe', 'typlo-settings.exe') }
+foreach ($name in $binaries) {
     $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
     $builtName = if ($name -ceq 'Typlo.exe') { 'typlo.exe' } else { $name }
     Copy-Item (Join-Path $target "x86_64-pc-windows-msvc/release/$builtName") (Join-Path $payload $name)
@@ -21,7 +23,7 @@ $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
 if ($LASTEXITCODE -ne 0 -or !$vs) { throw 'Visual C++ tools not found' }
 $dumpbin = Get-ChildItem "$vs/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe" | Sort-Object FullName -Descending | Select-Object -First 1
 if (!$dumpbin) { throw 'dumpbin not found' }
-foreach ($name in @('Typlo.exe', 'typlo-settings.exe', 'typlo-rust.exe')) {
+foreach ($name in $binaries) {
     $imports = & $dumpbin.FullName /dependents (Join-Path $payload $name)
     if ($LASTEXITCODE -ne 0) { throw 'dumpbin failed' }
     $dlls = @($imports | ForEach-Object { if ($_ -match '^\s+([\w.-]+\.dll)\s*$') { $Matches[1] } })
@@ -67,7 +69,7 @@ $noticeDirectory = Join-Path $payload 'Third-party-licenses/dependencies'
 if ($SoftwareOpenGL) {
     & "$PSScriptRoot/windows-software-gl-smoke.ps1" -PayloadDirectory $payload
 } else {
-    & "$PSScriptRoot/windows-ui-smoke.ps1" -Resident "$payload/Typlo.exe" -Settings "$payload/typlo-settings.exe"
+    & "$PSScriptRoot/windows-ui-smoke.ps1" -Resident (Join-Path $payload $binaries[0]) -Settings "$payload/typlo-settings.exe"
 }
 & "$PSScriptRoot/package-windows.ps1" -PayloadDirectory $payload -OutputDirectory $output -Version $version
 if (@(Get-ChildItem $output -File -Filter '*.zip').Count -ne 1) { throw 'Expected one Windows installation/update ZIP' }

@@ -37,7 +37,8 @@ runs:
     - name: Native editor replacement and Undo
       shell: pwsh
       run: |
-        $exe = (Resolve-Path "target/x86_64-pc-windows-msvc/release/typlo.exe").Path
+        $built = if (Test-Path src/bin/typlo.rs) { "typlo.exe" } else { "typlo-rust.exe" }
+        $exe = (Resolve-Path "target/x86_64-pc-windows-msvc/release/$built").Path
         $probeDir = Join-Path $env:RUNNER_TEMP "typlo-native-probe"
         New-Item -ItemType Directory -Path "$probeDir/resources" | Out-Null
         Copy-Item -LiteralPath $exe -Destination "$probeDir/Typlo.exe"
@@ -55,6 +56,37 @@ runs:
           Get-Content "$probeDir/stderr.txt"
           throw 'Native editor self-test failed'
         }
+    - name: Measure dictionary accuracy and latency
+      shell: pwsh
+      run: |
+        # Older queued sources predate the dictionary benchmark.
+        $cli = if (Test-Path src/resident_cli.rs) { "src/resident_cli.rs" } else { "src/bin/typlo-rust.rs" }
+        if (!(Select-String -LiteralPath $cli -SimpleMatch '"--dictionary-bench"' -Quiet)) { exit 0 }
+        $probeDir = Join-Path $env:RUNNER_TEMP "typlo-native-probe"
+        $probe = Start-Process -FilePath "$probeDir/Typlo.exe" -ArgumentList '--dictionary-bench','9000' `
+          -WindowStyle Hidden -PassThru -RedirectStandardError "$probeDir/dictionary-stderr.txt" `
+          -RedirectStandardOutput "$probeDir/dictionary-stdout.txt"
+        if (!$probe.WaitForExit(30000)) {
+          $probe.Kill($true)
+          throw 'Dictionary benchmark timed out'
+        }
+        Get-Content "$probeDir/dictionary-stdout.txt"
+        if ($probe.ExitCode -ne 0) {
+          Get-Content "$probeDir/dictionary-stderr.txt"
+          throw 'Dictionary benchmark failed'
+        }
+        $probe = Start-Process -FilePath "$probeDir/Typlo.exe" -ArgumentList '--measure-native','100' `
+          -WindowStyle Hidden -PassThru -RedirectStandardError "$probeDir/edit-stderr.txt" `
+          -RedirectStandardOutput "$probeDir/edit-stdout.txt"
+        if (!$probe.WaitForExit(30000)) {
+          $probe.Kill($true)
+          throw 'Native editor benchmark timed out'
+        }
+        if ($probe.ExitCode -ne 0) {
+          Get-Content "$probeDir/edit-stderr.txt"
+          throw 'Native editor benchmark failed'
+        }
+        Get-Content "$probeDir/edit-stdout.txt"
     - name: Release tooling tests
       shell: pwsh
       run: |

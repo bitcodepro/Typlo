@@ -723,7 +723,7 @@ fn run_edit(
                         typing::verified_auto_word(document, selection.end, word).is_none()
                     }),
                     _ => editor.native.recent.as_deref().is_none_or(|recent| {
-                        typing::verified_suffix(document, selection.end, recent).is_none()
+                        typing::verified_recent_word(document, selection.end, recent).is_none()
                     }),
                 },
                 _ => false,
@@ -1166,7 +1166,7 @@ impl Editor for Accessible<'_> {
     }
 
     fn recent_range(&self, snapshot: &Snapshot<Element>) -> Option<Range<usize>> {
-        typing::verified_suffix(
+        typing::verified_recent_word(
             &snapshot.document,
             snapshot.selection.end,
             self.native.recent.as_deref()?,

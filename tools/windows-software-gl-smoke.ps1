@@ -20,7 +20,8 @@ $oldSoftware = $env:LIBGL_ALWAYS_SOFTWARE
 try {
     $env:GALLIUM_DRIVER = 'llvmpipe'
     $env:LIBGL_ALWAYS_SOFTWARE = 'true'
-    & "$PSScriptRoot/windows-ui-smoke.ps1" -Resident "$fixture/Typlo.exe" -Settings "$fixture/typlo-settings.exe"
+    $resident = if (Test-Path "$fixture/Typlo.exe") { "$fixture/Typlo.exe" } else { "$fixture/typlo-rust.exe" }
+    & "$PSScriptRoot/windows-ui-smoke.ps1" -Resident $resident -Settings "$fixture/typlo-settings.exe"
 } finally {
     $env:GALLIUM_DRIVER = $oldDriver
     $env:LIBGL_ALWAYS_SOFTWARE = $oldSoftware

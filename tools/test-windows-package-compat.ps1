@@ -4,6 +4,9 @@ $ErrorActionPreference = 'Stop'
 $version = Get-ReleaseVersion -Root $Root
 $candidate = (Resolve-Path -LiteralPath $ArchivePath).Path
 $candidateHash = (Get-FileHash $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$layout = [IO.Compression.ZipFile]::OpenRead($candidate)
+try { $renamed = $null -ne $layout.GetEntry('Typlo.exe') } finally { $layout.Dispose() }
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('TyploLegacyPackage-' + [guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory $temporary)
 $legacy = Join-Path $temporary 'v0.1.7.zip'
@@ -11,7 +14,6 @@ $legacy = Join-Path $temporary 'v0.1.7.zip'
 # rejects Typlo.exe; this is an explicit manual handoff, not an automatic upgrade.
 Invoke-WebRequest 'https://github.com/bitcodepro/Typlo/releases/download/v0.1.7/typlo-win-x64.zip' -OutFile $legacy -TimeoutSec 180
 if ((Get-FileHash $legacy -Algorithm SHA256).Hash.ToLowerInvariant() -cne '22fa7baa2c43b052ca97ac1c1372fd69bed75b7cb20fb8d2419f356c14bf9845') { throw 'Published v0.1.7 ZIP SHA256 mismatch' }
-Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead($legacy)
 $resident = Join-Path $temporary 'typlo-rust.exe'
 try {
@@ -30,13 +32,21 @@ try {
     $errorRead = $process.StandardError.ReadToEndAsync()
     if (!$process.WaitForExit(60000)) { $process.Kill($true); throw 'v0.1.7 package verification timed out' }
     $detail = $errorRead.GetAwaiter().GetResult()
-    if ($process.ExitCode -eq 0 -or $detail -notlike '*Unsafe or oversized update entry*') { throw "Expected v0.1.7 to reject renamed archive, got $($process.ExitCode): $detail" }
+    if ($renamed) {
+        if ($process.ExitCode -eq 0 -or $detail -notlike '*Unsafe or oversized update entry*') { throw "Expected v0.1.7 to reject renamed archive, got $($process.ExitCode): $detail" }
+    } elseif ($process.ExitCode -ne 0) { throw "Historical source format rejected by v0.1.7: $detail" }
 } finally { $process.Dispose() }
 # Simulate a manual extraction without launching a resident or using a real profile.
 $manual = Join-Path $temporary 'manual install with spaces'
 [IO.Compression.ZipFile]::ExtractToDirectory($candidate, $manual)
-foreach ($name in @('Typlo.exe', 'typlo-rust.exe', 'typlo-settings.exe', 'resources/language-detection/words.sqlite3', 'README.md', 'LICENSE')) {
+$required = @('typlo-rust.exe', 'typlo-settings.exe', 'resources/language-detection/words.sqlite3', 'README.md', 'LICENSE')
+if ($renamed) { $required += 'Typlo.exe' }
+foreach ($name in $required) {
     if (!(Test-Path -LiteralPath (Join-Path $manual $name) -PathType Leaf)) { throw "Manual installation missing: $name" }
+}
+if (!$renamed) {
+    Write-Host 'PASS historical queued source keeps its old archive contract and v0.1.7 verification'
+    return
 }
 # Exercise the shipped old-name launcher with real arguments and native exit
 # codes. Both valid and invalid hashes must reach the canonical verifier.

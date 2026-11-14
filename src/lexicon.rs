@@ -169,16 +169,13 @@ impl Vocabulary {
             .map_err(io::Error::other)?;
         let found = statement
             .query_row([token], |row| {
-                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u8>(1)?))
+                Ok((row.get::<_, [u8; 8]>(0)?, row.get::<_, u8>(1)?))
             })
             .optional()
             .map_err(io::Error::other)?;
-        let Some((weights, mask)) = found else {
+        let Some((mut scores, mask)) = found else {
             return Ok([0; 8]);
         };
-        let mut scores: [u8; 8] = weights.try_into().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "Invalid vocabulary weights")
-        })?;
         if mask & !7 != 0 || (mask == 0 && scores == [0; 8]) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -269,18 +266,25 @@ impl Vocabulary {
                 candidates.push((result, target, score));
             }
         }
-        candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.2));
-        let Some((text, target, score)) = candidates.first() else {
+        // Keep the first configured layout on ties, including identical Russian
+        // and Ukrainian output. Compare ambiguity only against different text.
+        let Some(index) = candidates
+            .iter()
+            .enumerate()
+            .max_by_key(|(index, candidate)| (candidate.2, std::cmp::Reverse(*index)))
+            .map(|(index, _)| index)
+        else {
             return Ok((None, Decision::NoCandidate));
         };
+        let (text, target, score) = candidates.swap_remove(index);
         if score.saturating_sub(current) < 32
             || candidates
                 .iter()
-                .any(|(other, _, evidence)| other != text && score.saturating_sub(*evidence) < 24)
+                .any(|(other, _, evidence)| other != &text && score.saturating_sub(*evidence) < 24)
         {
             return Ok((None, Decision::Ambiguous));
         }
-        Ok((Some((text.clone(), *target)), Decision::Unverified))
+        Ok((Some((text, target)), Decision::Unverified))
     }
 
     pub fn options(
@@ -300,6 +304,7 @@ impl Vocabulary {
         for language in allowed
             .iter()
             .copied()
+            .filter(|&language| language != source)
             .filter(|language| language.convertible())
         {
             let candidate = layout::convert(text, source, language, true);
@@ -323,7 +328,7 @@ impl Vocabulary {
         rendered: &str,
         language: Language,
     ) -> io::Result<u8> {
-        let word = normalize(rendered.trim_matches(|c: char| ".,!?;:\"()[]{}«»…".contains(c)));
+        let word = normalize(rendered.trim_matches(|c: char| ".,!?;:\"“”„()[]{}«»…".contains(c)));
         let Some(index) = language.dictionary_index() else {
             return Ok(0);
         };
@@ -365,7 +370,7 @@ pub(crate) fn valid_word(word: &str) -> bool {
 }
 
 pub fn technical(word: &str) -> bool {
-    let bare = word.trim_matches(|c: char| ".,!?;\"()[]{}«»".contains(c));
+    let bare = word.trim_matches(|c: char| ".,!?;\"“”„()[]{}«»…".contains(c));
     if bare
         .chars()
         .any(|c| c.is_numeric() || "@_\\/:=`$|<>+*&".contains(c))
@@ -433,6 +438,7 @@ mod tests {
             ("ghbdtn", Language::En, "привет", Language::Ru),
             ("rfr", Language::En, "как", Language::Ru),
             ("xnj", Language::En, "что", Language::Ru),
+            ("“Ghbdtn”", Language::En, "“Привет”", Language::Ru),
             ("yt", Language::En, "не", Language::Ru),
             ("gjlrk.xbnm", Language::En, "подключить", Language::Ru),
             ("rjvgm.nth", Language::En, "компьютер", Language::Ru),
@@ -472,6 +478,7 @@ mod tests {
         assert!(technical("index.ts"));
         assert!(technical("C:\\folder"));
         assert!(!technical("(Speling)"));
+        assert!(!technical("“Ghbdtn”"));
         assert!(!technical("htdm.dftim"));
     }
 }

@@ -558,7 +558,7 @@ impl Editor for AxEditor {
     }
 
     fn recent_range(&self, expected: &Snapshot<Cf>) -> Option<Range<usize>> {
-        crate::typing::verified_suffix(
+        crate::typing::verified_recent_word(
             &expected.document,
             expected.selection.end,
             self.recent.as_deref()?,

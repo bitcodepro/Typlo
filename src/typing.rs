@@ -102,6 +102,29 @@ pub fn verified_suffix(document: &[u16], caret: usize, expected: &str) -> Option
         .then_some(range)
 }
 
+pub(crate) fn verified_recent_word(
+    document: &[u16],
+    caret: usize,
+    expected: &str,
+) -> Option<Range<usize>> {
+    let word = expected.trim_end_matches(' ');
+    let spaces = expected.len() - word.len();
+    let word_end = caret.checked_sub(spaces)?;
+    if !document
+        .get(word_end..caret)?
+        .iter()
+        .all(|unit| matches!(unit, 0x0020 | 0x00a0))
+    {
+        return None;
+    }
+    let range = verified_suffix(document, word_end, word)?;
+    Some(range.start..caret)
+}
+
+pub(crate) fn word_boundary(character: char) -> bool {
+    character.is_whitespace() || "(［[{“\"«»”’.,!?;:".contains(character)
+}
+
 pub(crate) fn verified_auto_word(
     document: &[u16],
     caret: usize,
@@ -148,5 +171,11 @@ mod tests {
         assert_eq!(verified_suffix(&doc, caret, word), Some(caret - 4..caret));
         assert_eq!(verified_suffix(&doc, caret, "rfr "), None);
         assert_eq!(last_word(","), Some(","));
+        let doc: Vec<_> = "🙂rfr\u{a0} TAIL".encode_utf16().collect();
+        assert_eq!(verified_recent_word(&doc, 7, "rfr  "), Some(2..7));
+        assert_eq!(verified_recent_word(&doc, 7, "rfR  "), None);
+        assert_eq!(verified_recent_word(&doc, 6, "rfr"), None);
+        assert_eq!(verified_recent_word(&doc, 8, "rfr   "), None);
+        assert_eq!(verified_recent_word(&doc, 5, "rfr"), Some(2..5));
     }
 }

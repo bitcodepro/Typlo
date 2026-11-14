@@ -455,7 +455,11 @@ impl Editor for Field<'_> {
     }
 
     fn recent_range(&self, expected: &Snapshot<Self::Target>) -> Option<Range<usize>> {
-        crate::typing::verified_suffix(&expected.document, expected.selection.end, self.recent?)
+        crate::typing::verified_recent_word(
+            &expected.document,
+            expected.selection.end,
+            self.recent?,
+        )
     }
 
     fn replace(

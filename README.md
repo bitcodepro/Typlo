@@ -46,7 +46,7 @@ Open the snippet menu with `Ctrl+Alt+Shift+S` and type a name or trigger. Set th
 
 For a template such as `Hello, {name}! Ticket {ticket} is ready.{cursor}`, enable **Ask for parameters** in the snippet settings. Select the snippet from the menu, fill in the values, and press Enter in the last field. Write `{{name}}` to insert literal `{name}`.
 
-Use **Settings → Import settings** to load a C# settings JSON or a Typlo2.0 export. **Export settings** saves settings, snippets, and spelling correction pairs as JSON. Use **Backup** in **Typlo tools** to also include personal dictionary words and autocorrection exceptions.
+Use **Settings → Backup → Import settings** to load a Typlo or C# settings JSON. **Export settings** saves global and per-layout shortcuts, snippets, application profiles with their layout order, and spelling correction pairs. During import, Typlo skips an application profile if any of its required keyboard layouts are missing. A profile that explicitly inherits the global cycle still inherits it. A full backup also includes personal dictionary words and autocorrection exceptions.
 
 ## Linux and macOS
 
