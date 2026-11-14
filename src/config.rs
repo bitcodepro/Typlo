@@ -331,29 +331,24 @@ fn add_windows_hotkey_defaults(settings: &mut Config, data: &[u8]) -> io::Result
 }
 
 pub fn available_layouts() -> Vec<Language> {
+    detected_layouts().unwrap_or_else(|| Language::ALL.to_vec())
+}
+
+pub(crate) fn detected_layouts() -> Option<Vec<Language>> {
     #[cfg(windows)]
-    return crate::windows::available_layouts();
+    return Some(crate::windows::available_layouts());
     #[cfg(target_os = "linux")]
-    return crate::linux::available_layouts().unwrap_or_else(|_| Language::ALL.to_vec());
+    return crate::linux::available_layouts().ok();
     #[cfg(target_os = "macos")]
-    return crate::macos::available_layouts().unwrap_or_else(|_| Language::ALL.to_vec());
+    return crate::macos::available_layouts().ok();
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-    Language::ALL.to_vec()
+    None
 }
 
 pub(crate) fn resolve_saved_layouts(settings: &mut Config) {
     let available = available_layouts();
     let resolve = |layout: &mut Language| {
-        if let Some(&native) = available.iter().find(|&&native| native == *layout) {
-            *layout = native;
-        } else if (matches!(layout, Language::En | Language::Ru | Language::Uk)
-            || cfg!(windows) && Language::ALL.contains(layout))
-            && let Some(&native) = available
-                .iter()
-                .find(|native| native.dictionary_index() == layout.dictionary_index())
-        {
-            *layout = native;
-        }
+        *layout = installed_layout(*layout, &available).unwrap_or(*layout);
     };
     for cycle in std::iter::once(&mut settings.cycle)
         .chain(settings.applications.iter_mut().map(|rule| &mut rule.cycle))
@@ -367,6 +362,68 @@ pub(crate) fn resolve_saved_layouts(settings: &mut Config) {
     for binding in &mut settings.layout_hotkeys {
         resolve(&mut binding.layout);
     }
+}
+
+pub(crate) fn restrict_imported_layouts(settings: &mut Config, available: &[Language]) {
+    if available.is_empty() {
+        return;
+    }
+    let resolve_cycle = |cycle: &[Language]| {
+        let mut seen = std::collections::HashSet::new();
+        cycle
+            .iter()
+            .map(|&layout| installed_layout(layout, available))
+            .filter(|item| item.is_none_or(|layout| seen.insert(layout)))
+            .collect::<Option<Vec<_>>>()
+    };
+    settings.cycle = settings
+        .cycle
+        .iter()
+        .filter_map(|&layout| installed_layout(layout, available))
+        .collect();
+    if settings.cycle.is_empty() {
+        settings.cycle.extend_from_slice(available);
+    }
+    let mut seen = std::collections::HashSet::new();
+    settings.cycle.retain(|layout| seen.insert(*layout));
+    settings.applications.retain_mut(|rule| {
+        // An empty cycle intentionally inherits the global cycle. Dropping
+        // missing layouts must never turn a restricted rule into that policy.
+        if let Some(cycle) = resolve_cycle(&rule.cycle) {
+            rule.cycle = cycle;
+            true
+        } else {
+            false
+        }
+    });
+    let mut seen = std::collections::HashSet::new();
+    settings.layout_hotkeys.retain_mut(|binding| {
+        if let Some(layout) = installed_layout(binding.layout, available)
+            && seen.insert(layout)
+        {
+            binding.layout = layout;
+            true
+        } else {
+            false
+        }
+    });
+}
+
+fn installed_layout(layout: Language, available: &[Language]) -> Option<Language> {
+    available
+        .iter()
+        .copied()
+        .find(|&native| native == layout)
+        .or_else(|| {
+            if matches!(layout, Language::En | Language::Ru | Language::Uk) {
+                available
+                    .iter()
+                    .copied()
+                    .find(|native| native.dictionary_index() == layout.dictionary_index())
+            } else {
+                None
+            }
+        })
 }
 
 pub fn save(directory: &Path, config: &Config) -> io::Result<()> {
