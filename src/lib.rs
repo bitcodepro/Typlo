@@ -9,6 +9,8 @@ pub mod dictionary;
 #[cfg(feature = "gui")]
 pub mod dictionary_view;
 pub mod edit;
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+mod history_schema;
 pub mod hotkeys;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod jobs;

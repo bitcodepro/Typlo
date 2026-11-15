@@ -164,7 +164,10 @@ impl History {
         let journal: String = db
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
             .map_err(io::Error::other)?;
-        if version == SCHEMA_VERSION && journal.eq_ignore_ascii_case("wal") {
+        if version == SCHEMA_VERSION
+            && journal.eq_ignore_ascii_case("wal")
+            && crate::history_schema::payload_is_last(&db)?
+        {
             let secret: Vec<u8> = db
                 .query_row("SELECT secret FROM metadata WHERE id=1", [], |row| {
                     row.get(0)
@@ -177,15 +180,14 @@ impl History {
         }
         db.pragma_update(None, "journal_mode", "WAL")
             .map_err(io::Error::other)?;
+        crate::history_schema::move_payload_last(&mut db)?;
+        db.execute_batch(crate::history_schema::CREATE_CLIPS)
+            .map_err(io::Error::other)?;
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(io::Error::other)?;
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS metadata(id INTEGER PRIMARY KEY CHECK(id=1), secret BLOB NOT NULL);
-             CREATE TABLE IF NOT EXISTS clips(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, fingerprint BLOB NOT NULL UNIQUE,
-                payload BLOB NOT NULL, preview BLOB NOT NULL, bytes INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
-                display_order INTEGER NOT NULL, last_used INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS image_previews(
                 clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
                 png BLOB NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL);
@@ -197,8 +199,6 @@ impl History {
              CREATE TABLE IF NOT EXISTS lan_received_files(
                 clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
                 folder TEXT NOT NULL, bytes INTEGER NOT NULL);
-             CREATE INDEX IF NOT EXISTS clip_display ON clips(pinned DESC, display_order DESC, id DESC);
-             CREATE INDEX IF NOT EXISTS clip_recency ON clips(last_used DESC, id DESC);
              CREATE TABLE IF NOT EXISTS order_clock(id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
              INSERT OR IGNORE INTO order_clock VALUES(1,0);"
         ).map_err(io::Error::other)?;

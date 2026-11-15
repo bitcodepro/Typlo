@@ -78,12 +78,36 @@ pub fn run(
                     context.request_repaint();
                 }
             });
+            // A separate connection watches for commits so the idle window does not
+            // have to repaint just to poll the database.
+            let history_changed = Arc::new(AtomicBool::new(false));
+            {
+                let open_reader = store.background_reader(&profile);
+                let changed = history_changed.clone();
+                let context = creation.egui_ctx.clone();
+                std::thread::Builder::new()
+                    .name("typlo-history-watch".into())
+                    .spawn(move || {
+                        let Ok(reader) = open_reader() else { return };
+                        let mut version = reader.data_version().ok();
+                        loop {
+                            std::thread::sleep(HISTORY_WATCH);
+                            let current = reader.data_version().ok();
+                            if current != version {
+                                version = current;
+                                changed.store(true, Ordering::Release);
+                                context.request_repaint();
+                            }
+                        }
+                    })?;
+            }
             let lan_paired =
                 lan_clipboard::paired_address(&profile).is_ok_and(|peer| peer.is_some());
             let lan_job = lan_clipboard::jobs::status(&profile).ok().flatten();
             let mut view = Window {
                 data_version: store.data_version()?,
                 history_check: Instant::now(),
+                history_changed,
                 store,
                 config,
                 profile,
@@ -121,6 +145,8 @@ pub fn run(
                 focus_search: true,
                 closing: false,
                 scroll_selected: false,
+                last_input: Instant::now(),
+                cursor_blinks: true,
             };
             view.reload()?;
             view.selected = view.recent.first().map(|entry| entry.id);
@@ -130,10 +156,14 @@ pub fn run(
     Ok(())
 }
 
+/// How often a background connection checks the history for new commits.
+const HISTORY_WATCH: Duration = Duration::from_millis(350);
+
 struct Window {
     store: History,
     data_version: i64,
     history_check: Instant,
+    history_changed: Arc<AtomicBool>,
     config: config::Config,
     profile: PathBuf,
     origin: [usize; 3],
@@ -170,6 +200,8 @@ struct Window {
     focus_search: bool,
     closing: bool,
     scroll_selected: bool,
+    last_input: Instant,
+    cursor_blinks: bool,
 }
 
 struct Search {
@@ -219,11 +251,24 @@ impl SearchEntry {
     }
 }
 
-#[derive(Default)]
 struct SearchCache {
     version: Option<i64>,
     complete: bool,
     rows: Vec<SearchEntry>,
+    max_bytes: usize,
+}
+
+impl Default for SearchCache {
+    fn default() -> Self {
+        Self {
+            version: None,
+            complete: false,
+            rows: Vec::new(),
+            // Decrypted previews are cached so that later keystrokes do not decrypt every
+            // entry again. 24 MiB holds the previews of the largest allowed history.
+            max_bytes: 24 * 1024 * 1024,
+        }
+    }
 }
 
 fn search_history(
@@ -234,7 +279,6 @@ fn search_history(
     image_terms: &str,
     canceled: impl Fn() -> bool,
 ) -> io::Result<SearchResults> {
-    const MAX_CACHE_BYTES: usize = 2 * 1024 * 1024;
     let version = store.data_version()?;
     let mut result = SearchResults::default();
     if cache.version == Some(version) && cache.complete {
@@ -318,7 +362,7 @@ fn search_history(
             }
         }
         let bytes = row.bytes();
-        if cache_bytes + bytes <= MAX_CACHE_BYTES {
+        if cache_bytes + bytes <= cache.max_bytes {
             cache_bytes += bytes;
             cache.rows.push(row);
         } else {
@@ -455,6 +499,7 @@ impl eframe::App for Window {
     }
 
     fn ui(&mut self, root: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.update_cursor_blink(root.ctx());
         self.poll_ocr(root, window(frame));
         self.poll_lan_transfer(root.ctx());
         self.poll_received_delete(root.ctx());
@@ -584,15 +629,35 @@ impl Window {
         }
     }
 
+    /// Like the Windows caret, the search cursor stops blinking after a few idle
+    /// seconds. Each blink repaints the whole window, so an idle open history
+    /// would otherwise keep using the CPU.
+    fn update_cursor_blink(&mut self, ctx: &egui::Context) {
+        const BLINK_TIMEOUT: Duration = Duration::from_secs(5);
+        if ctx.input(|input| !input.events.is_empty() || input.pointer.is_moving()) {
+            self.last_input = Instant::now();
+        }
+        let idle = self.last_input.elapsed();
+        let blinks = idle < BLINK_TIMEOUT;
+        if blinks != self.cursor_blinks {
+            self.cursor_blinks = blinks;
+            ctx.all_styles_mut(|style| style.visuals.text_cursor.blink = blinks);
+        }
+        if blinks {
+            // Wake once more when the timeout ends so the cursor can settle.
+            ctx.request_repaint_after(BLINK_TIMEOUT - idle);
+        }
+    }
+
     fn poll_history(&mut self, ctx: &egui::Context) {
-        const REFRESH: Duration = Duration::from_millis(350);
-        let remaining = REFRESH.saturating_sub(self.history_check.elapsed());
-        if !remaining.is_zero() {
-            ctx.request_repaint_after(remaining);
+        // Relative times such as "1 min ago" still advance while the window is idle.
+        const AGE_REFRESH: Duration = Duration::from_secs(30);
+        ctx.request_repaint_after(AGE_REFRESH);
+        let changed = self.history_changed.swap(false, Ordering::AcqRel);
+        if !changed && self.history_check.elapsed() < AGE_REFRESH {
             return;
         }
         self.history_check = Instant::now();
-        ctx.request_repaint_after(REFRESH);
         if let Ok(version) = self.store.data_version()
             && version != self.data_version
             && self.reload().is_ok()
@@ -2213,7 +2278,10 @@ mod tests {
                 .unwrap();
         }
         let reader = writer.background_reader(profile.path())().unwrap();
-        let mut cache = SearchCache::default();
+        let mut cache = SearchCache {
+            max_bytes: 2 * 1024 * 1024,
+            ..SearchCache::default()
+        };
         for _ in 0..2 {
             let result =
                 search_history(&reader, &mut cache, "unique-end", false, "image", || false)

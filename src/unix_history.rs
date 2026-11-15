@@ -120,15 +120,13 @@ impl History {
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA secure_delete=ON; PRAGMA mmap_size=0;
              PRAGMA cache_size=-128; PRAGMA trusted_schema=OFF;
-             CREATE TABLE IF NOT EXISTS clips(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, fingerprint BLOB NOT NULL UNIQUE,
-                payload BLOB NOT NULL, preview BLOB NOT NULL, bytes INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
-                display_order INTEGER NOT NULL, last_used INTEGER NOT NULL);
-             CREATE INDEX IF NOT EXISTS clip_display ON clips(pinned DESC, display_order DESC, id DESC);
-             CREATE INDEX IF NOT EXISTS clip_recency ON clips(last_used DESC, id DESC);
              CREATE TABLE IF NOT EXISTS order_clock(id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
              INSERT OR IGNORE INTO order_clock VALUES(1,0);"
         ).map_err(io::Error::other)?;
+        // Builds before this layout stored the payload in the middle of each row.
+        crate::history_schema::move_payload_last(&mut db)?;
+        db.execute_batch(crate::history_schema::CREATE_CLIPS)
+            .map_err(io::Error::other)?;
         let lock = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(io::Error::other)?;
