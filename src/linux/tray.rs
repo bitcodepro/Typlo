@@ -25,7 +25,7 @@ impl ksni::Tray for Icon {
         "typlo-rust".into()
     }
     fn title(&self) -> String {
-        "Typlo2.0".into()
+        "Typlo".into()
     }
     fn icon_name(&self) -> String {
         if cfg!(feature = "gui") {

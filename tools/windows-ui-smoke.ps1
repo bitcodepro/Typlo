@@ -57,7 +57,7 @@ public static class TyploUiSmoke {
         if (desktop == IntPtr.Zero) throw new Win32Exception();
         IntPtr oldDpi = SetThreadDpiAwarenessContext(new IntPtr(-4));
         try {
-            CheckWindow(settings, desktop, desktopName, "--profile " + Quote(profile), "Typlo2.0 — settings", (rect, _) => {
+            CheckWindow(settings, desktop, desktopName, "--profile " + Quote(profile), "Typlo — settings", (rect, _) => {
                 var center = new Point((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2);
                 var display = new MonitorInfo { Size = Marshal.SizeOf(typeof(MonitorInfo)) };
                 if (!GetMonitorInfoW(MonitorFromPoint(center, 2), ref display)) throw new Win32Exception();
@@ -67,14 +67,14 @@ public static class TyploUiSmoke {
             });
             CheckThemeFrame(settings, desktop, desktopName, profile, "light", "#fafafc");
             CheckThemeFrame(settings, desktop, desktopName, profile, "dark", "#202020");
-            CheckWindow(settings, desktop, desktopName, "--shortcuts " + Quote(profile), "Typlo2.0 — keyboard shortcuts", null);
+            CheckWindow(settings, desktop, desktopName, "--shortcuts " + Quote(profile), "Typlo — keyboard shortcuts", null);
             string russian = Path.Combine(profile, "explicit-russian");
             Directory.CreateDirectory(russian);
             File.WriteAllText(Path.Combine(russian, "settings.json"), "{\"ui_language\":\"ru\"}");
-            CheckWindow(settings, desktop, desktopName, "--profile " + Quote(russian), "Typlo2.0 — настройки", null);
+            CheckWindow(settings, desktop, desktopName, "--profile " + Quote(russian), "Typlo — настройки", null);
             File.WriteAllBytes(Path.Combine(profile, "latest-screenshot.png"), Convert.FromBase64String(
                 "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAYAAAC09K7GAAAAEklEQVR4nGMwSlnwHxkzEBQAAJPZGn0DcOafAAAAAElFTkSuQmCC"));
-            CheckWindow(settings, desktop, desktopName, "--screenshot-editor " + Quote(profile) + " file", "Typlo2.0 — Screenshot editor", null);
+            CheckWindow(settings, desktop, desktopName, "--screenshot-editor " + Quote(profile) + " file", "Typlo — Screenshot editor", null);
             MonitorInfo monitor = new MonitorInfo { Size = Marshal.SizeOf(typeof(MonitorInfo)) };
             if (!GetMonitorInfoW(MonitorFromPoint(new Point(0, 0), 1), ref monitor)) throw new Win32Exception();
             Rect work = monitor.Work;
@@ -143,11 +143,11 @@ public static class TyploUiSmoke {
             Environment.SetEnvironmentVariable("LOCALAPPDATA", appData);
             // An explicit test profile must never initialize the installation's default profile.
             CheckWindow(settingsCopy, desktop, desktopName, "--history " + Quote(Path.Combine(fixture, "explicit")),
-                "Typlo2.0 — clipboard history", null);
+                "Typlo — clipboard history", null);
             string data = Path.Combine(install, "data");
             if (Directory.Exists(data)) throw new InvalidOperationException("An explicit profile created the default profile");
 
-            CheckWindow(settingsCopy, desktop, desktopName, "--history", "Typlo2.0 — история буфера", null);
+            CheckWindow(settingsCopy, desktop, desktopName, "--history", "Typlo — история буфера", null);
             string migrated = Path.Combine(data, "settings.json");
             if (File.ReadAllText(migrated) != File.ReadAllText(Path.Combine(legacy, "settings.json")) ||
                 !File.Exists(Path.Combine(data, "history.sqlite3")))
@@ -155,7 +155,7 @@ public static class TyploUiSmoke {
 
             if (Mutex.TryOpenExisting(@"Local\Typlo.Rust.Resident.v1", out Mutex existing)) {
                 existing.Dispose();
-                CheckWindow(settingsCopy, desktop, desktopName, "", "Typlo2.0 — настройки", null);
+                CheckWindow(settingsCopy, desktop, desktopName, "", "Typlo — настройки", null);
                 Console.WriteLine("PASS first launch through --history migrates the profile; resident check skipped because Typlo is already running");
                 return;
             }
@@ -203,12 +203,12 @@ public static class TyploUiSmoke {
         } finally {
             CloseProcess(process);
         }
-        CheckWindow(exe, desktop, name, "--profile " + Quote(fixture), "Typlo2.0 — settings", null, theme == "dark");
+        CheckWindow(exe, desktop, name, "--profile " + Quote(fixture), "Typlo — settings", null, theme == "dark");
     }
 
     static void CheckPopup(string exe, IntPtr desktop, string name, string profile, Point anchor, Rect work) {
         CheckWindow(exe, desktop, name, "--history " + Quote(profile) + $" 0 0 0 {anchor.X} {anchor.Y}",
-            "Typlo2.0 — clipboard history", (rect, dpi) => {
+            "Typlo — clipboard history", (rect, dpi) => {
                 int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
                 int expectedWidth = Math.Min(460 * (int)dpi / 96, work.Right - work.Left - 16);
                 int expectedHeight = Math.Min(560 * (int)dpi / 96, work.Bottom - work.Top - 16);

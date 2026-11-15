@@ -165,6 +165,10 @@ impl History {
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
             .map_err(io::Error::other)?;
         if version == SCHEMA_VERSION && journal.eq_ignore_ascii_case("wal") {
+            // The schema is current. Moving the payload last is only an
+            // optimization: if another process holds the write lock, it is
+            // deferred and the old layout stays readable without a write lock.
+            crate::history_schema::move_payload_last(&mut db)?;
             let secret: Vec<u8> = db
                 .query_row("SELECT secret FROM metadata WHERE id=1", [], |row| {
                     row.get(0)
@@ -177,15 +181,14 @@ impl History {
         }
         db.pragma_update(None, "journal_mode", "WAL")
             .map_err(io::Error::other)?;
+        crate::history_schema::move_payload_last(&mut db)?;
+        db.execute_batch(crate::history_schema::CREATE_CLIPS)
+            .map_err(io::Error::other)?;
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(io::Error::other)?;
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS metadata(id INTEGER PRIMARY KEY CHECK(id=1), secret BLOB NOT NULL);
-             CREATE TABLE IF NOT EXISTS clips(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, fingerprint BLOB NOT NULL UNIQUE,
-                payload BLOB NOT NULL, preview BLOB NOT NULL, bytes INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
-                display_order INTEGER NOT NULL, last_used INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS image_previews(
                 clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
                 png BLOB NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL);
@@ -197,8 +200,6 @@ impl History {
              CREATE TABLE IF NOT EXISTS lan_received_files(
                 clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
                 folder TEXT NOT NULL, bytes INTEGER NOT NULL);
-             CREATE INDEX IF NOT EXISTS clip_display ON clips(pinned DESC, display_order DESC, id DESC);
-             CREATE INDEX IF NOT EXISTS clip_recency ON clips(last_used DESC, id DESC);
              CREATE TABLE IF NOT EXISTS order_clock(id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
              INSERT OR IGNORE INTO order_clock VALUES(1,0);"
         ).map_err(io::Error::other)?;
@@ -373,7 +374,7 @@ impl History {
             tx.execute("INSERT OR REPLACE INTO lan_received_files(clip_id, folder, bytes) VALUES(?1,?2,?3)",
                 params![id, folder, i64::try_from(bytes).map_err(io::Error::other)?]).map_err(io::Error::other)?;
         }
-        trim(&tx, limits)?;
+        trim(&tx, limits, id)?;
         if must_keep
             && !tx
                 .query_row(
@@ -460,36 +461,37 @@ impl History {
         Ok(())
     }
 
+    #[cfg(feature = "gui")]
     pub fn search(&self, query: &str, offset: usize) -> io::Result<Vec<Entry>> {
         let query = query.trim().to_lowercase();
         if query.is_empty() {
             return self.list(offset);
         }
-        let mut start = 0;
+        let image_terms =
+            crate::locale::text("history.imageSearch", "image picture").to_lowercase();
+        let image_match = image_terms.contains(&query) || "image".contains(&query);
         let mut skipped = 0;
         let mut result = Vec::new();
-        loop {
-            let page = self.list(start)?;
-            let next = page.len() > 50;
-            for entry in page.into_iter().take(50).filter(|entry| {
-                !entry.unreadable
-                    && (entry.preview.to_lowercase().contains(&query)
-                        || (entry.kind == Kind::Image && "изображение image".contains(&query)))
-            }) {
-                if skipped < offset {
-                    skipped += 1;
-                } else {
-                    result.push(entry);
-                }
-                if result.len() == 51 {
-                    return Ok(result);
-                }
+        // One pass over the history; later pages skip the earlier matches.
+        self.scan(|row| {
+            // Unreadable entries never match, as in the paged list.
+            let Ok(entry) = read_entry(row, None) else {
+                return true;
+            };
+            if entry.unreadable
+                || !(entry.preview.to_lowercase().contains(&query)
+                    || (entry.kind == Kind::Image && image_match))
+            {
+                return true;
             }
-            if !next {
-                return Ok(result);
+            if skipped < offset {
+                skipped += 1;
+                return true;
             }
-            start += 50;
-        }
+            result.push(entry);
+            result.len() < 51
+        })?;
+        Ok(result)
     }
 
     pub fn load(&self, id: i64) -> io::Result<Option<Clip>> {
@@ -712,6 +714,33 @@ impl History {
             }
             let mut replacement = Clip::from_legacy(3, rebased.join("\n").into_bytes(), None)?;
             replacement.set_editable_text(&clip.editable_text())?;
+            let duplicate: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM clips WHERE fingerprint=?1 AND id<>?2",
+                    params![fingerprint(&self.key, &replacement).as_slice(), id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(io::Error::other)?;
+            if let Some(duplicate) = duplicate {
+                // Another entry already points at the rebased files. Merge this one into it:
+                // keep its pin and received-files record, then drop the stale original.
+                tx.execute(
+                    "UPDATE clips SET pinned=MAX(pinned,(SELECT pinned FROM clips WHERE id=?2))
+                     WHERE id=?1",
+                    params![duplicate, id],
+                )
+                .map_err(io::Error::other)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO lan_received_files(clip_id, folder, bytes)
+                     SELECT ?1, folder, bytes FROM lan_received_files WHERE clip_id=?2",
+                    params![duplicate, id],
+                )
+                .map_err(io::Error::other)?;
+                tx.execute("DELETE FROM clips WHERE id=?1", [id])
+                    .map_err(io::Error::other)?;
+                continue;
+            }
             tx.execute(
                 "UPDATE clips SET payload=?2,preview=?3,bytes=?4,fingerprint=?5 WHERE id=?1",
                 params![
@@ -895,7 +924,9 @@ fn next_order(db: &Connection) -> io::Result<i64> {
     .map_err(io::Error::other)
 }
 
-fn trim(db: &Connection, limits: Limits) -> io::Result<()> {
+/// Drops the oldest unpinned entries over the limits. The entry that was just
+/// stored is kept even when pinned entries alone fill the history.
+fn trim(db: &Connection, limits: Limits, newest: i64) -> io::Result<()> {
     db.execute(
         "DELETE FROM clips WHERE pinned=0 AND id IN (
            SELECT id FROM (
@@ -903,11 +934,12 @@ fn trim(db: &Connection, limits: Limits) -> io::Result<()> {
                ROW_NUMBER() OVER (ORDER BY pinned DESC,display_order DESC,id DESC) AS position,
                SUM(bytes) OVER (ORDER BY pinned DESC,display_order DESC,id DESC) AS total
              FROM clips
-           ) WHERE pinned=0 AND (position>?1 OR total>?2)
+           ) WHERE pinned=0 AND id<>?3 AND (position>?1 OR total>?2)
          )",
         params![
             limits.max_items,
-            i64::try_from(limits.max_total).map_err(io::Error::other)?
+            i64::try_from(limits.max_total).map_err(io::Error::other)?,
+            newest
         ],
     )
     .map_err(io::Error::other)?;
@@ -973,6 +1005,69 @@ fn crypt(input: &[u8], encrypt: bool, entropy: Option<&[u8]>) -> io::Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_layout_opens_for_reading_while_another_process_holds_the_write_lock() {
+        let profile = tempfile::tempdir().unwrap();
+        let limits = Limits::from_config(&crate::config::Config::default());
+        History::open(profile.path())
+            .unwrap()
+            .store(&Clip::from_text("kept during the rebuild"), limits)
+            .unwrap();
+        let path = profile.path().join("history.sqlite3");
+        crate::history_schema::restore_old_layout(&Connection::open(&path).unwrap());
+        let mut writer = Connection::open(&path).unwrap();
+        let lock = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+
+        let reader = History::open(profile.path()).expect("opens without the write lock");
+        let entries = reader.list(0).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].preview, "kept during the rebuild");
+        assert!(!crate::history_schema::payload_is_last(&reader.db).unwrap());
+
+        lock.rollback().unwrap();
+        let reopened = History::open(profile.path()).unwrap();
+        assert!(crate::history_schema::payload_is_last(&reopened.db).unwrap());
+        assert_eq!(
+            reopened.list(0).unwrap()[0].preview,
+            "kept during the rebuild"
+        );
+    }
+
+    #[test]
+    fn rebasing_a_pinned_duplicate_keeps_the_pin_on_the_rebased_entry() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut store = History::open(profile.path()).unwrap();
+        let limits = Limits::from_config(&crate::config::Config::default());
+        let old = profile.path().join("old");
+        let new = profile.path().join("new");
+        let files = |root: &Path| {
+            Clip::from_legacy(
+                3,
+                root.join("Transfer-abc123")
+                    .join("a.txt")
+                    .to_string_lossy()
+                    .into_owned()
+                    .into_bytes(),
+                None,
+            )
+            .unwrap()
+        };
+        store.store(&files(&old), limits).unwrap();
+        let original = store.list(0).unwrap()[0].id;
+        store.pin(original, true).unwrap();
+        store.store(&files(&new), limits).unwrap();
+
+        store.rebase_received_files(&old, &new).unwrap();
+
+        let entries = store.list(0).unwrap();
+        assert_eq!(entries.len(), 1, "the stale original is merged");
+        assert!(entries[0].pinned, "the pin moves to the retained entry");
+        let text = store.load(entries[0].id).unwrap().unwrap().text();
+        assert!(Path::new(text.trim()).starts_with(&new), "{text}");
+    }
 
     #[test]
     fn reopening_history_reads_during_a_write_and_preserves_legacy_data() {

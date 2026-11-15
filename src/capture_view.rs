@@ -85,7 +85,7 @@ pub fn run_editor(profile: &Path, for_save: bool) -> AppResult {
         ..Default::default()
     };
     eframe::run_native(
-        &format!("Typlo2.0 — {}", tr("paint.title", "Screenshot editor")),
+        &format!("Typlo — {}", tr("paint.title", "Screenshot editor")),
         options,
         Box::new(move |creation| {
             crate::windows::mark_screenshot_editor(hwnd(creation) as usize);

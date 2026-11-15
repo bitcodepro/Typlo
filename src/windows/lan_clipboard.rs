@@ -6,6 +6,7 @@ mod trust;
 
 use rustls::{ClientConnection, ServerConfig, ServerConnection, StreamOwned};
 use std::{
+    collections::HashMap,
     io::{self, Read, Write},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream, UdpSocket},
     path::{Path, PathBuf},
@@ -27,6 +28,9 @@ const HANDSHAKE: Duration = Duration::from_secs(3);
 const TRANSFER: Duration = Duration::from_secs(180);
 const IDLE: Duration = Duration::from_secs(5);
 const LISTEN_POLL: Duration = Duration::from_millis(150);
+/// How long an address that failed the TLS handshake waits before it may take
+/// the single receive slot again, so idle connections cannot block the peer.
+const UNTRUSTED_COOLDOWN: Duration = Duration::from_secs(30);
 
 pub(super) struct Listener {
     peer: Peer,
@@ -103,28 +107,42 @@ fn listen(
         Ok(socket)
     });
     let peer_fingerprint = fingerprint(&peer.certificate);
-    let mut active: Option<JoinHandle<()>> = None;
+    let mut active: Option<(JoinHandle<()>, Ipv4Addr, Arc<AtomicBool>)> = None;
+    let mut cooldown: HashMap<Ipv4Addr, Instant> = HashMap::new();
     while !stop.load(Ordering::Acquire) {
         if let Ok(discovery) = &discovery {
             respond_to_discovery(discovery, &identity, &peer_fingerprint);
         }
-        if active.as_ref().is_some_and(JoinHandle::is_finished) {
-            let _ = active.take().expect("finished worker").join();
+        if active
+            .as_ref()
+            .is_some_and(|(worker, ..)| worker.is_finished())
+        {
+            let (worker, ip, authenticated) = active.take().expect("finished worker");
+            let _ = worker.join();
+            if !authenticated.load(Ordering::Acquire) {
+                cooldown.insert(ip, Instant::now() + UNTRUSTED_COOLDOWN);
+            }
         }
+        let now = Instant::now();
+        cooldown.retain(|_, until| *until > now);
         if let Ok((socket, SocketAddr::V4(address))) = listener.accept()
             && local_address(*address.ip())
+            && !cooldown.contains_key(address.ip())
             && active.is_none()
         {
             let profile = profile.to_owned();
             let peer = peer.clone();
             let server = server.clone();
             let stop = stop.clone();
+            let authenticated = Arc::new(AtomicBool::new(false));
+            let flag = authenticated.clone();
             active = thread::Builder::new()
                 .name("typlo-lan-receive".into())
                 .spawn(move || {
-                    let _ = receive(&profile, &peer, server, socket, stop);
+                    let _ = receive_tracked(&profile, &peer, server, socket, stop, &flag);
                 })
-                .ok();
+                .ok()
+                .map(|worker| (worker, *address.ip(), authenticated));
         }
         thread::park_timeout(LISTEN_POLL);
     }
@@ -416,12 +434,24 @@ fn read_reply(stream: &mut impl Read) -> io::Result<()> {
     }
 }
 
+#[cfg(test)]
 fn receive(
     profile: &Path,
     peer: &Peer,
     server: Arc<ServerConfig>,
     socket: TcpStream,
     stop: Arc<AtomicBool>,
+) -> io::Result<()> {
+    receive_tracked(profile, peer, server, socket, stop, &AtomicBool::new(false))
+}
+
+fn receive_tracked(
+    profile: &Path,
+    peer: &Peer,
+    server: Arc<ServerConfig>,
+    socket: TcpStream,
+    stop: Arc<AtomicBool>,
+    authenticated: &AtomicBool,
 ) -> io::Result<()> {
     socket.set_nonblocking(false)?;
     let mut socket = Socket::new(socket, Some(stop.clone()))?;
@@ -433,6 +463,7 @@ fn receive(
             "Unknown Typlo device",
         ));
     }
+    authenticated.store(true, Ordering::Release);
     socket.extend_deadline();
     let mut stream = StreamOwned::new(connection, socket);
     let result = transfer::receive(

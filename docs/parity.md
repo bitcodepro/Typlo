@@ -1,4 +1,4 @@
-# Typlo2.0 migration status
+# Typlo migration status
 
 The baseline is Typlo C# v0.5.14 at commit `a0b9a89269cc61f89ac86144e8a497decd634d4d`. The review covered the reference guide, Avalonia windows, clipboard handling, platform adapters, and settings. [Original reference guide](https://github.com/bitcodepro/Typlo/blob/a0b9a89269cc61f89ac86144e8a497decd634d4d/docs/reference.md)
 
@@ -21,7 +21,7 @@ The baseline is Typlo C# v0.5.14 at commit `a0b9a89269cc61f89ac86144e8a497decd63
 
 ## Windows replacement checks before release
 
-Use a blank unsaved document or draft. Keep test text in the Teams or Copilot draft. For manual conversion, use the shortcut that converts to Russian. For Undo, use the Typlo2.0 shortcut.
+Use a blank unsaved document or draft. Keep test text in the Teams or Copilot draft. For manual conversion, use the shortcut that converts to Russian. For Undo, use the Typlo shortcut.
 
 | Field | Checks |
 |---|---|
@@ -30,13 +30,13 @@ Use a blank unsaved document or draft. Keep test text in the Teams or Copilot dr
 | Teams | Run the same commands in a blank draft. Include typing the next word quickly and switching fields immediately after issuing the command. |
 | Chrome address bar and on-page search field | Verify autocorrection, manual conversion, and Undo separately in both fields before submitting a search. |
 
-Run manual conversion immediately after pressing Space. If autocorrection has not yet inserted the result, the manual command should cancel it. When Typlo2.0 declines an edit before pasting, the next command should still work during normal typing. Use the Tools window to inspect recent attempts and P50/P95 timings for confirmed operations in each field type. The WebView2 fixture verifies ranges and spaces in a controlled field.
+Run manual conversion immediately after pressing Space. If autocorrection has not yet inserted the result, the manual command should cancel it. When Typlo declines an edit before pasting, the next command should still work during normal typing. Use the Tools window to inspect recent attempts and P50/P95 timings for confirmed operations in each field type. The WebView2 fixture verifies ranges and spaces in a controlled field.
 
 ### Automated checks before manual testing
 
 - `Typlo.exe --native-self-test` checks native fields, protected fields, and Undo.
 - `Typlo.exe --measure-native 200` emits JSON with the confirmed replacement count and P50/P95 timings. It checks the complete text and caret, including autocorrection with ordinary and non-breaking spaces.
-- `tools/WebViewProbe` exercises autocorrection, Undo, selection with a trailing space, and a second Undo in two textarea variants and a contenteditable field. It uses Typlo2.0's UI Automation ranges and reproduces space trimming inside the test field.
+- `tools/WebViewProbe` exercises autocorrection, Undo, selection with a trailing space, and a second Undo in two textarea variants and a contenteditable field. It uses Typlo's UI Automation ranges and reproduces space trimming inside the test field.
 - `cargo test --locked --features gui --lib measure_large_clipboard_search -- --ignored --nocapture` compares paginated scans, cold searches, repeat searches, and searches after copying a new item across 1,500 encrypted entries. Timings exclude interface latency. The history window keeps a 2 MiB cache and reuses unchanged data while refreshing the order after database changes.
 - `cargo test --locked --features gui --lib measure_drawing_bounds -- --ignored --nocapture` measures stroke bounds and repainting the changed region in a GDI bitmap. Test the physical gesture and scaling separately on two monitors.
 - For an endurance run on temporary profiles, set `$env:TYPLO_SOAK_SECONDS = '7200'` and run `cargo test --locked --features gui --lib paired_history_and_screenshot_soak -- --ignored --nocapture`. The test uses local TLS transfers to send text, images, and files in turn, and saves and reloads screenshots. Sample the test process's working set and private bytes at regular intervals to measure memory.

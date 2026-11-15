@@ -380,7 +380,7 @@ impl AxEditor {
         if unsafe { AXIsProcessTrusted() } == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "Allow Typlo Rust in macOS Accessibility settings",
+                "Allow Typlo in macOS Accessibility settings",
             ));
         }
         let system = Cf::take(unsafe { AXUIElementCreateSystemWide() })?;

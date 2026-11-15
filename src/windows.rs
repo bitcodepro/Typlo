@@ -1310,7 +1310,7 @@ fn tray_data(window: HWND) -> NOTIFYICONDATAW {
     if icon.hIcon.is_null() {
         icon.hIcon = unsafe { LoadIconW(null_mut(), IDI_APPLICATION) };
     }
-    let label = wide("Typlo2.0");
+    let label = wide("Typlo");
     icon.szTip[..label.len()].copy_from_slice(&label);
     icon
 }
@@ -2324,7 +2324,10 @@ pub fn paste_history(
             || edit.is_null()
             || unsafe { SetForegroundWindow(foreground) } == 0)
     {
-        return Err(io::Error::other("Исходное окно недоступно"));
+        return Err(io::Error::other(crate::locale::text(
+            "rust.errors.originUnavailable",
+            "The original window is unavailable",
+        )));
     }
     let sequence = clipio::publish(owner, clip, plain)?;
     if !paste {
@@ -2336,7 +2339,10 @@ pub fn paste_history(
         .any(|key| unsafe { GetAsyncKeyState(key.into()) } < 0)
     {
         if Instant::now() >= deadline {
-            return Err(io::Error::other("Клавиши сочетания всё ещё нажаты"));
+            return Err(io::Error::other(crate::locale::text(
+                "rust.errors.keysHeld",
+                "The shortcut keys are still pressed",
+            )));
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -2347,7 +2353,10 @@ pub fn paste_history(
         })
         || clipio::sequence() != sequence
     {
-        return Err(io::Error::other("Исходное поле или буфер изменились"));
+        return Err(io::Error::other(crate::locale::text(
+            "rust.errors.originChanged",
+            "The original field or clipboard changed",
+        )));
     }
     let key = |key, flags| INPUT {
         r#type: INPUT_KEYBOARD,
@@ -2377,7 +2386,10 @@ pub fn paste_history(
         unsafe {
             SendInput(1, &release, size_of::<INPUT>() as i32);
         }
-        return Err(io::Error::other("Windows не приняла команду вставки"));
+        return Err(io::Error::other(crate::locale::text(
+            "rust.errors.pasteRejected",
+            "Windows did not accept the paste command",
+        )));
     }
     Ok(())
 }

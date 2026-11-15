@@ -130,12 +130,22 @@ mod platform {
             }
             if let Ok(Some(clip)) = result {
                 if store.is_none() {
-                    store = Some(History::open(profile)?);
+                    // A locked keyring must not stop monitoring; retry on the next copy.
+                    match History::open(profile) {
+                        Ok(history) => store = Some(history),
+                        Err(error) => {
+                            eprintln!("Typlo clipboard: {error}");
+                            continue;
+                        }
+                    }
                 }
-                store
+                if let Err(error) = store
                     .as_mut()
                     .expect("history opened")
-                    .store(&clip, &settings)?;
+                    .store(&clip, &settings)
+                {
+                    eprintln!("Typlo clipboard: {error}");
+                }
             }
         }
     }
@@ -453,12 +463,23 @@ mod platform {
                     return Ok(());
                 }
                 if store.is_none() {
-                    store = Some(History::open(&profile)?);
+                    // A missing Keychain answer must not stop monitoring; retry on the next copy.
+                    match History::open(&profile) {
+                        Ok(history) => store = Some(history),
+                        Err(error) => {
+                            eprintln!("Typlo clipboard: {error}");
+                            return Ok(());
+                        }
+                    }
                 }
-                store
+                if let Err(error) = store
                     .as_mut()
                     .expect("history opened")
                     .store(&clip, &settings)
+                {
+                    eprintln!("Typlo clipboard: {error}");
+                }
+                Ok(())
             })?;
         }
     }

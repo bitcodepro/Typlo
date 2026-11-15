@@ -1,4 +1,4 @@
-# Typlo v0.5.14 and Typlo2.0
+# Typlo v0.5.14 (.NET) and Typlo (Rust)
 
 Measurements were taken on November 11, 2026, on Windows x64 with an Intel Core i7-10750H. The baseline was the published Typlo v0.5.14 archive, verified by SHA-256. The GitHub main branch and release both pointed to commit `a0b9a89269cc61f89ac86144e8a497decd634d4d`. The source tree used for the .NET benchmark matched that commit. [Baseline release](https://github.com/bitcodepro/Typlo/releases/tag/v0.5.14)
 

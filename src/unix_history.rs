@@ -119,24 +119,46 @@ impl History {
             .map_err(io::Error::other)?;
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA secure_delete=ON; PRAGMA mmap_size=0;
-             PRAGMA cache_size=-128; PRAGMA trusted_schema=OFF;
-             CREATE TABLE IF NOT EXISTS clips(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, fingerprint BLOB NOT NULL UNIQUE,
-                payload BLOB NOT NULL, preview BLOB NOT NULL, bytes INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
-                display_order INTEGER NOT NULL, last_used INTEGER NOT NULL);
-             CREATE INDEX IF NOT EXISTS clip_display ON clips(pinned DESC, display_order DESC, id DESC);
-             CREATE INDEX IF NOT EXISTS clip_recency ON clips(last_used DESC, id DESC);
-             CREATE TABLE IF NOT EXISTS order_clock(id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
-             INSERT OR IGNORE INTO order_clock VALUES(1,0);"
-        ).map_err(io::Error::other)?;
-        let lock = db
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+             PRAGMA cache_size=-128; PRAGMA trusted_schema=OFF;",
+        )
+        .map_err(io::Error::other)?;
+        // Opening an existing history must not need the write lock: another
+        // process may be writing or rebuilding it, and a WAL reader still works.
+        let initialized: bool = db
+            .query_row(
+                "SELECT COUNT(*) = 2 FROM sqlite_master WHERE type='table' AND name IN ('clips','order_clock')",
+                [],
+                |row| row.get(0),
+            )
             .map_err(io::Error::other)?;
-        let populated: bool = lock
-            .query_row("SELECT EXISTS (SELECT 1 FROM clips)", [], |row| row.get(0))
+        if !initialized {
+            db.execute_batch(
+                "CREATE TABLE IF NOT EXISTS order_clock(id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
+                 INSERT OR IGNORE INTO order_clock VALUES(1,0);",
+            )
             .map_err(io::Error::other)?;
-        let key = platform_key(profile, !populated)?;
-        lock.commit().map_err(io::Error::other)?;
+            db.execute_batch(crate::history_schema::CREATE_CLIPS)
+                .map_err(io::Error::other)?;
+        }
+        // Builds before this layout stored the payload in the middle of each row.
+        // The rebuild is skipped while another process holds the write lock.
+        crate::history_schema::move_payload_last(&mut db)?;
+        let populated = |db: &Connection| -> io::Result<bool> {
+            db.query_row("SELECT EXISTS (SELECT 1 FROM clips)", [], |row| row.get(0))
+                .map_err(io::Error::other)
+        };
+        let key = if populated(&db)? {
+            platform_key(profile, false)?
+        } else {
+            // An empty history may need a new key; the write lock makes sure only
+            // one process creates it.
+            let lock = db
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(io::Error::other)?;
+            let key = platform_key(profile, !populated(&lock)?)?;
+            lock.commit().map_err(io::Error::other)?;
+            key
+        };
         db.busy_timeout(Duration::from_millis(250))
             .map_err(io::Error::other)?;
         Ok(Self { db, key })
@@ -180,8 +202,9 @@ impl History {
                     SELECT id, pinned, ROW_NUMBER() OVER (ORDER BY pinned DESC,display_order DESC,id DESC) AS position,
                     SUM(bytes) OVER (ORDER BY pinned DESC,display_order DESC,id DESC) AS total FROM clips
                 ) WHERE pinned=0 AND (position>?1 OR total>?2)
-             )",
-            params![settings.history_items, max_total],
+             ) AND fingerprint<>?3",
+            // The entry just copied stays even when pinned entries fill the history.
+            params![settings.history_items, max_total, fingerprint.as_slice()],
         ).map_err(io::Error::other)?;
         tx.commit().map_err(io::Error::other)
     }
@@ -474,7 +497,8 @@ fn secret_service(profile: &Path, create: Option<&[u8; 32]>) -> io::Result<Optio
             return Ok(None);
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(1);
+    // A locked keyring shows an unlock prompt at login; give the user time to answer it.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let success = loop {
         match child.try_wait()? {
             Some(status) => break status.success(),
@@ -613,6 +637,43 @@ fn platform_key(profile: &Path, create: bool) -> io::Result<[u8; 32]> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_layout_opens_for_reading_while_another_process_holds_the_write_lock() {
+        let path = tempfile::tempdir().unwrap();
+        let settings = Config::default();
+        History::open(path.path())
+            .unwrap()
+            .store(
+                &Clip::Text {
+                    text: "kept during the rebuild".to_owned(),
+                    html: None,
+                },
+                &settings,
+            )
+            .unwrap();
+        let file = path.path().join("history.sqlite3");
+        crate::history_schema::restore_old_layout(&Connection::open(&file).unwrap());
+        let mut writer = Connection::open(&file).unwrap();
+        let lock = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+
+        let reader = History::open(path.path()).expect("opens without the write lock");
+        assert_eq!(
+            reader.list("", 0).unwrap()[0].preview,
+            "kept during the rebuild"
+        );
+        assert!(!crate::history_schema::payload_is_last(&reader.db).unwrap());
+
+        lock.rollback().unwrap();
+        let reopened = History::open(path.path()).unwrap();
+        assert!(crate::history_schema::payload_is_last(&reopened.db).unwrap());
+        assert_eq!(
+            reopened.list("", 0).unwrap()[0].preview,
+            "kept during the rebuild"
+        );
+    }
 
     #[test]
     fn reads_encrypted_history_and_preserves_fixed_order() {

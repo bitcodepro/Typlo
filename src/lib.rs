@@ -9,6 +9,8 @@ pub mod dictionary;
 #[cfg(feature = "gui")]
 pub mod dictionary_view;
 pub mod edit;
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+mod history_schema;
 pub mod hotkeys;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod jobs;
@@ -63,7 +65,12 @@ pub mod windows;
 
 #[cfg(feature = "gui")]
 fn restore_edit_origin(origin: usize) -> std::io::Result<()> {
-    let error = || std::io::Error::other("Не удалось вернуться к исходному окну");
+    let error = || {
+        std::io::Error::other(crate::locale::text(
+            "rust.errors.originWindow",
+            "Could not return to the original window",
+        ))
+    };
     if origin == 0 {
         return Err(error());
     }

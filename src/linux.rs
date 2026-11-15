@@ -913,8 +913,14 @@ impl EditSession {
         });
         let request = if action == Action::Tools {
             let method = match &field {
-                Ok(_) => "Доступна прямая замена AT-SPI. Буфер обмена не используется.",
-                Err(_) => "Поле не предоставило проверяемый диапазон текста.",
+                Ok(_) => crate::locale::text(
+                    "rust.tools.atspiDirect",
+                    "Direct AT-SPI replacement is available. The clipboard is not used.",
+                ),
+                Err(_) => crate::locale::text(
+                    "rust.tools.noRange",
+                    "The field did not provide a verifiable text range.",
+                ),
             };
             Request::Field {
                 method: method.into(),

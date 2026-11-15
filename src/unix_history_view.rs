@@ -124,10 +124,9 @@ enum Action {
 
 impl View {
     fn write_clipboard(&mut self, id: i64, plain: bool) -> io::Result<()> {
-        let value = self
-            .store
-            .load(id)?
-            .ok_or_else(|| io::Error::other("Запись удалена"))?;
+        let value = self.store.load(id)?.ok_or_else(|| {
+            io::Error::other(tr("rust.errors.entryDeleted", "The entry was deleted"))
+        })?;
         let target = self.clipboard.set().exclude_from_history();
         match value {
             Clip::Text {
@@ -331,7 +330,10 @@ fn image_dimensions(bytes: &[u8]) -> io::Result<(u32, u32)> {
         .into_dimensions()
         .map_err(io::Error::other)?;
     if u64::from(width) * u64::from(height) > crate::capture::MAX_PIXELS {
-        return Err(io::Error::other("Изображение превышает допустимый размер"));
+        return Err(io::Error::other(tr(
+            "rust.errors.imageTooLarge",
+            "The image exceeds the allowed size",
+        )));
     }
     Ok((width, height))
 }
