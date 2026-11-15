@@ -132,6 +132,29 @@ fn rebuild(db: &mut Connection) -> io::Result<()> {
     tx.commit().map_err(io::Error::other)
 }
 
+/// Converts `clips` back to the layout of older builds, for tests.
+#[cfg(test)]
+pub(crate) fn restore_old_layout(db: &Connection) {
+    db.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         BEGIN IMMEDIATE;
+         CREATE TABLE clips_old(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, fingerprint BLOB NOT NULL UNIQUE,
+            payload BLOB NOT NULL, preview BLOB NOT NULL, bytes INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
+            display_order INTEGER NOT NULL, last_used INTEGER NOT NULL);
+         INSERT INTO clips_old(id,kind,fingerprint,payload,preview,bytes,pinned,display_order,last_used)
+            SELECT id,kind,fingerprint,payload,preview,bytes,pinned,display_order,last_used FROM clips;
+         DROP TABLE clips;
+         ALTER TABLE clips_old RENAME TO clips;
+         CREATE INDEX clip_display ON clips(pinned DESC, display_order DESC, id DESC);
+         CREATE INDEX clip_recency ON clips(last_used DESC, id DESC);
+         COMMIT;
+         PRAGMA foreign_keys=ON;",
+    )
+    .unwrap();
+    assert!(!payload_is_last(db).unwrap());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

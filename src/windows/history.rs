@@ -164,10 +164,11 @@ impl History {
         let journal: String = db
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
             .map_err(io::Error::other)?;
-        if version == SCHEMA_VERSION
-            && journal.eq_ignore_ascii_case("wal")
-            && crate::history_schema::payload_is_last(&db)?
-        {
+        if version == SCHEMA_VERSION && journal.eq_ignore_ascii_case("wal") {
+            // The schema is current. Moving the payload last is only an
+            // optimization: if another process holds the write lock, it is
+            // deferred and the old layout stays readable without a write lock.
+            crate::history_schema::move_payload_last(&mut db)?;
             let secret: Vec<u8> = db
                 .query_row("SELECT secret FROM metadata WHERE id=1", [], |row| {
                     row.get(0)
@@ -1004,6 +1005,36 @@ fn crypt(input: &[u8], encrypt: bool, entropy: Option<&[u8]>) -> io::Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_layout_opens_for_reading_while_another_process_holds_the_write_lock() {
+        let profile = tempfile::tempdir().unwrap();
+        let limits = Limits::from_config(&crate::config::Config::default());
+        History::open(profile.path())
+            .unwrap()
+            .store(&Clip::from_text("kept during the rebuild"), limits)
+            .unwrap();
+        let path = profile.path().join("history.sqlite3");
+        crate::history_schema::restore_old_layout(&Connection::open(&path).unwrap());
+        let mut writer = Connection::open(&path).unwrap();
+        let lock = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+
+        let reader = History::open(profile.path()).expect("opens without the write lock");
+        let entries = reader.list(0).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].preview, "kept during the rebuild");
+        assert!(!crate::history_schema::payload_is_last(&reader.db).unwrap());
+
+        lock.rollback().unwrap();
+        let reopened = History::open(profile.path()).unwrap();
+        assert!(crate::history_schema::payload_is_last(&reopened.db).unwrap());
+        assert_eq!(
+            reopened.list(0).unwrap()[0].preview,
+            "kept during the rebuild"
+        );
+    }
 
     #[test]
     fn rebasing_a_pinned_duplicate_keeps_the_pin_on_the_rebased_entry() {
