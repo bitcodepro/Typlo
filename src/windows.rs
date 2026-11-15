@@ -151,8 +151,21 @@ impl WinEdit {
             cbSize: size_of::<GUITHREADINFO>() as u32,
             ..Default::default()
         };
+        // For a console window Windows reports the thread of the program inside it
+        // (cmd.exe, powershell.exe). That thread has no focused window: the query
+        // fails, or succeeds without focus when the program owns hidden windows.
+        // The foreground thread query (0) still returns the console's focus.
+        let by_thread = thread != 0
+            && unsafe { GetGUIThreadInfo(thread, &mut info) } != 0
+            && !info.hwndFocus.is_null();
+        if !by_thread {
+            info = GUITHREADINFO {
+                cbSize: size_of::<GUITHREADINFO>() as u32,
+                ..Default::default()
+            };
+        }
         if thread == 0
-            || unsafe { GetGUIThreadInfo(thread, &mut info) } == 0
+            || (!by_thread && unsafe { GetGUIThreadInfo(0, &mut info) } == 0)
             || info.hwndFocus.is_null()
         {
             return Err(io::Error::other("No focused editor"));
@@ -2307,6 +2320,48 @@ fn tray_menu(window: HWND) {
     }
 }
 
+/// Waits until the key that chose the history item is released and the
+/// original window is active again before Typlo sends Ctrl+V.
+///
+/// Enter and Ctrl+1…Ctrl+9 must behave the same. Consoles (conhost, Windows
+/// Terminal) take a moment to accept input after they become the foreground
+/// window, so Ctrl+V sent right away is lost there.
+#[cfg(feature = "gui")]
+fn wait_for_paste_target(foreground: HWND) -> io::Result<()> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+    const SETTLE: Duration = Duration::from_millis(60);
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    let mut ready_since: Option<Instant> = None;
+    loop {
+        let key_held = (0x08_u16..=0xFE)
+            .filter(|&key| key != VK_PACKET)
+            .any(|key| unsafe { GetAsyncKeyState(key.into()) } < 0);
+        let active = unsafe { GetForegroundWindow() } == foreground;
+        if !key_held && active {
+            let since = *ready_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= SETTLE {
+                return Ok(());
+            }
+        } else {
+            ready_since = None;
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::other(if key_held {
+                crate::locale::text(
+                    "rust.errors.keysHeld",
+                    "The shortcut keys are still pressed",
+                )
+            } else {
+                crate::locale::text(
+                    "rust.errors.originUnavailable",
+                    "The original window is unavailable",
+                )
+            }));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[cfg(feature = "gui")]
 pub fn paste_history(
     owner: HWND,
@@ -2333,19 +2388,7 @@ pub fn paste_history(
     if !paste {
         return Ok(());
     }
-    let deadline = Instant::now() + Duration::from_millis(450);
-    while [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
-        .into_iter()
-        .any(|key| unsafe { GetAsyncKeyState(key.into()) } < 0)
-    {
-        if Instant::now() >= deadline {
-            return Err(io::Error::other(crate::locale::text(
-                "rust.errors.keysHeld",
-                "The shortcut keys are still pressed",
-            )));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_for_paste_target(foreground)?;
     let editor = WinEdit::default();
     if clipio::sequence() != sequence
         || !editor.target().is_ok_and(|target| {
