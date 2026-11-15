@@ -90,24 +90,30 @@ struct ChoicePreview {
 
 #[cfg(unix)]
 impl eframe::App for ChoicePreview {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        crate::appearance::clear_color(visuals)
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
-        if let Some(index) = self
-            .updates
-            .try_iter()
-            .last()
-            .filter(|&index| index < self.candidates.len())
-        {
-            self.index = index;
-        }
-        let candidate = &self.candidates[self.index];
-        ui.vertical_centered(|ui| {
-            ui.heading(&candidate.text);
-            ui.label(format!(
-                "{} · {} / {}",
-                candidate.language.name(),
-                self.index + 1,
-                self.candidates.len()
-            ));
+        crate::appearance::page(ui, |ui| {
+            if let Some(index) = self
+                .updates
+                .try_iter()
+                .last()
+                .filter(|&index| index < self.candidates.len())
+            {
+                self.index = index;
+            }
+            let candidate = &self.candidates[self.index];
+            ui.vertical_centered(|ui| {
+                ui.heading(&candidate.text);
+                ui.label(format!(
+                    "{} · {} / {}",
+                    candidate.language.name(),
+                    self.index + 1,
+                    self.candidates.len()
+                ));
+            });
         });
     }
 }
@@ -160,126 +166,141 @@ struct Window {
 }
 
 impl eframe::App for Window {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        crate::appearance::clear_color(visuals)
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
-        match &mut self.request {
-            Request::Add { word, language } => {
-                ui.label(tr(
-                    "dictionary.hint",
-                    "Enter the word as it should appear after correction.",
-                ));
-                ui.horizontal_wrapped(|ui| {
-                    ui.text_edit_singleline(word);
-                    if !self.exclusion {
-                        egui::ComboBox::from_id_salt("add-selected-language")
-                            .selected_text(LANGUAGES[*language])
-                            .show_ui(ui, |ui| {
-                                for (index, code) in LANGUAGES.into_iter().enumerate() {
-                                    ui.selectable_value(language, index, code);
-                                }
-                            });
-                    }
-                });
-                ui.checkbox(
-                    &mut self.exclusion,
-                    tr("rust.dictionary.never", "Никогда не исправлять"),
-                );
-                let language_code = if self.exclusion {
-                    ""
-                } else {
-                    LANGUAGES[*language]
-                };
-                let entry = Entry::new(word, language_code);
-                if self.priority.as_ref() != entry.as_ref().ok() {
-                    self.priority = None;
-                }
-                if ui.button(tr("rust.common.add", "Добавить")).clicked() {
-                    self.status = match entry.and_then(|entry| {
-                        let result = self
-                            .dictionary
-                            .add(std::slice::from_ref(&entry), &mut self.vocabulary)?;
-                        if result.inserted == 1 {
-                            return Ok(tr("manage.saved", "Saved").into());
-                        }
-                        if !entry.language.is_empty()
-                            && !self.dictionary.contains(&entry.word, &entry.language)?
-                        {
-                            self.priority = Some(entry.clone());
-                            return Ok(tr(
-                                "dictionary.existsBundled",
-                                "“{0}” is already in the built-in dictionary.",
-                            )
-                            .replace("{0}", &entry.word));
-                        }
-                        Ok(tr("rust.dictionary.duplicate", "Слово уже есть в словаре").into())
-                    }) {
-                        Ok(status) => status,
-                        Err(error) => error.to_string(),
-                    };
-                }
-                if self.priority.is_some()
-                    && ui
-                        .button(tr("dictionary.addPriority", "Add personal priority"))
-                        .clicked()
-                    && let Some(entry) = self.priority.take()
-                {
-                    self.status = match self.dictionary.add_priority(&entry, &mut self.vocabulary) {
-                        Ok(true) => tr("manage.saved", "Saved").into(),
-                        Ok(false) => {
-                            tr("rust.dictionary.duplicate", "Слово уже есть в словаре").into()
-                        }
-                        Err(error) => error.to_string(),
-                    };
-                }
-            }
-            Request::Choices { origin, choices } => {
-                if choices.is_empty() {
+        crate::appearance::page(ui, |ui| {
+            match &mut self.request {
+                Request::Add { word, language } => {
                     ui.label(tr(
-                        "rust.field.noChoices",
-                        "No dictionary matches in the allowed layouts.",
+                        "dictionary.hint",
+                        "Enter the word as it should appear after correction.",
                     ));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(crate::appearance::text_input(word).desired_width(280.));
+                        if !self.exclusion {
+                            egui::ComboBox::from_id_salt("add-selected-language")
+                                .selected_text(LANGUAGES[*language])
+                                .show_ui(ui, |ui| {
+                                    for (index, code) in LANGUAGES.into_iter().enumerate() {
+                                        ui.selectable_value(language, index, code);
+                                    }
+                                });
+                        }
+                    });
+                    ui.checkbox(
+                        &mut self.exclusion,
+                        tr("rust.dictionary.never", "Никогда не исправлять"),
+                    );
+                    let language_code = if self.exclusion {
+                        ""
+                    } else {
+                        LANGUAGES[*language]
+                    };
+                    let entry = Entry::new(word, language_code);
+                    if self.priority.as_ref() != entry.as_ref().ok() {
+                        self.priority = None;
+                    }
+                    if ui
+                        .add(crate::appearance::primary_button(tr(
+                            "rust.common.add",
+                            "Добавить",
+                        )))
+                        .clicked()
+                    {
+                        self.status = match entry.and_then(|entry| {
+                            let result = self
+                                .dictionary
+                                .add(std::slice::from_ref(&entry), &mut self.vocabulary)?;
+                            if result.inserted == 1 {
+                                return Ok(tr("manage.saved", "Saved").into());
+                            }
+                            if !entry.language.is_empty()
+                                && !self.dictionary.contains(&entry.word, &entry.language)?
+                            {
+                                self.priority = Some(entry.clone());
+                                return Ok(tr(
+                                    "dictionary.existsBundled",
+                                    "“{0}” is already in the built-in dictionary.",
+                                )
+                                .replace("{0}", &entry.word));
+                            }
+                            Ok(tr("rust.dictionary.duplicate", "Слово уже есть в словаре").into())
+                        }) {
+                            Ok(status) => status,
+                            Err(error) => error.to_string(),
+                        };
+                    }
+                    if self.priority.is_some()
+                        && ui
+                            .button(tr("dictionary.addPriority", "Add personal priority"))
+                            .clicked()
+                        && let Some(entry) = self.priority.take()
+                    {
+                        self.status =
+                            match self.dictionary.add_priority(&entry, &mut self.vocabulary) {
+                                Ok(true) => tr("manage.saved", "Saved").into(),
+                                Ok(false) => {
+                                    tr("rust.dictionary.duplicate", "Слово уже есть в словаре")
+                                        .into()
+                                }
+                                Err(error) => error.to_string(),
+                            };
+                    }
                 }
-                for (index, choice) in choices.iter().enumerate() {
-                    let selected = ui
-                        .button(format!("{} · {}", choice.text, choice.language.name()))
-                        .clicked();
-                    let first_via_keyboard =
-                        index == 0 && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    if selected || first_via_keyboard {
-                        match accept(*origin, index) {
-                            Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
-                            Err(error) => self.status = error.to_string(),
+                Request::Choices { origin, choices } => {
+                    if choices.is_empty() {
+                        ui.label(tr(
+                            "rust.field.noChoices",
+                            "No dictionary matches in the allowed layouts.",
+                        ));
+                    }
+                    for (index, choice) in choices.iter().enumerate() {
+                        let selected = ui
+                            .button(format!("{} · {}", choice.text, choice.language.name()))
+                            .clicked();
+                        let first_via_keyboard =
+                            index == 0 && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                        if selected || first_via_keyboard {
+                            match accept(*origin, index) {
+                                Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+                                Err(error) => self.status = error.to_string(),
+                            }
                         }
                     }
                 }
-            }
-            Request::Field {
-                method,
-                last_automatic_micros,
-                reason,
-            } => {
-                ui.label(method.as_str());
-                if let Some(reason) = reason {
-                    ui.label(reason.message());
+                Request::Field {
+                    method,
+                    last_automatic_micros,
+                    reason,
+                } => {
+                    ui.label(method.as_str());
+                    if let Some(reason) = reason {
+                        ui.label(reason.message());
+                    }
+                    if let Some(micros) = last_automatic_micros {
+                        ui.label(
+                            tr(
+                                "rust.tools.lastAutomatic",
+                                "The last auto-correction check took {0} ms",
+                            )
+                            .replace("{0}", &format!("{:.2}", *micros as f64 / 1000.)),
+                        );
+                    }
                 }
-                if let Some(micros) = last_automatic_micros {
-                    ui.label(
-                        tr(
-                            "rust.tools.lastAutomatic",
-                            "The last auto-correction check took {0} ms",
-                        )
-                        .replace("{0}", &format!("{:.2}", *micros as f64 / 1000.)),
-                    );
-                }
             }
-        }
-        if !self.status.is_empty() {
-            ui.label(&self.status);
-        }
-        if ui.button(tr("update.close", "Закрыть")).clicked()
-            || ui.input(|input| input.key_pressed(egui::Key::Escape))
-        {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-        }
+            if !self.status.is_empty() {
+                crate::appearance::hint(ui, &self.status);
+            }
+            ui.add_space(6.);
+            if ui.button(tr("update.close", "Закрыть")).clicked()
+                || ui.input(|input| input.key_pressed(egui::Key::Escape))
+            {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        });
     }
 }
 

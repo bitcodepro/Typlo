@@ -1495,6 +1495,18 @@ impl Workspace {
         }
     }
 
+    /// Closes the window, or asks first when settings have unsaved edits.
+    /// A `Close` command on the root viewport closes the app without a new
+    /// close request, so buttons must not send it directly.
+    fn request_close(&mut self, ctx: &egui::Context) {
+        if self.dirty() && !self.closing {
+            self.confirm_close = true;
+        } else {
+            self.closing = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
     fn dirty(&self) -> bool {
         serde_json::to_value(&self.settings).ok() != self.saved
     }
@@ -1732,9 +1744,6 @@ impl eframe::App for Workspace {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        let close = |ui: &Ui| {
-                                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close)
-                                        };
                                         if page == Page::Settings {
                                             let save = egui::Button::new(
                                                 RichText::new(tr("settings.save", "Save"))
@@ -1746,11 +1755,11 @@ impl eframe::App for Workspace {
                                             }
                                             if ui.button(tr("settings.cancel", "Cancel")).clicked()
                                             {
-                                                close(ui);
+                                                self.request_close(ui.ctx());
                                             }
                                         } else {
                                             if ui.button(tr("update.close", "Close")).clicked() {
-                                                close(ui);
+                                                self.request_close(ui.ctx());
                                             }
                                             if ui.button(tr("tray.settings", "Settings")).clicked()
                                             {
@@ -1791,7 +1800,7 @@ impl eframe::App for Workspace {
                             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
                             self.updates.show(ui);
                             if ui.button(tr("update.close", "Close")).clicked() {
-                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                                self.request_close(ui.ctx());
                             }
                         }
                     }
@@ -2222,6 +2231,24 @@ fn available_choices() -> Vec<Language> {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+
+    #[test]
+    fn close_buttons_ask_before_discarding_unsaved_settings() {
+        let folder = tempfile::tempdir().unwrap();
+        let context = egui::Context::default();
+        let mut workspace = Workspace::new(folder.path().into(), None, Page::Settings);
+        workspace.request_close(&context);
+        assert!(
+            workspace.closing && !workspace.confirm_close,
+            "clean settings close at once"
+        );
+
+        let mut workspace = Workspace::new(folder.path().into(), None, Page::Update);
+        workspace.settings.auto_correct = !workspace.settings.auto_correct;
+        workspace.request_close(&context);
+        assert!(workspace.confirm_close, "edits ask before closing");
+        assert!(!workspace.closing, "edits are not discarded");
+    }
 
     #[test]
     fn settings_tabs_keep_their_positions_on_hover_and_selection() {

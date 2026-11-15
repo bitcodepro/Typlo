@@ -721,9 +721,22 @@ impl History {
                 )
                 .optional()
                 .map_err(io::Error::other)?;
-            if duplicate.is_some() {
-                // Another entry already points at the same files; keep that one.
-                tx.execute("DELETE FROM clips WHERE id=?1 AND pinned=0", [id])
+            if let Some(duplicate) = duplicate {
+                // Another entry already points at the rebased files. Merge this one into it:
+                // keep its pin and received-files record, then drop the stale original.
+                tx.execute(
+                    "UPDATE clips SET pinned=MAX(pinned,(SELECT pinned FROM clips WHERE id=?2))
+                     WHERE id=?1",
+                    params![duplicate, id],
+                )
+                .map_err(io::Error::other)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO lan_received_files(clip_id, folder, bytes)
+                     SELECT ?1, folder, bytes FROM lan_received_files WHERE clip_id=?2",
+                    params![duplicate, id],
+                )
+                .map_err(io::Error::other)?;
+                tx.execute("DELETE FROM clips WHERE id=?1", [id])
                     .map_err(io::Error::other)?;
                 continue;
             }
@@ -991,6 +1004,39 @@ fn crypt(input: &[u8], encrypt: bool, entropy: Option<&[u8]>) -> io::Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebasing_a_pinned_duplicate_keeps_the_pin_on_the_rebased_entry() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut store = History::open(profile.path()).unwrap();
+        let limits = Limits::from_config(&crate::config::Config::default());
+        let old = profile.path().join("old");
+        let new = profile.path().join("new");
+        let files = |root: &Path| {
+            Clip::from_legacy(
+                3,
+                root.join("Transfer-abc123")
+                    .join("a.txt")
+                    .to_string_lossy()
+                    .into_owned()
+                    .into_bytes(),
+                None,
+            )
+            .unwrap()
+        };
+        store.store(&files(&old), limits).unwrap();
+        let original = store.list(0).unwrap()[0].id;
+        store.pin(original, true).unwrap();
+        store.store(&files(&new), limits).unwrap();
+
+        store.rebase_received_files(&old, &new).unwrap();
+
+        let entries = store.list(0).unwrap();
+        assert_eq!(entries.len(), 1, "the stale original is merged");
+        assert!(entries[0].pinned, "the pin moves to the retained entry");
+        let text = store.load(entries[0].id).unwrap().unwrap().text();
+        assert!(Path::new(text.trim()).starts_with(&new), "{text}");
+    }
 
     #[test]
     fn reopening_history_reads_during_a_write_and_preserves_legacy_data() {

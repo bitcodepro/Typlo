@@ -101,3 +101,60 @@ pub fn configure(ctx: &egui::Context) {
 pub fn rgb(value: u32) -> Color32 {
     Color32::from_rgb((value >> 16) as u8, (value >> 8) as u8, value as u8)
 }
+
+/// Background of every Typlo window. Windows that draw straight into the root
+/// `Ui` have no panel, so without this the theme's background is not painted.
+pub fn clear_color(visuals: &egui::Visuals) -> [f32; 4] {
+    visuals.panel_fill.to_normalized_gamma_f32()
+}
+
+/// Standard page body: themed background and the same margins as Settings.
+pub fn page<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .fill(ui.visuals().panel_fill)
+        .inner_margin(egui::Margin::symmetric(20, 14))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            add_contents(ui)
+        })
+        .inner
+}
+
+/// Standard footer with a separator line, used for the main window actions.
+pub fn footer(ui: &mut egui::Ui, id: &'static str, add_contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Panel::bottom(id)
+        .show_separator_line(true)
+        .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
+        .show_inside(ui, |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(20, 12))
+                .show(ui, |ui| ui.horizontal(add_contents));
+        });
+}
+
+pub fn heading(ui: &mut egui::Ui, label: &str) {
+    ui.add_space(6.);
+    ui.label(egui::RichText::new(label).size(16.).strong());
+}
+
+pub fn hint(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(12.)
+            .color(ui.visuals().weak_text_color()),
+    );
+}
+
+/// Accent button for the main action of a window.
+pub fn primary_button(label: &str) -> egui::Button<'_> {
+    egui::Button::new(egui::RichText::new(label).color(Color32::WHITE)).fill(rgb(0x2563eb))
+}
+
+/// Bordered group for lists inside a page.
+pub fn group(ui: &egui::Ui) -> egui::Frame {
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(ui.visuals().window_stroke)
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+}
