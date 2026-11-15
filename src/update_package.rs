@@ -113,7 +113,7 @@ pub fn download(url: &str, path: &Path, max: u64, seconds: u32) -> io::Result<()
             "--silent",
             "--show-error",
             "--user-agent",
-            "Typlo2.0",
+            "Typlo",
             "--connect-timeout",
             "10",
             "--speed-limit",

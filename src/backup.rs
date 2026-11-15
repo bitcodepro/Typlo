@@ -198,7 +198,7 @@ fn write_json(path: &Path, document: &impl Serialize) -> io::Result<()> {
 }
 
 fn invalid() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "Invalid Typlo Rust backup")
+    io::Error::new(io::ErrorKind::InvalidData, "Invalid Typlo backup")
 }
 
 #[cfg(test)]

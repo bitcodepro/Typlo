@@ -283,8 +283,8 @@ impl SettingsTab {
 impl Page {
     fn title(self) -> &'static str {
         match self {
-            Self::Settings => tr("settings.title", "Typlo2.0 — settings"),
-            Self::Shortcuts => tr("shortcuts.title", "Typlo2.0 — keyboard shortcuts"),
+            Self::Settings => tr("settings.title", "Typlo — settings"),
+            Self::Shortcuts => tr("shortcuts.title", "Typlo — keyboard shortcuts"),
             Self::Dictionary => tr("manage.title", "Personal dictionary"),
             Self::Tools => tr("tools.title", "Typlo tools"),
             Self::Update => tr("update.dialogTitle", "Typlo updates"),
@@ -306,6 +306,10 @@ struct Workspace {
     page: Page,
     tab: SettingsTab,
     settings: Config,
+    /// Settings as last loaded or saved, used to detect unsaved edits.
+    saved: Option<serde_json::Value>,
+    confirm_close: bool,
+    closing: bool,
     profile: PathBuf,
     status: String,
     report: Option<UiProbe>,
@@ -366,7 +370,8 @@ impl HistoryStatus {
         let profile = profile.to_owned();
         let ctx = ctx.clone();
         self.pending = Some(receive);
-        self.next_refresh = Some(now + Duration::from_secs(1));
+        // Each refresh opens the history database, so poll gently.
+        self.next_refresh = Some(now + Duration::from_secs(5));
         std::thread::spawn(move || {
             #[cfg(windows)]
             let result = typlo_rust::windows::history::History::stats_for_profile(&profile).ok();
@@ -438,7 +443,12 @@ impl Workspace {
         if let Err(error) =
             typlo_rust::unix_desktop::autostart(&self.profile, self.settings.start_with_windows)
         {
-            return format!("{success}. Не удалось применить автозапуск. {error}");
+            return tr(
+                "rust.settings.autostartFailed",
+                "{0}. Could not apply autostart: {1}",
+            )
+            .replace("{0}", success)
+            .replace("{1}", &error.to_string());
         }
         success.into()
     }
@@ -459,6 +469,9 @@ impl Workspace {
             .map(SettingsDiagnostics::new);
         Self {
             page,
+            saved: serde_json::to_value(&settings).ok(),
+            confirm_close: false,
+            closing: false,
             tab: SettingsTab::default(),
             settings,
             profile,
@@ -621,6 +634,7 @@ impl Workspace {
             SettingsTab::Clipboard => self.clipboard_history(ui),
             #[cfg(windows)]
             SettingsTab::Computers => {
+                immediate_hint(ui);
                 heading(
                     ui,
                     tr(
@@ -633,8 +647,12 @@ impl Workspace {
             SettingsTab::Snippets => self.snippets(ui),
             #[cfg(windows)]
             SettingsTab::Capture => self.screenshots(ui),
-            SettingsTab::Dictionary => self.dictionary.show(ui),
+            SettingsTab::Dictionary => {
+                immediate_hint(ui);
+                self.dictionary.show(ui);
+            }
             SettingsTab::Backup => {
+                immediate_hint(ui);
                 heading(ui, tr("rust.tabs.settingsFile", "Settings file"));
                 self.backup(ui, false);
                 self.backup(ui, true);
@@ -672,13 +690,21 @@ impl Workspace {
             ),
         );
         if ui.button(tr("tools.title", "Typlo tools")).clicked() {
-            self.navigate(ui, Page::Tools);
+            #[cfg(windows)]
+            {
+                self.tab = SettingsTab::Diagnostics;
+                self.refresh_diagnostics(false);
+            }
+            #[cfg(not(windows))]
+            {
+                self.tab = SettingsTab::Backup;
+            }
         }
         if ui
             .button(tr("manage.title", "Personal dictionary"))
             .clicked()
         {
-            self.navigate(ui, Page::Dictionary);
+            self.tab = SettingsTab::Dictionary;
         }
         ui.checkbox(
             &mut self.settings.switch_layout,
@@ -694,8 +720,15 @@ impl Workspace {
                 .clicked()
             {
                 let layouts = config::available_layouts();
-                if self.settings.cycle.is_empty() {
-                    self.settings.cycle = layouts;
+                if !layouts.is_empty() {
+                    self.settings
+                        .cycle
+                        .retain(|layout| layouts.contains(layout));
+                    for layout in layouts {
+                        if !self.settings.cycle.contains(&layout) {
+                            self.settings.cycle.push(layout);
+                        }
+                    }
                 }
             }
         });
@@ -1399,6 +1432,7 @@ impl Workspace {
                         match backup.restore(&self.profile) {
                             Ok(settings) => {
                                 self.settings = settings;
+                                self.saved = serde_json::to_value(&self.settings).ok();
                                 locale::set_language(&self.settings.ui_language);
                                 locale::theme(ui.ctx(), self.settings.ui_theme);
                                 locale::fonts(ui.ctx(), &self.settings.ui_language);
@@ -1448,10 +1482,52 @@ impl Workspace {
             Ok(()) => {
                 #[cfg(windows)]
                 typlo_rust::windows::reload_settings();
+                self.saved = serde_json::to_value(&self.settings).ok();
                 self.status = self.saved_status(tr("rust.settings.saved", "Settings saved"));
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                if self.closing {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
-            Err(error) => self.status = error.to_string(),
+            Err(error) => {
+                self.closing = false;
+                self.status = error.to_string();
+            }
+        }
+    }
+
+    fn dirty(&self) -> bool {
+        serde_json::to_value(&self.settings).ok() != self.saved
+    }
+
+    fn unsaved_changes(&mut self, ui: &Ui) {
+        let response = egui::Modal::new(ui.id().with("unsaved-changes")).show(ui.ctx(), |ui| {
+            ui.heading(tr("settings.unsavedTitle", "Save changes?"));
+            ui.label(tr(
+                "settings.unsavedBody",
+                "You have changed settings that are not saved yet.",
+            ));
+            ui.add_space(8.);
+            ui.horizontal(|ui| {
+                if ui.button(tr("settings.save", "Save")).clicked() {
+                    self.confirm_close = false;
+                    self.closing = true;
+                    self.save(ui);
+                }
+                if ui.button(tr("settings.discard", "Don't save")).clicked() {
+                    self.confirm_close = false;
+                    self.closing = true;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if ui
+                    .button(tr("settings.keepEditing", "Keep editing"))
+                    .clicked()
+                {
+                    self.confirm_close = false;
+                }
+            });
+        });
+        if response.should_close() {
+            self.confirm_close = false;
         }
     }
 
@@ -1619,6 +1695,16 @@ impl eframe::App for Workspace {
 
     fn ui(&mut self, ui: &mut Ui, _: &mut eframe::Frame) {
         let page = self.page;
+        let dirty = self.dirty();
+        // Every way of closing (title bar, Cancel, Close on another page) keeps unsaved edits.
+        if ui.ctx().input(|input| input.viewport().close_requested()) && dirty && !self.closing {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm_close = true;
+        }
+        if self.confirm_close {
+            self.unsaved_changes(ui);
+        }
         if page != Page::Update {
             egui::Panel::bottom("settings-footer")
                 .show_separator_line(true)
@@ -1655,7 +1741,7 @@ impl eframe::App for Workspace {
                                                     .color(Color32::WHITE),
                                             )
                                             .fill(typlo_rust::appearance::rgb(0x2563eb));
-                                            if ui.add(save).clicked() {
+                                            if ui.add_enabled(dirty, save).clicked() {
                                                 self.save(ui);
                                             }
                                             if ui.button(tr("settings.cancel", "Cancel")).clicked()
@@ -1746,6 +1832,16 @@ fn settings_tab_button(ui: &mut Ui, tab: SettingsTab, selected: bool) -> egui::R
 fn heading(ui: &mut Ui, label: &str) {
     ui.add_space(8.);
     ui.label(RichText::new(label).size(16.).strong());
+}
+
+fn immediate_hint(ui: &mut Ui) {
+    hint(
+        ui,
+        tr(
+            "rust.tabs.immediate",
+            "Changes on this tab apply immediately and do not need Save.",
+        ),
+    );
 }
 
 fn hint(ui: &mut Ui, text: &str) {

@@ -225,9 +225,7 @@ pub fn autostart(profile: &Path, enabled: bool) -> io::Result<()> {
                 other => path.push(other),
             }
         }
-        format!(
-            "[Desktop Entry]\nType=Application\nName=Typlo2.0\nExec=\"{path}\"\nTerminal=false\n"
-        )
+        format!("[Desktop Entry]\nType=Application\nName=Typlo\nExec=\"{path}\"\nTerminal=false\n")
     };
     #[cfg(target_os = "macos")]
     let entry = {

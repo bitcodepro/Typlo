@@ -314,18 +314,24 @@ impl DictionaryView {
 
     fn show_added(&mut self, result: io::Result<Added>) {
         self.status = match result {
-            Ok(added) if added.existing.is_empty() => format!("Добавлено {}", added.inserted),
-            Ok(added) => format!(
-                "Добавлено {}. Уже в словаре ({}) — {}",
-                added.inserted,
-                added.existing.len(),
-                added
+            Ok(added) if added.existing.is_empty() => {
+                tr("rust.dictionary.added", "Added {0}").replace("{0}", &added.inserted.to_string())
+            }
+            Ok(added) => tr(
+                "rust.dictionary.addedExisting",
+                "Added {0}. Already in the dictionary ({1}): {2}",
+            )
+            .replace("{0}", &added.inserted.to_string())
+            .replace("{1}", &added.existing.len().to_string())
+            .replace(
+                "{2}",
+                &added
                     .existing
                     .iter()
                     .take(10)
                     .map(|entry| entry.word.as_str())
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(", "),
             ),
             Err(error) => error.to_string(),
         };

@@ -405,7 +405,7 @@ pub(super) fn run(
     .map_err(|_| {
         io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "Allow Typlo Rust in Accessibility and Input Monitoring",
+            "Allow Typlo in Accessibility and Input Monitoring",
         )
     })?;
     context.port = port.get();
@@ -781,9 +781,15 @@ impl ToolJob {
         let original = editor.snapshot();
         let request = if action == Action::Tools {
             let method = if original.is_ok() {
-                "Доступна прямая замена через macOS Accessibility."
+                crate::locale::text(
+                    "rust.tools.macDirect",
+                    "Direct replacement through macOS Accessibility is available.",
+                )
             } else {
-                "Поле не предоставило проверяемый диапазон текста."
+                crate::locale::text(
+                    "rust.tools.noRange",
+                    "The field did not provide a verifiable text range.",
+                )
             };
             Request::Field {
                 method: method.into(),

@@ -180,8 +180,9 @@ impl History {
                     SELECT id, pinned, ROW_NUMBER() OVER (ORDER BY pinned DESC,display_order DESC,id DESC) AS position,
                     SUM(bytes) OVER (ORDER BY pinned DESC,display_order DESC,id DESC) AS total FROM clips
                 ) WHERE pinned=0 AND (position>?1 OR total>?2)
-             )",
-            params![settings.history_items, max_total],
+             ) AND fingerprint<>?3",
+            // The entry just copied stays even when pinned entries fill the history.
+            params![settings.history_items, max_total, fingerprint.as_slice()],
         ).map_err(io::Error::other)?;
         tx.commit().map_err(io::Error::other)
     }
@@ -474,7 +475,8 @@ fn secret_service(profile: &Path, create: Option<&[u8; 32]>) -> io::Result<Optio
             return Ok(None);
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(1);
+    // A locked keyring shows an unlock prompt at login; give the user time to answer it.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let success = loop {
         match child.try_wait()? {
             Some(status) => break status.success(),

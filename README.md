@@ -1,6 +1,6 @@
-# Typlo2.0
+# Typlo
 
-Typlo2.0 is the Rust version of Typlo. [Project and releases](https://github.com/bitcodepro/Typlo/releases)
+Typlo is a keyboard layout, spelling and clipboard tool written in Rust. [Project and releases](https://github.com/bitcodepro/Typlo/releases)
 
 On Windows, extract Typlo to a writable folder and run `Typlo.exe`. Keep `typlo-settings.exe` and `resources` beside it. Typlo keeps its profile in `data` beside the original executable. Versions installed by the updater share that same folder. New profiles use English. Change it under **Settings → Interface language**.
 
@@ -29,14 +29,14 @@ On Windows, letters, top-row digits, and supported punctuation in shortcuts refe
 
 Clipboard history opens near the cursor. Its item menu supports viewing, pasting, pinning, and deleting items. You can paste formatted content as plain text and extract text from images. `Ctrl+O` opens the viewer, `Ctrl+T` runs OCR, and `Ctrl+1`–`Ctrl+9` paste items by position.
 
-Select the pencil to edit a text item or add a caption to an image or file selection. Typlo copies and shares the attachment and caption as one entry. When pasting, the destination app chooses which Windows clipboard formats it can use. Update Typlo2.0 on both computers to share entries with captions.
+Select the pencil to edit a text item or add a caption to an image or file selection. Typlo copies and shares the attachment and caption as one entry. When pasting, the destination app chooses which Windows clipboard formats it can use. Update Typlo on both computers to share entries with captions.
 
 ## Share clipboard items between Windows computers
 
 1. On both computers, open **Settings → Computers**. Select **Show pairing code**, enter each code on the other computer, then select **Pair computer**. Use **Copy code** if you can transfer the code between computers.
-2. Open history with `Ctrl+Shift+V` and select ↗ beside the item. Typlo2.0 can send text, images, files, and folders. The receiving computer adds the item to its history. Use **Open received files** to find saved files.
+2. Open history with `Ctrl+Shift+V` and select ↗ beside the item. Typlo can send text, images, files, and folders. The receiving computer adds the item to its history. Use **Open received files** to find saved files.
 
-The computers discover each other on the local network. If discovery fails, enter a private IPv4 address manually. Allow Typlo2.0 through Windows Firewall on private networks to receive items. Transfers use TLS on TCP 49237, and discovery uses UDP 49237. You can pair with one other computer. The file transfer limit is 512 MiB. Received files are saved as ordinary files under `data/Received files` and stay there until deleted.
+The computers discover each other on the local network. If discovery fails, enter a private IPv4 address manually. Allow Typlo through Windows Firewall on private networks to receive items. Transfers use TLS on TCP 49237, and discovery uses UDP 49237. You can pair with one other computer. The file transfer limit is 512 MiB. Received files are saved as ordinary files under `data/Received files` and stay there until deleted.
 
 **Check connection** reports discovery, connectivity, and certificate verification. The **Received files** history filter shows received files and folders, their stored size, and a button to open the folder.
 

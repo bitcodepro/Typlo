@@ -16,12 +16,19 @@ pub fn available() -> bool {
 
 pub fn recognize(mut image: RgbaImage) -> io::Result<String> {
     let _runtime = Runtime::new()?;
-    let engine = OcrEngine::TryCreateFromUserProfileLanguages()
-        .map_err(|error| io::Error::other(format!("OCR Windows недоступен ({error})")))?;
+    let engine = OcrEngine::TryCreateFromUserProfileLanguages().map_err(|error| {
+        io::Error::other(format!(
+            "{} ({error})",
+            crate::locale::text("rust.errors.ocrUnavailable", "Windows OCR is unavailable")
+        ))
+    })?;
     let max = OcrEngine::MaxImageDimension().map_err(io::Error::other)?;
     let largest = image.width().max(image.height());
     if largest == 0 || max == 0 {
-        return Err(io::Error::other("Некорректный размер изображения"));
+        return Err(io::Error::other(crate::locale::text(
+            "rust.errors.imageSize",
+            "Invalid image size",
+        )));
     }
     if largest > max {
         let dimension =

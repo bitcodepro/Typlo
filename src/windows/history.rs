@@ -373,7 +373,7 @@ impl History {
             tx.execute("INSERT OR REPLACE INTO lan_received_files(clip_id, folder, bytes) VALUES(?1,?2,?3)",
                 params![id, folder, i64::try_from(bytes).map_err(io::Error::other)?]).map_err(io::Error::other)?;
         }
-        trim(&tx, limits)?;
+        trim(&tx, limits, id)?;
         if must_keep
             && !tx
                 .query_row(
@@ -460,36 +460,37 @@ impl History {
         Ok(())
     }
 
+    #[cfg(feature = "gui")]
     pub fn search(&self, query: &str, offset: usize) -> io::Result<Vec<Entry>> {
         let query = query.trim().to_lowercase();
         if query.is_empty() {
             return self.list(offset);
         }
-        let mut start = 0;
+        let image_terms =
+            crate::locale::text("history.imageSearch", "image picture").to_lowercase();
+        let image_match = image_terms.contains(&query) || "image".contains(&query);
         let mut skipped = 0;
         let mut result = Vec::new();
-        loop {
-            let page = self.list(start)?;
-            let next = page.len() > 50;
-            for entry in page.into_iter().take(50).filter(|entry| {
-                !entry.unreadable
-                    && (entry.preview.to_lowercase().contains(&query)
-                        || (entry.kind == Kind::Image && "изображение image".contains(&query)))
-            }) {
-                if skipped < offset {
-                    skipped += 1;
-                } else {
-                    result.push(entry);
-                }
-                if result.len() == 51 {
-                    return Ok(result);
-                }
+        // One pass over the history; later pages skip the earlier matches.
+        self.scan(|row| {
+            // Unreadable entries never match, as in the paged list.
+            let Ok(entry) = read_entry(row, None) else {
+                return true;
+            };
+            if entry.unreadable
+                || !(entry.preview.to_lowercase().contains(&query)
+                    || (entry.kind == Kind::Image && image_match))
+            {
+                return true;
             }
-            if !next {
-                return Ok(result);
+            if skipped < offset {
+                skipped += 1;
+                return true;
             }
-            start += 50;
-        }
+            result.push(entry);
+            result.len() < 51
+        })?;
+        Ok(result)
     }
 
     pub fn load(&self, id: i64) -> io::Result<Option<Clip>> {
@@ -712,6 +713,20 @@ impl History {
             }
             let mut replacement = Clip::from_legacy(3, rebased.join("\n").into_bytes(), None)?;
             replacement.set_editable_text(&clip.editable_text())?;
+            let duplicate: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM clips WHERE fingerprint=?1 AND id<>?2",
+                    params![fingerprint(&self.key, &replacement).as_slice(), id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(io::Error::other)?;
+            if duplicate.is_some() {
+                // Another entry already points at the same files; keep that one.
+                tx.execute("DELETE FROM clips WHERE id=?1 AND pinned=0", [id])
+                    .map_err(io::Error::other)?;
+                continue;
+            }
             tx.execute(
                 "UPDATE clips SET payload=?2,preview=?3,bytes=?4,fingerprint=?5 WHERE id=?1",
                 params![
@@ -895,7 +910,9 @@ fn next_order(db: &Connection) -> io::Result<i64> {
     .map_err(io::Error::other)
 }
 
-fn trim(db: &Connection, limits: Limits) -> io::Result<()> {
+/// Drops the oldest unpinned entries over the limits. The entry that was just
+/// stored is kept even when pinned entries alone fill the history.
+fn trim(db: &Connection, limits: Limits, newest: i64) -> io::Result<()> {
     db.execute(
         "DELETE FROM clips WHERE pinned=0 AND id IN (
            SELECT id FROM (
@@ -903,11 +920,12 @@ fn trim(db: &Connection, limits: Limits) -> io::Result<()> {
                ROW_NUMBER() OVER (ORDER BY pinned DESC,display_order DESC,id DESC) AS position,
                SUM(bytes) OVER (ORDER BY pinned DESC,display_order DESC,id DESC) AS total
              FROM clips
-           ) WHERE pinned=0 AND (position>?1 OR total>?2)
+           ) WHERE pinned=0 AND id<>?3 AND (position>?1 OR total>?2)
          )",
         params![
             limits.max_items,
-            i64::try_from(limits.max_total).map_err(io::Error::other)?
+            i64::try_from(limits.max_total).map_err(io::Error::other)?,
+            newest
         ],
     )
     .map_err(io::Error::other)?;

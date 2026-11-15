@@ -65,7 +65,10 @@ impl Job {
         let source = active_language(target);
         if action == Action::Tools {
             let method = match editor.snapshot() {
-                Ok(_) => "Прямая замена Windows Edit".to_owned(),
+                Ok(_) => {
+                    crate::locale::text("rust.tools.editDirect", "Direct Windows Edit replacement")
+                        .to_owned()
+                }
                 Err(error) if error.kind() == io::ErrorKind::Unsupported => String::new(),
                 Err(error) => return Err(error),
             };
@@ -186,9 +189,9 @@ impl Job {
                     if editor().target().is_err() { return Ok(None); }
                     if let Request::Field { method, .. } = &mut request && method.is_empty() {
                         *method = match accessible::check_focused(editor()) {
-                            Ok(true) => "Выделение проверено через UI Automation. Доступна замена через буфер обмена.",
-                            Ok(false) => "UI Automation доступен. Выделите текст для замены.",
-                            Err(_) => "Поле не предоставило проверяемый диапазон текста.",
+                            Ok(true) => crate::locale::text("rust.tools.uiaSelection", "Selection verified through UI Automation. Replacement through the clipboard is available."),
+                            Ok(false) => crate::locale::text("rust.tools.uiaSelect", "UI Automation is available. Select text to replace."),
+                            Err(_) => crate::locale::text("rust.tools.noRange", "The field did not provide a verifiable text range."),
                         }.into();
                     }
                     if editor().target().is_err() { return Ok(None); }

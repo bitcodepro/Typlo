@@ -48,7 +48,7 @@ pub fn run(
     } else {
         (unsafe { GetPhysicalCursorPos(&mut cursor) }) != 0
     };
-    let title = tr("history.title", "Typlo2.0 — clipboard history");
+    let title = tr("history.title", "Typlo — clipboard history");
     eframe::run_native(
         title,
         eframe::NativeOptions {
@@ -1380,7 +1380,7 @@ impl Window {
                 });
                 let ctx = ui.ctx();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-                    tr("viewer.title", "Typlo2.0 — clipboard item").into(),
+                    tr("viewer.title", "Typlo — clipboard item").into(),
                 ));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
                 ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(

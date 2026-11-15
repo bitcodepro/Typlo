@@ -262,10 +262,13 @@ impl eframe::App for Window {
                     ui.label(reason.message());
                 }
                 if let Some(micros) = last_automatic_micros {
-                    ui.label(format!(
-                        "Последняя проверка автозамены заняла {:.2} мс",
-                        *micros as f64 / 1000.
-                    ));
+                    ui.label(
+                        tr(
+                            "rust.tools.lastAutomatic",
+                            "The last auto-correction check took {0} ms",
+                        )
+                        .replace("{0}", &format!("{:.2}", *micros as f64 / 1000.)),
+                    );
                 }
             }
         }

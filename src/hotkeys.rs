@@ -252,7 +252,11 @@ impl Hotkeys {
             if output.iter().any(|(_, existing)| *existing == chord) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("Сочетание используется дважды: {shortcut}"),
+                    crate::locale::text(
+                        "rust.hotkeys.duplicate",
+                        "This shortcut is used twice: {0}",
+                    )
+                    .replace("{0}", shortcut),
                 ));
             }
             output.push((action, chord));

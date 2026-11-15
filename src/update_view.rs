@@ -80,7 +80,7 @@ impl UpdateView {
                     }
                     Ok(Reply::Available(None)) => {
                         self.available = None;
-                        tr("rust.update.none", "Новой сборки Typlo Rust нет").into()
+                        tr("rust.update.none", "No newer Typlo package is available").into()
                     }
                     Ok(Reply::Installed) => {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
