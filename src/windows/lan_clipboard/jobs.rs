@@ -104,16 +104,29 @@ struct PullState {
     error: String,
 }
 
-/// The entry waiting for `peer`, if its sender job is still running.
+/// The entry waiting for `peer`, if the sender job that offered it is the one
+/// still running.
 pub(super) fn pending(profile: &Path, peer: &[u8; 32]) -> io::Result<Option<Pending>> {
     let directory = root(profile);
     let Some(pending): Option<Pending> = read(&directory.join("pull.json"))? else {
         return Ok(None);
     };
-    if &pending.peer != peer || lock(&directory)?.try_lock().is_ok() {
+    // An offer left by an interrupted sender must not be served under the
+    // lock of a later, unrelated send.
+    let offered_by_current_job = read::<Job>(&directory.join("status.json"))?.is_some_and(|job| {
+        job.attempt == pending.attempt && matches!(job.phase, Phase::Sending | Phase::Waiting)
+    });
+    if &pending.peer != peer || !offered_by_current_job || lock(&directory)?.try_lock().is_ok() {
         return Ok(None);
     }
     Ok(Some(pending))
+}
+
+/// Removes an offer and its progress, for example one left by a sender that
+/// was terminated while it waited.
+fn discard_offer(directory: &Path) {
+    let _ = fs::remove_file(directory.join("pull.json"));
+    let _ = fs::remove_file(directory.join("pull-state.json"));
 }
 
 impl Pending {
@@ -182,6 +195,7 @@ pub fn run(profile: &Path, entry: i64, retry: bool) -> io::Result<()> {
     let lock = lock(&directory)?;
     lock.try_lock()
         .map_err(|_| io::Error::other("A transfer is already running"))?;
+    discard_offer(&directory);
     let certificate =
         Peer::load(profile)?.ok_or_else(|| invalid("Pair the other computer in Settings"))?;
     let peer = fingerprint(&certificate.certificate);
@@ -336,8 +350,7 @@ fn wait_for_pull(directory: &Path, job: &mut Job, cancelled: &AtomicBool) -> io:
         thread::park_timeout(Duration::from_millis(150));
     };
     // Remove the offer first so a pull in progress stops at its next step.
-    let _ = fs::remove_file(directory.join("pull.json"));
-    let _ = fs::remove_file(state_path);
+    discard_offer(directory);
     result
 }
 
@@ -364,12 +377,57 @@ pub(super) fn offer_for_test(
         attempt: random_id()?,
         peer,
     };
+    write(&directory, "status.json", &job)?;
     wait_for_pull(&directory, &mut job, cancelled)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abandoned_offer_is_never_served_under_a_later_send() {
+        let profile = tempfile::tempdir().unwrap();
+        let directory = root(profile.path());
+        fs::create_dir(&directory).unwrap();
+        let peer = [3; 32];
+        let job = |entry, attempt| Job {
+            entry,
+            phase: Phase::Waiting,
+            done: 0,
+            total: 0,
+            error: String::new(),
+            transfer: [entry as u8; 16],
+            attempt,
+            peer,
+        };
+        // Sender A offered entry 1 and was terminated: its files remain.
+        let abandoned = job(1, [1; 16]);
+        write(&directory, "status.json", &abandoned).unwrap();
+        let offer = Pending {
+            entry: 1,
+            transfer: abandoned.transfer,
+            attempt: abandoned.attempt,
+            peer,
+        };
+        write(&directory, "pull.json", &offer).unwrap();
+        assert!(
+            pending(profile.path(), &peer).unwrap().is_none(),
+            "no sender holds the lock"
+        );
+
+        // Sender B for entry 2 holds the lock; the old offer must not be served
+        // even if B did not clear it.
+        let active = lock(&directory).unwrap();
+        active.try_lock().unwrap();
+        write(&directory, "status.json", &job(2, [2; 16])).unwrap();
+        assert!(pending(profile.path(), &peer).unwrap().is_none());
+
+        // A new send also removes the leftover files.
+        discard_offer(&directory);
+        assert!(!directory.join("pull.json").exists());
+        drop(active);
+    }
 
     #[test]
     fn interrupted_job_keeps_its_transfer_id_and_attempt_scoped_cancel() {
