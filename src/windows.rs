@@ -43,6 +43,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     ptr::null_mut,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
@@ -562,6 +563,7 @@ impl Resident {
             &self.bindings,
             &self.direct,
             (!self.hotkeys_suspended).then_some(self.settings.drawing_shortcut),
+            (!self.hotkeys_suspended).then(|| Arc::new(self.settings.clone())),
         )
     }
 
@@ -1046,6 +1048,7 @@ fn run_resident(
             crate::runtime_error!("Typlo LAN clipboard: {error}");
         }
         let drawing = (!settings_window_focused()).then_some(settings.drawing_shortcut);
+        let switch_settings = (!settings_window_focused()).then(|| Arc::new(settings.clone()));
         RESIDENT.replace(Some(Resident {
             profile: profile.to_owned(),
             settings,
@@ -1053,9 +1056,12 @@ fn run_resident(
             input: if probe {
                 None
             } else {
-                input::Hooks::start(window, hook_bindings(&bindings, &direct, drawing))
-                    .map_err(|error| crate::runtime_error!("Typlo Rust keyboard hook: {error}"))
-                    .ok()
+                input::Hooks::start(
+                    window,
+                    hook_bindings(&bindings, &direct, drawing, switch_settings),
+                )
+                .map_err(|error| crate::runtime_error!("Typlo Rust keyboard hook: {error}"))
+                .ok()
             },
             bindings,
             direct,
@@ -1290,6 +1296,7 @@ fn hook_bindings(
     bindings: &[(Action, Chord)],
     direct: &[DirectBinding],
     drawing: Option<crate::hotkeys::DrawingShortcut>,
+    settings: Option<Arc<config::Config>>,
 ) -> input::Bindings {
     let chords = bindings
         .iter()
@@ -1306,10 +1313,16 @@ fn hook_bindings(
         )
         .filter(|&(_, chord)| input::physical_scan(chord.key).is_some())
         .collect();
+    let switch = settings.filter(|_| {
+        bindings
+            .iter()
+            .any(|(action, chord)| *action == Action::Switch && chord.key == 0)
+    });
     input::Bindings {
         chords,
         physical,
         drawing,
+        switch,
     }
 }
 
@@ -2004,23 +2017,9 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                 resident.drain_input(window);
                 resident.cancel_typing_edit(window);
                 resident.recent.reset();
+                // The keyboard hook already switched the layout; only forget
+                // the typing state that belonged to the previous layout.
                 resident.spelling = None;
-                let mut editor = WinEdit {
-                    sequence: Some(lparam as usize),
-                    ..Default::default()
-                };
-                if let Ok(target) = editor.target()
-                    && target.foreground as usize == wparam
-                {
-                    editor.expected = Some(target);
-                    let process = if resident.settings.applications.is_empty() {
-                        String::new()
-                    } else {
-                        process_name(target.pid).unwrap_or_default()
-                    };
-                    let cycle = resident.settings.cycle_for(&process);
-                    let _ = switch_cycle(&editor, target, cycle, active_language(target));
-                }
             });
             0
         }
@@ -2968,6 +2967,47 @@ fn switch_cycle(
         post_layout(target, layout);
     }
     Ok(())
+}
+
+/// Switches to the next layout for Ctrl+Shift. Runs on the keyboard hook
+/// thread when the gesture completes in the window `origin`.
+fn cycle_from_hook(origin: usize, settings: &config::Config) {
+    let target = WinEdit::default()
+        .target()
+        .ok()
+        .or_else(foreground_target)
+        .filter(|target| target.foreground as usize == origin);
+    let Some(target) = target else { return };
+    let process = if settings.applications.is_empty() {
+        String::new()
+    } else {
+        process_name(target.pid).unwrap_or_default()
+    };
+    let editor = WinEdit {
+        fixed: Some(target),
+        ..Default::default()
+    };
+    let _ = switch_cycle(
+        &editor,
+        target,
+        settings.cycle_for(&process),
+        active_language(target),
+    );
+}
+
+/// The foreground window itself, for windows without a focused child such as
+/// a desktop folder view. Windows does not switch layouts for Ctrl+Shift
+/// there either, because the hook takes the gesture.
+fn foreground_target() -> Option<Target> {
+    let foreground = unsafe { GetForegroundWindow() };
+    let mut pid = 0;
+    let thread = unsafe { GetWindowThreadProcessId(foreground, &mut pid) };
+    (!foreground.is_null() && thread != 0).then_some(Target {
+        foreground,
+        edit: foreground,
+        thread,
+        pid,
+    })
 }
 
 fn switch_layout(target: Target, language: Language) {

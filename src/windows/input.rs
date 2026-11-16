@@ -559,6 +559,10 @@ pub(super) struct Bindings {
     pub chords: Vec<Chord>,
     pub physical: Vec<(usize, Chord)>,
     pub drawing: Option<DrawingShortcut>,
+    /// Settings for the modifier-only layout switch (Ctrl+Shift), which the
+    /// hook performs itself so that keys typed right after it use the new
+    /// layout.
+    pub switch: Option<Arc<crate::config::Config>>,
 }
 
 // Shortcut labels describe US QWERTY positions even with a different active HKL.
@@ -633,6 +637,18 @@ impl HookState {
         };
         let mut decision = self.gesture.handle(*key, down, origin, cycle);
         if decision.cycle {
+            // Switch here rather than on the resident thread: the request is
+            // then queued before any key pressed afterwards, and it cannot be
+            // delayed by other work of the resident or dropped because input
+            // continued in the meantime.
+            let switch = self
+                .bindings
+                .try_read()
+                .ok()
+                .and_then(|bindings| bindings.switch.clone());
+            if let Some(settings) = switch {
+                super::cycle_from_hook(origin, &settings);
+            }
             unsafe {
                 PostMessageW(self.host as HWND, CYCLE, origin, sequence() as LPARAM);
             }
@@ -1289,6 +1305,7 @@ mod tests {
             chords: vec![ctrl_n, ctrl_a, capture],
             physical: vec![(3, ctrl_n), (512, ctrl_a), (13, capture)],
             drawing: None,
+            switch: None,
         };
         let matches = |vk, scan, flags, modifiers| {
             physical_binding(
@@ -1508,6 +1525,7 @@ mod tests {
                 chords: Vec::new(),
                 physical: Vec::new(),
                 drawing: None,
+                switch: None,
             })),
             caps: false,
             caps_down: false,
@@ -1560,6 +1578,7 @@ mod tests {
                 chords: Vec::new(),
                 physical: Vec::new(),
                 drawing: None,
+                switch: None,
             })),
             caps: false,
             caps_down: false,
