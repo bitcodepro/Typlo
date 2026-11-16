@@ -7,17 +7,18 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, SyncSender},
     },
-    thread,
-    time::{Duration, Instant},
+    thread::{self, JoinHandle},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use windows_sys::Win32::Foundation::HWND;
 
 pub struct Monitor {
     events: SyncSender<Job>,
     generation: Arc<AtomicUsize>,
+    workers: [JoinHandle<()>; 2],
 }
 
 struct Job {
@@ -41,12 +42,45 @@ impl Drop for Captured {
     }
 }
 
+/// Writes one line per kind of failure at most once a minute, so a locked
+/// clipboard or database cannot flood the log but is never silent either.
+struct Throttled {
+    last: AtomicU64,
+}
+
+impl Throttled {
+    const fn new() -> Self {
+        Self {
+            last: AtomicU64::new(0),
+        }
+    }
+
+    fn report(&self, message: std::fmt::Arguments<'_>) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        let last = self.last.load(Ordering::Relaxed);
+        if (last == 0 || now >= last + 60)
+            && self
+                .last
+                .compare_exchange(last, now.max(1), Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            crate::runtime_error!("{message}");
+        }
+    }
+}
+
+static OPEN_FAILED: Throttled = Throttled::new();
+static STORE_FAILED: Throttled = Throttled::new();
+static CAPTURE_FAILED: Throttled = Throttled::new();
+
 impl Monitor {
     pub fn start(profile: PathBuf) -> io::Result<Self> {
         let generation = Arc::new(AtomicUsize::new(0));
         let save_generation = Arc::clone(&generation);
         let (snapshots, captured) = mpsc::sync_channel::<Captured>(32);
-        thread::Builder::new()
+        let store = thread::Builder::new()
             .name("typlo-clipboard-store".into())
             .spawn(move || {
                 let mut history = None;
@@ -56,34 +90,52 @@ impl Monitor {
                     if !current() {
                         continue;
                     }
-                    if let Ok(Some((clip, preview))) = snapshot
-                        .clip
-                        .take()
-                        .expect("captured clip")
-                        .normalize_image(job.limits.max_image)
+                    let Some(clip) = snapshot.clip.take() else {
+                        continue;
+                    };
+                    let (clip, preview) = match clip.normalize_image(job.limits.max_image) {
+                        Ok(Some(normalized)) => normalized,
+                        Ok(None) => continue,
+                        Err(error) => {
+                            STORE_FAILED.report(format_args!(
+                                "Typlo clipboard history: could not prepare an image: {error}"
+                            ));
+                            continue;
+                        }
+                    };
+                    if !current() {
+                        continue;
+                    }
+                    if history.is_none() {
+                        match History::open(&profile) {
+                            Ok(opened) => history = Some(opened),
+                            Err(error) => {
+                                OPEN_FAILED.report(format_args!(
+                                    "Typlo clipboard history: cannot open the history, copied items are not saved: {error}"
+                                ));
+                                continue;
+                            }
+                        }
+                    }
+                    if let Some(store) = &mut history
                         && current()
+                        && let Err(error) = store.store_capture(
+                            &clip,
+                            job.limits,
+                            preview.as_ref(),
+                            Some(&job.source),
+                        )
                     {
-                        if history.is_none() {
-                            history = History::open(&profile).ok();
-                        }
-                        if let Some(store) = &mut history
-                            && current()
-                            && let Err(error) = store.store_capture(
-                                &clip,
-                                job.limits,
-                                preview.as_ref(),
-                                Some(&job.source),
-                            )
-                        {
-                            crate::runtime_error!("Typlo Rust clipboard: {error}");
-                        }
+                        STORE_FAILED.report(format_args!("Typlo clipboard history: {error}"));
+                        // Reopen on the next item: the connection may be broken.
+                        history = None;
                     }
                 }
             })?;
         let worker_generation = Arc::clone(&generation);
         let pending_bytes = Arc::new(AtomicUsize::new(0));
         let (events, receiver) = mpsc::sync_channel::<Job>(32);
-        thread::Builder::new()
+        let capture = thread::Builder::new()
             .name("typlo-clipboard-capture".into())
             .spawn(move || {
                 while let Ok(job) = receiver.recv() {
@@ -102,20 +154,37 @@ impl Monitor {
                         }
                         thread::sleep(Duration::from_millis(12));
                     }
-                    if let Ok(Some(clip)) = result
-                        && current()
-                        && reserve(&pending_bytes, clip.size(), clip.kind)
-                    {
-                        let _ = snapshots.try_send(Captured {
-                            job,
-                            bytes: clip.size(),
-                            clip: Some(clip),
-                            pending_bytes: pending_bytes.clone(),
-                        });
+                    match result {
+                        Ok(Some(clip))
+                            if current() && reserve(&pending_bytes, clip.size(), clip.kind) =>
+                        {
+                            let _ = snapshots.try_send(Captured {
+                                job,
+                                bytes: clip.size(),
+                                clip: Some(clip),
+                                pending_bytes: pending_bytes.clone(),
+                            });
+                        }
+                        Err(error) if current() && clipio::sequence() == job.sequence => {
+                            CAPTURE_FAILED.report(format_args!(
+                                "Typlo clipboard history: could not read the clipboard from {}: {error}",
+                                job.source
+                            ));
+                        }
+                        _ => {}
                     }
                 }
             })?;
-        Ok(Self { events, generation })
+        Ok(Self {
+            events,
+            generation,
+            workers: [store, capture],
+        })
+    }
+
+    /// True once a worker thread has stopped, for example after a panic.
+    pub fn is_finished(&self) -> bool {
+        self.workers.iter().any(JoinHandle::is_finished)
     }
 
     pub fn enqueue(
@@ -167,5 +236,16 @@ mod tests {
         assert!(reserve(&pending, 1024, Kind::Text));
         assert!(reserve(&pending, 1024, Kind::Files));
         assert!(!reserve(&pending, 16 * 1024 * 1024, Kind::Files));
+    }
+
+    #[test]
+    fn repeated_failures_are_logged_once_a_minute() {
+        let throttled = Throttled::new();
+        let first = throttled.last.load(Ordering::Relaxed);
+        throttled.report(format_args!("first"));
+        let stamped = throttled.last.load(Ordering::Relaxed);
+        assert_ne!(first, stamped);
+        throttled.report(format_args!("second"));
+        assert_eq!(throttled.last.load(Ordering::Relaxed), stamped);
     }
 }

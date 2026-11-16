@@ -1006,6 +1006,38 @@ fn crypt(input: &[u8], encrypt: bool, entropy: Option<&[u8]>) -> io::Result<Vec<
 mod tests {
     use super::*;
 
+    /// A damaged profile with zero history limits is repaired and used by the
+    /// resident before the user saves it. The next capture must not trim the
+    /// existing unpinned history (PR #19 review).
+    #[test]
+    fn repaired_zero_limits_keep_existing_history_on_the_next_capture() {
+        let profile = tempfile::tempdir().unwrap();
+        let limits = Limits::from_config(&crate::config::Config::default());
+        let mut history = History::open(profile.path()).unwrap();
+        for index in 0..100 {
+            history
+                .store(&Clip::from_text(&format!("existing entry {index}")), limits)
+                .unwrap();
+        }
+        crate::dictionary::Dictionary::new(profile.path())
+            .write_settings(br#"{"history_items":0,"history_total_mib":0}"#)
+            .unwrap();
+        let (repaired, _) = crate::config::load_repaired(profile.path()).unwrap();
+
+        history
+            .store(
+                &Clip::from_text("captured before Save"),
+                Limits::from_config(&repaired),
+            )
+            .unwrap();
+
+        let count: i64 = history
+            .db
+            .query_row("SELECT COUNT(*) FROM clips", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 101);
+    }
+
     #[test]
     fn old_layout_opens_for_reading_while_another_process_holds_the_write_lock() {
         let profile = tempfile::tempdir().unwrap();

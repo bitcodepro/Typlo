@@ -454,11 +454,32 @@ impl Workspace {
     }
 
     fn new(profile: PathBuf, report: Option<UiProbe>, page: Page) -> Self {
-        let (settings, status) = match config::load(&profile) {
-            Ok(settings) => (settings, String::new()),
-            Err(error) => (Config::default(), error.to_string()),
+        let (settings, repaired, status) = match config::load_repaired(&profile) {
+            Ok((settings, repaired)) => (settings, repaired, String::new()),
+            Err(error) => (Config::default(), Vec::new(), error.to_string()),
         };
         locale::set_language(&settings.ui_language);
+        let status = if repaired.is_empty() {
+            status
+        } else {
+            tr(
+                "rust.settings.repaired",
+                "Some saved settings were invalid and were reset: {0}. Save to keep the fix.",
+            )
+            .replace(
+                "{0}",
+                &repaired
+                    .iter()
+                    .map(|part| part.label())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        };
+        // A repaired profile differs from the file, so Save stays available.
+        let saved = repaired
+            .is_empty()
+            .then(|| serde_json::to_value(&settings).ok())
+            .flatten();
         let dictionary = DictionaryView::new(&profile);
         #[cfg(windows)]
         let lan_clipboard = typlo_rust::lan_clipboard_view::Settings::new(&profile);
@@ -469,7 +490,7 @@ impl Workspace {
             .map(SettingsDiagnostics::new);
         Self {
             page,
-            saved: serde_json::to_value(&settings).ok(),
+            saved,
             confirm_close: false,
             closing: false,
             tab: SettingsTab::default(),
@@ -567,12 +588,20 @@ impl Workspace {
             &mut self.settings.keep_screen_on,
             tr("settings.keepAwake", "Prevent screen lock"),
         );
+        let lock_shortcut = if cfg!(target_os = "macos") {
+            "⌃⌘Q"
+        } else if cfg!(windows) {
+            "Win+L"
+        } else {
+            "Super+L"
+        };
         hint(
             ui,
-            tr(
+            &tr(
                 "settings.keepAwakeHint",
                 "Keep the display on while Typlo is running.",
-            ),
+            )
+            .replace("{0}", lock_shortcut),
         );
     }
 
@@ -1745,11 +1774,16 @@ impl eframe::App for Workspace {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         if page == Page::Settings {
-                                            let save = egui::Button::new(
-                                                RichText::new(tr("settings.save", "Save"))
-                                                    .color(Color32::WHITE),
-                                            )
-                                            .fill(typlo_rust::appearance::rgb(0x2563eb));
+                                            // Accent only when there is something to save:
+                                            // white on a faded accent is unreadable.
+                                            let save = if dirty {
+                                                typlo_rust::appearance::primary_button(tr(
+                                                    "settings.save",
+                                                    "Save",
+                                                ))
+                                            } else {
+                                                egui::Button::new(tr("settings.save", "Save"))
+                                            };
                                             if ui.add_enabled(dirty, save).clicked() {
                                                 self.save(ui);
                                             }

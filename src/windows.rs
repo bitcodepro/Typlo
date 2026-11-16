@@ -890,6 +890,15 @@ pub fn run_previous(profile: &Path) -> io::Result<()> {
 }
 
 pub fn run_measurement(profile: &Path, report: &Path) -> io::Result<()> {
+    if !desktop_name().is_some_and(|name| name.starts_with("TyploBench-")) {
+        return Err(io::Error::other(
+            "Use the private desktop created by measure-full-windows.ps1",
+        ));
+    }
+    run_resident(profile, Some(report), false, true, false)
+}
+
+fn desktop_name() -> Option<String> {
     use windows_sys::Win32::System::{
         StationsAndDesktops::{GetThreadDesktop, GetUserObjectInformationW, UOI_NAME},
         Threading::GetCurrentThreadId,
@@ -905,12 +914,43 @@ pub fn run_measurement(profile: &Path, report: &Path) -> io::Result<()> {
             &mut needed,
         )
     };
-    if found == 0 || !String::from_utf16_lossy(&name).starts_with("TyploBench-") {
-        return Err(io::Error::other(
-            "Use the private desktop created by measure-full-windows.ps1",
-        ));
+    let length = name.iter().position(|&unit| unit == 0)?;
+    (found != 0).then(|| String::from_utf16_lossy(&name[..length]))
+}
+
+/// Tells the user why a plain launch failed. Without it the process exits with
+/// nothing on screen: no tray icon, no window, at most a line in the log.
+pub fn report_startup_failure(profile: &Path, error: &dyn std::fmt::Display) {
+    use crate::locale::text as tr;
+    // Automated runs use private desktops, where nobody can dismiss a dialog.
+    if desktop_name().as_deref() != Some("Default") {
+        return;
     }
-    run_resident(profile, Some(report), false, true, false)
+    // Reading the language may create the profile folder, and an existing
+    // folder makes the next launch skip the migration of the old profile.
+    if profile.is_dir() {
+        crate::locale::load(profile);
+    }
+    let mut text = format!(
+        "{}\n\n{error}",
+        tr("rust.startup.failed", "Typlo could not start.")
+    );
+    let log = profile.join("logs").join("typlo.log");
+    if log.is_file() {
+        text.push_str("\n\n");
+        text.push_str(
+            &tr("rust.startup.log", "Details are in the log: {0}")
+                .replace("{0}", &log.display().to_string()),
+        );
+    }
+    unsafe {
+        MessageBoxW(
+            null_mut(),
+            wide(&text).as_ptr(),
+            wide("Typlo").as_ptr(),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+        );
+    }
 }
 
 fn run_resident(
@@ -2050,6 +2090,22 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                         .map_err(|error| crate::runtime_error!("Typlo Rust keyboard hook: {error}"))
                         .ok();
                 }
+                if let Some(resident) = resident
+                    && resident
+                        .history_monitor
+                        .as_ref()
+                        .is_none_or(history_monitor::Monitor::is_finished)
+                {
+                    if resident.history_monitor.is_some() {
+                        crate::runtime_error!("Typlo Rust history monitor stopped; restarting");
+                    }
+                    resident.history_monitor =
+                        history_monitor::Monitor::start(resident.profile.clone())
+                            .map_err(|error| {
+                                crate::runtime_error!("Typlo Rust history monitor: {error}")
+                            })
+                            .ok();
+                }
             });
             0
         }
@@ -2086,6 +2142,15 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             };
             crate::runtime_log::write("INFO", format_args!("{reason}"));
             unsafe { PostQuitMessage(0) };
+            0
+        }
+        WM_ENDSESSION => {
+            // Windows may end the process as soon as this returns, so the
+            // message loop never gets to record the stop itself.
+            if wparam != 0 {
+                crate::runtime_log::write("INFO", format_args!("Windows is ending the session"));
+                crate::runtime_log::finish_resident_session();
+            }
             0
         }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
@@ -2729,7 +2794,12 @@ pub fn available_layouts() -> Vec<Language> {
 }
 
 fn load_resident_config(profile: &Path) -> io::Result<config::Config> {
-    let mut settings = config::load(profile)?;
+    let (mut settings, repaired) = config::load_repaired(profile)?;
+    if !repaired.is_empty() {
+        crate::runtime_error!(
+            "Typlo: invalid saved settings were reset for this run: {repaired:?}"
+        );
+    }
     let available = available_layouts();
     if !available.is_empty() {
         restrict_layouts(&mut settings, &available);
