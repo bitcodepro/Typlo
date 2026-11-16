@@ -1,4 +1,4 @@
-use super::{Peer, fingerprint, invalid, send};
+use super::{Peer, announce, fingerprint, invalid, send};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File},
@@ -82,6 +82,8 @@ pub fn status(profile: &Path) -> io::Result<Option<Job>> {
 
 /// How long an undelivered entry waits for the other computer to pick it up.
 const PULL_WAIT: Duration = Duration::from_secs(15 * 60);
+/// How often a waiting sender searches for the other computer.
+const ANNOUNCE_EVERY: Duration = Duration::from_secs(10);
 
 /// An entry the paired computer may pick up with a pull request.
 #[derive(Clone, Serialize, Deserialize)]
@@ -286,7 +288,16 @@ fn wait_for_pull(directory: &Path, job: &mut Job, cancelled: &AtomicBool) -> io:
     let _ = fs::remove_file(&state_path);
     write(directory, "pull.json", &pending)?;
     let deadline = Instant::now() + PULL_WAIT;
+    let mut announced = None::<Instant>;
     let result = loop {
+        // The search is what makes the other computer connect here. Nothing
+        // is sent while no entry is waiting.
+        if announced.is_none_or(|time| time.elapsed() >= ANNOUNCE_EVERY)
+            && let Some(profile) = directory.parent()
+        {
+            let _ = announce(profile);
+            announced = Some(Instant::now());
+        }
         if cancelled.load(Ordering::Acquire) {
             break Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
