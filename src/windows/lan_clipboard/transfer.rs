@@ -17,6 +17,12 @@ use std::{
 pub(super) const VERSION: &[u8] = b"TYPC0001";
 pub(super) const RETRY_VERSION: &[u8; 8] = b"TYPC0002";
 pub(super) const PING: &[u8; 8] = b"TYPCPING";
+/// Sent by a computer that cannot be reached directly: the other side answers
+/// with [`PULL_EMPTY`] or [`PULL_READY`] and then sends its waiting entry over
+/// the same connection.
+pub(super) const PULL: &[u8; 8] = b"TYPCPULL";
+pub(super) const PULL_EMPTY: u8 = 0;
+pub(super) const PULL_READY: u8 = 5;
 const FILES: u8 = 3;
 const FILES_WITH_CAPTION: u8 = 4;
 const MAX_FILES: usize = 2048;
@@ -188,12 +194,11 @@ fn collect(
 
 pub(super) fn receive(
     profile: &Path,
+    version: [u8; 8],
     stream: &mut (impl Read + Write),
     peer: &[u8; 32],
     still_paired: impl Fn() -> io::Result<()>,
 ) -> io::Result<bool> {
-    let mut version = [0; 8];
-    stream.read_exact(&mut version)?;
     if version == *PING {
         return still_paired().map(|()| true);
     }
@@ -479,13 +484,18 @@ mod tests {
     #[test]
     fn partial_file_transfer_leaves_no_history_or_files() {
         let profile = tempfile::tempdir().unwrap();
-        let mut data = VERSION.to_vec();
-        data.push(FILES);
+        let mut data = vec![FILES];
         data.extend_from_slice(&1u64.to_be_bytes());
         data.extend_from_slice(b"\x01\x00\x01x");
         data.extend_from_slice(&7u64.to_be_bytes());
         data.extend_from_slice(b"bad");
-        assert!(receive(profile.path(), &mut Input(&data), &[0; 32], || Ok(())).is_err());
+        let version = VERSION.try_into().unwrap();
+        assert!(
+            receive(profile.path(), version, &mut Input(&data), &[0; 32], || Ok(
+                ()
+            ))
+            .is_err()
+        );
         assert_eq!(
             fs::read_dir(received_folder(profile.path()))
                 .unwrap()

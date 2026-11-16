@@ -1505,10 +1505,12 @@ impl Window {
 
     fn lan_busy(&self) -> bool {
         self.lan_transfer.is_some()
-            || self
-                .lan_job
-                .as_ref()
-                .is_some_and(|job| job.phase == lan_clipboard::jobs::Phase::Sending)
+            || self.lan_job.as_ref().is_some_and(|job| {
+                matches!(
+                    job.phase,
+                    lan_clipboard::jobs::Phase::Sending | lan_clipboard::jobs::Phase::Waiting
+                )
+            })
     }
 
     fn start_lan_transfer(
@@ -1618,6 +1620,21 @@ impl Window {
                                 .text(label),
                         );
                     }
+                    if ui.small_button(tr("cancel", "Cancel")).clicked()
+                        && let Err(error) = lan_clipboard::jobs::cancel(&self.profile, &job)
+                    {
+                        self.status = error.to_string();
+                    }
+                });
+            }
+            Phase::Waiting => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(tr(
+                        "rust.lan.awaitingPull",
+                        "The other computer is not reachable. It will pick up the entry when it connects…",
+                    ))
+                    .on_hover_text(&job.error);
                     if ui.small_button(tr("cancel", "Cancel")).clicked()
                         && let Err(error) = lan_clipboard::jobs::cancel(&self.profile, &job)
                     {

@@ -15,6 +15,9 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Phase {
     Sending,
+    /// The other computer could not be reached and is expected to pick the
+    /// entry up itself.
+    Waiting,
     Delivered,
     Failed,
     Cancelled,
@@ -69,11 +72,93 @@ pub fn status(profile: &Path) -> io::Result<Option<Job>> {
     let Some(mut job): Option<Job> = read(&directory.join("status.json"))? else {
         return Ok(None);
     };
-    if job.phase == Phase::Sending && lock(&directory)?.try_lock().is_ok() {
+    if matches!(job.phase, Phase::Sending | Phase::Waiting) && lock(&directory)?.try_lock().is_ok()
+    {
         job.phase = Phase::Failed;
         job.error = "The sender stopped before it received confirmation".into();
     }
     Ok(Some(job))
+}
+
+/// How long an undelivered entry waits for the other computer to pick it up.
+const PULL_WAIT: Duration = Duration::from_secs(15 * 60);
+
+/// An entry the paired computer may pick up with a pull request.
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct Pending {
+    pub entry: i64,
+    pub transfer: [u8; 16],
+    attempt: [u8; 16],
+    peer: [u8; 32],
+}
+
+/// Progress of a pull, written by the resident and read by the sender job.
+#[derive(Serialize, Deserialize)]
+struct PullState {
+    attempt: [u8; 16],
+    done: u64,
+    total: u64,
+    finished: bool,
+    error: String,
+}
+
+/// The entry waiting for `peer`, if its sender job is still running.
+pub(super) fn pending(profile: &Path, peer: &[u8; 32]) -> io::Result<Option<Pending>> {
+    let directory = root(profile);
+    let Some(pending): Option<Pending> = read(&directory.join("pull.json"))? else {
+        return Ok(None);
+    };
+    if &pending.peer != peer || lock(&directory)?.try_lock().is_ok() {
+        return Ok(None);
+    }
+    Ok(Some(pending))
+}
+
+impl Pending {
+    fn is_current(&self, profile: &Path) -> io::Result<bool> {
+        Ok(read::<Self>(&root(profile).join("pull.json"))?
+            .is_some_and(|saved| saved.attempt == self.attempt))
+    }
+
+    fn state(
+        &self,
+        profile: &Path,
+        done: u64,
+        total: u64,
+        finished: bool,
+        error: String,
+    ) -> io::Result<()> {
+        let state = PullState {
+            attempt: self.attempt,
+            done,
+            total,
+            finished,
+            error,
+        };
+        write(&root(profile), "pull-state.json", &state)
+    }
+
+    /// Records progress; fails when the sender cancelled or gave up.
+    pub(super) fn progress(&self, profile: &Path, done: u64, total: u64) -> io::Result<()> {
+        if !self.is_current(profile)? {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "Transfer cancelled",
+            ));
+        }
+        self.state(profile, done, total, false, String::new())
+    }
+
+    pub(super) fn finish(&self, profile: &Path, result: &io::Result<()>) {
+        let error = result
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        if self.is_current(profile).unwrap_or(false) {
+            let _ = self.state(profile, 0, 0, true, error);
+        }
+    }
 }
 
 pub fn cancel(profile: &Path, job: &Job) -> io::Result<()> {
@@ -156,6 +241,18 @@ pub fn run(profile: &Path, entry: i64, retry: bool) -> io::Result<()> {
             Ok(())
         },
     );
+    let result = match result {
+        Err(error)
+            if error.kind() == io::ErrorKind::NotConnected
+                && !cancelled.load(Ordering::Acquire) =>
+        {
+            job.phase = Phase::Waiting;
+            job.error = error.to_string();
+            write(&directory, "status.json", &job)?;
+            wait_for_pull(&directory, &mut job, &cancelled)
+        }
+        result => result,
+    };
     finished.store(true, Ordering::Release);
     watcher.thread().unpark();
     let _ = watcher.join();
@@ -174,6 +271,89 @@ pub fn run(profile: &Path, entry: i64, retry: bool) -> io::Result<()> {
         }
     }
     write(&directory, "status.json", &job)
+}
+
+/// Offers the entry to the paired computer until it picks it up, the user
+/// cancels, or [`PULL_WAIT`] passes.
+fn wait_for_pull(directory: &Path, job: &mut Job, cancelled: &AtomicBool) -> io::Result<()> {
+    let pending = Pending {
+        entry: job.entry,
+        transfer: job.transfer,
+        attempt: job.attempt,
+        peer: job.peer,
+    };
+    let state_path = directory.join("pull-state.json");
+    let _ = fs::remove_file(&state_path);
+    write(directory, "pull.json", &pending)?;
+    let deadline = Instant::now() + PULL_WAIT;
+    let result = loop {
+        if cancelled.load(Ordering::Acquire) {
+            break Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "Transfer cancelled",
+            ));
+        }
+        if let Ok(Some(state)) = read::<PullState>(&state_path)
+            && state.attempt == job.attempt
+        {
+            if state.finished && state.error.is_empty() {
+                break Ok(());
+            }
+            let (phase, done, total, error) = if state.finished {
+                // The pull failed; the other computer will ask again.
+                (Phase::Waiting, 0, 0, state.error)
+            } else {
+                (Phase::Sending, state.done, state.total, String::new())
+            };
+            if (phase, done, total) != (job.phase, job.done, job.total)
+                || error != job.error && !error.is_empty()
+            {
+                job.phase = phase;
+                job.done = done;
+                job.total = total;
+                if !error.is_empty() {
+                    job.error = error;
+                }
+                write(directory, "status.json", job)?;
+            }
+        }
+        if Instant::now() >= deadline {
+            break Err(invalid(
+                "The other computer could not be reached and did not pick up the entry",
+            ));
+        }
+        thread::park_timeout(Duration::from_millis(150));
+    };
+    // Remove the offer first so a pull in progress stops at its next step.
+    let _ = fs::remove_file(directory.join("pull.json"));
+    let _ = fs::remove_file(state_path);
+    result
+}
+
+/// Offers `entry` to `peer` as an unreachable sender would, for tests.
+#[cfg(test)]
+pub(super) fn offer_for_test(
+    profile: &Path,
+    entry: i64,
+    peer: [u8; 32],
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let directory = root(profile);
+    fs::create_dir_all(&directory)?;
+    let lock = lock(&directory)?;
+    lock.try_lock()
+        .map_err(|_| io::Error::other("A transfer is already running"))?;
+    let mut job = Job {
+        entry,
+        phase: Phase::Waiting,
+        done: 0,
+        total: 0,
+        error: String::new(),
+        transfer: random_id()?,
+        attempt: random_id()?,
+        peer,
+    };
+    wait_for_pull(&directory, &mut job, cancelled)
 }
 
 #[cfg(test)]
