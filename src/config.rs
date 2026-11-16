@@ -423,11 +423,16 @@ fn repair(settings: &mut Config) -> Vec<Repaired> {
         (&mut settings.history_image_mib, 128),
         (&mut settings.history_text_kib, 8192),
     ];
+    // The resident applies repaired limits before the user saves them, and
+    // history trimming deletes entries over the limits. An invalid limit must
+    // therefore become the largest allowed value, never a small one: a damaged
+    // `0` repaired to `1` would delete almost all unpinned history.
     let mut history_changed = false;
     for (value, maximum) in limits {
-        let allowed = (*value).clamp(1, maximum);
-        history_changed |= allowed != *value;
-        *value = allowed;
+        if !(1..=maximum).contains(value) {
+            *value = maximum;
+            history_changed = true;
+        }
     }
     if history_changed {
         repaired.push(Repaired::History);
@@ -687,7 +692,7 @@ mod tests {
         assert_eq!(settings.snippets[0].trigger, ";sig");
         assert_eq!(
             (settings.history_items, settings.history_image_mib),
-            (1, 128)
+            (10_000, 128)
         );
         assert_eq!(settings.applications.len(), 1);
         assert!(settings.keep_screen_on);
