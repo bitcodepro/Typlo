@@ -271,39 +271,181 @@ pub fn profile() -> PathBuf {
 }
 
 pub fn load(directory: &Path) -> io::Result<Config> {
+    let Some((mut settings, _data)) = read_saved(directory)? else {
+        return Ok(first_run());
+    };
+    #[cfg(windows)]
+    add_windows_hotkey_defaults(&mut settings, &_data)?;
+    resolve_saved_layouts(&mut settings);
+    validate(&settings)?;
+    Ok(settings)
+}
+
+/// A part of the saved settings that failed validation and was reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repaired {
+    Language,
+    Shortcuts,
+    Drawing,
+    Snippets,
+    Layouts,
+    History,
+    Applications,
+}
+
+impl Repaired {
+    pub fn label(self) -> &'static str {
+        use crate::locale::text as tr;
+        match self {
+            Self::Language => tr("settings.language", "Interface language"),
+            Self::Shortcuts => tr("rust.tabs.shortcuts", "Shortcuts"),
+            Self::Drawing => DrawingShortcut::label(),
+            Self::Snippets => tr("rust.tabs.snippets", "Snippets"),
+            Self::Layouts => tr("rust.layouts.cycle", "Layout cycle"),
+            Self::History => tr("rust.tabs.clipboard", "Clipboard"),
+            Self::Applications => tr("rust.tabs.apps", "Apps"),
+        }
+    }
+}
+
+/// Loads the settings for running Typlo. One invalid part (a snippet, a
+/// shortcut, a limit) falls back to its default and is reported, instead of
+/// leaving the whole application unable to start.
+pub fn load_repaired(directory: &Path) -> io::Result<(Config, Vec<Repaired>)> {
+    let Some((mut settings, _data)) = read_saved(directory)? else {
+        return Ok((first_run(), Vec::new()));
+    };
+    resolve_saved_layouts(&mut settings);
+    let repaired = repair(&mut settings);
+    #[cfg(windows)]
+    add_windows_hotkey_defaults(&mut settings, &_data)?;
+    validate(&settings)?;
+    Ok((settings, repaired))
+}
+
+fn read_saved(directory: &Path) -> io::Result<Option<(Config, Vec<u8>)>> {
     let stored = crate::dictionary::Dictionary::new(directory).read_settings()?;
     match stored
         .map(Ok)
         .unwrap_or_else(|| fs::read(directory.join("settings.json")))
     {
         Ok(data) => {
-            let mut settings: Config = serde_json::from_slice(&data).map_err(io::Error::other)?;
-            #[cfg(windows)]
-            add_windows_hotkey_defaults(&mut settings, &data)?;
-            resolve_saved_layouts(&mut settings);
-            validate(&settings)?;
-            Ok(settings)
+            let settings = serde_json::from_slice(&data).map_err(io::Error::other)?;
+            Ok(Some((settings, data)))
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let mut settings = Config::default();
-            let available = available_layouts();
-            if !available.is_empty() {
-                settings.layout_hotkeys = available
-                    .iter()
-                    .copied()
-                    .take(3)
-                    .enumerate()
-                    .map(|(index, layout)| LayoutShortcut {
-                        layout,
-                        hotkey: format!("Ctrl+Alt+Shift+{}", index + 1),
-                    })
-                    .collect();
-                settings.cycle = available;
-            }
-            Ok(settings)
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+fn first_run() -> Config {
+    let mut settings = Config::default();
+    let available = available_layouts();
+    if !available.is_empty() {
+        settings.layout_hotkeys = available
+            .iter()
+            .copied()
+            .take(3)
+            .enumerate()
+            .map(|(index, layout)| LayoutShortcut {
+                layout,
+                hotkey: format!("Ctrl+Alt+Shift+{}", index + 1),
+            })
+            .collect();
+        settings.cycle = available;
+    }
+    settings
+}
+
+fn repair(settings: &mut Config) -> Vec<Repaired> {
+    let mut repaired = Vec::new();
+    if !UI_LANGUAGES.contains(&settings.ui_language.as_str()) {
+        settings.ui_language = Config::default().ui_language;
+        repaired.push(Repaired::Language);
+    }
+    let shortcuts_valid = |settings: &Config| {
+        settings
+            .hotkeys
+            .bindings()
+            .and_then(|bindings| settings.direct_bindings(&bindings))
+            .is_ok()
+    };
+    if !shortcuts_valid(settings) {
+        // Keep as much as possible: first only the per-layout shortcuts go,
+        // then the command shortcuts return to their defaults.
+        let layout_hotkeys = std::mem::take(&mut settings.layout_hotkeys);
+        if !shortcuts_valid(settings) {
+            settings.hotkeys = Hotkeys::default();
+            settings.layout_hotkeys = layout_hotkeys;
+            if !shortcuts_valid(settings) {
+                settings.layout_hotkeys.clear();
+            }
+        }
+        repaired.push(Repaired::Shortcuts);
+    }
+    if settings.drawing_shortcut.validate().is_err() {
+        settings.drawing_shortcut = DrawingShortcut::default();
+        repaired.push(Repaired::Drawing);
+    }
+    let layouts = available_layouts();
+    if Snippets::compile_for(&settings.snippets, &layouts).is_err() {
+        let mut kept = Vec::with_capacity(settings.snippets.len());
+        for snippet in std::mem::take(&mut settings.snippets) {
+            kept.push(snippet);
+            if Snippets::compile_for(&kept, &layouts).is_err() {
+                kept.pop();
+            }
+        }
+        settings.snippets = kept;
+        repaired.push(Repaired::Snippets);
+    }
+    let remove_duplicates = |cycle: &mut Vec<Language>| {
+        let before = cycle.len();
+        let mut seen = std::collections::HashSet::new();
+        cycle.retain(|layout| seen.insert(*layout));
+        cycle.len() != before
+    };
+    let mut layouts_changed = remove_duplicates(&mut settings.cycle);
+    if settings.cycle.is_empty() {
+        settings.cycle = if layouts.is_empty() {
+            Config::default().cycle
+        } else {
+            layouts
+        };
+        layouts_changed = true;
+    }
+    if layouts_changed {
+        repaired.push(Repaired::Layouts);
+    }
+    let limits = [
+        (&mut settings.history_items, 10_000),
+        (&mut settings.history_total_mib, 4096),
+        (&mut settings.history_image_mib, 128),
+        (&mut settings.history_text_kib, 8192),
+    ];
+    let mut history_changed = false;
+    for (value, maximum) in limits {
+        let allowed = (*value).clamp(1, maximum);
+        history_changed |= allowed != *value;
+        *value = allowed;
+    }
+    if history_changed {
+        repaired.push(Repaired::History);
+    }
+    let rules = settings.applications.len();
+    let mut processes = std::collections::HashSet::new();
+    settings.applications.retain(|rule| {
+        let process = process_key(&rule.process);
+        !process.is_empty() && processes.insert(process)
+    });
+    let mut applications_changed = settings.applications.len() != rules;
+    for rule in &mut settings.applications {
+        applications_changed |= remove_duplicates(&mut rule.cycle);
+    }
+    if applications_changed {
+        repaired.push(Repaired::Applications);
+    }
+    repaired
 }
 
 #[cfg(windows)]
@@ -496,6 +638,89 @@ mod tests {
         add_windows_hotkey_defaults(&mut settings, legacy).unwrap();
         assert_eq!(settings.hotkeys.snippet_menu, "Ctrl+Alt+Shift+S");
         assert_eq!(settings.hotkeys.clear_drawing, "Ctrl+Alt+Shift+X");
+    }
+
+    #[test]
+    fn an_invalid_part_is_reset_while_the_other_settings_survive() {
+        assert!(repair(&mut Config::default()).is_empty());
+        let snippet = |trigger: &str| Snippet {
+            trigger: trigger.into(),
+            text: "text".into(),
+            ..Default::default()
+        };
+        let rule = |process: &str| ApplicationRule {
+            process: process.into(),
+            ..Default::default()
+        };
+        let mut settings = Config {
+            ui_language: "xx".into(),
+            cycle: vec![Language::Ru, Language::En, Language::Ru],
+            snippets: vec![snippet(";sig"), snippet("two words"), snippet(";SIG")],
+            history_items: 0,
+            history_image_mib: 100_000,
+            applications: vec![rule("Teams.exe"), rule("teams"), rule(" ")],
+            keep_screen_on: true,
+            ..Config::default()
+        };
+        settings.hotkeys.undo = "not a shortcut".into();
+        settings.hotkeys.history = "Ctrl+Alt+H".into();
+        settings.drawing_shortcut.modifiers = 0;
+        assert!(validate(&settings).is_err());
+
+        assert_eq!(
+            repair(&mut settings),
+            [
+                Repaired::Language,
+                Repaired::Shortcuts,
+                Repaired::Drawing,
+                Repaired::Snippets,
+                Repaired::Layouts,
+                Repaired::History,
+                Repaired::Applications,
+            ]
+        );
+        validate(&settings).unwrap();
+        assert_eq!(settings.ui_language, "en");
+        assert_eq!(settings.hotkeys.undo, Hotkeys::default().undo);
+        assert_eq!(settings.cycle, [Language::Ru, Language::En]);
+        assert_eq!(settings.snippets.len(), 1);
+        assert_eq!(settings.snippets[0].trigger, ";sig");
+        assert_eq!(
+            (settings.history_items, settings.history_image_mib),
+            (1, 128)
+        );
+        assert_eq!(settings.applications.len(), 1);
+        assert!(settings.keep_screen_on);
+        assert!(repair(&mut settings).is_empty());
+    }
+
+    #[test]
+    fn a_conflicting_layout_shortcut_does_not_reset_command_shortcuts() {
+        let mut settings = Config::default();
+        settings.hotkeys.history = "Ctrl+Alt+H".into();
+        settings.layout_hotkeys = vec![LayoutShortcut {
+            layout: Language::En,
+            hotkey: "Ctrl+Alt+H".into(),
+        }];
+        assert_eq!(repair(&mut settings), [Repaired::Shortcuts]);
+        assert_eq!(settings.hotkeys.history, "Ctrl+Alt+H");
+        assert!(settings.layout_hotkeys.is_empty());
+    }
+
+    #[test]
+    fn a_profile_with_an_invalid_snippet_still_loads_for_running() {
+        let profile = tempfile::tempdir().unwrap();
+        let saved = br#"{"ui_language":"ru","history_items":73,"snippets":[{"trigger":"x","text":"too short"},{"trigger":";ok","text":"kept"}]}"#;
+        crate::dictionary::Dictionary::new(profile.path())
+            .write_settings(saved)
+            .unwrap();
+        assert!(load(profile.path()).is_err());
+        let (settings, repaired) = load_repaired(profile.path()).unwrap();
+        assert_eq!(repaired, [Repaired::Snippets]);
+        assert_eq!(settings.ui_language, "ru");
+        assert_eq!(settings.history_items, 73);
+        assert_eq!(settings.snippets.len(), 1);
+        assert_eq!(settings.snippets[0].trigger, ";ok");
     }
 
     #[test]

@@ -193,7 +193,55 @@ fn install(update: &Update, status: impl Fn(&str), lock: &InstallLock) -> io::Re
         "INFO",
         format_args!("Update v{} is running", update.version),
     );
+    let removed = prune_versions(&root, &update.version, previous.as_deref());
+    if removed > 0 {
+        crate::runtime_log::write(
+            "INFO",
+            format_args!("Removed {removed} old installed version(s)"),
+        );
+    }
     Ok(())
+}
+
+/// Keeps the running version and the one before it for rollback; each
+/// update adds a full copy (about 44 MB) to `versions`. Returns how many
+/// folders were removed. A folder that is still in use is left for later.
+fn prune_versions(root: &Path, current: &str, previous: Option<&str>) -> usize {
+    let versions = root.join("versions");
+    let Ok(entries) = fs::read_dir(&versions) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let leftover = name.starts_with(".typlo-remove-");
+        if !leftover && (name == current || Some(name) == previous || parse_version(name).is_none())
+        {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !metadata.is_dir() || metadata.is_symlink() {
+            continue;
+        }
+        // A rename fails while an executable inside is running, so a
+        // version still in use is never half deleted.
+        let doomed = if leftover {
+            entry.path()
+        } else {
+            let doomed = versions.join(format!(".typlo-remove-{name}"));
+            if fs::rename(entry.path(), &doomed).is_err() {
+                continue;
+            }
+            doomed
+        };
+        if fs::remove_dir_all(&doomed).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn stop_child(mut child: Child) {
@@ -467,6 +515,43 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::fs::File;
     use zip::{ZipWriter, write::SimpleFileOptions};
+
+    #[test]
+    fn pruning_keeps_the_running_and_previous_versions_and_skips_files_in_use() {
+        let root = tempfile::tempdir().unwrap();
+        let versions = root.path().join("versions");
+        for name in [
+            "0.1.9",
+            "0.1.10",
+            "0.1.11",
+            "0.1.12",
+            "notes",
+            ".typlo-remove-0.1.8",
+        ] {
+            fs::create_dir_all(versions.join(name)).unwrap();
+            fs::write(versions.join(name).join(RESIDENT_EXE), "exe").unwrap();
+        }
+        fs::write(versions.join("0.1.7"), "a file, not a version folder").unwrap();
+        // An open handle without delete sharing stands in for a running exe.
+        let busy = {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .open(versions.join("0.1.10").join(RESIDENT_EXE))
+                .unwrap()
+        };
+        assert_eq!(prune_versions(root.path(), "0.1.12", Some("0.1.11")), 2);
+        let mut left: Vec<_> = fs::read_dir(&versions)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["0.1.10", "0.1.11", "0.1.12", "0.1.7", "notes"]);
+        drop(busy);
+        assert_eq!(prune_versions(root.path(), "0.1.12", Some("0.1.11")), 1);
+        assert!(versions.join("0.1.11").is_dir() && versions.join("0.1.12").is_dir());
+    }
 
     #[test]
     fn manual_base_upgrade_clears_only_older_markers_and_keeps_profile() {

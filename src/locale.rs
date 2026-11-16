@@ -47,7 +47,10 @@ pub fn set_language(code: &str) {
 }
 
 pub fn load(profile: &Path) -> Config {
-    let config = config::load(profile).unwrap_or_default();
+    // A window must still open in the chosen language when one saved setting is invalid.
+    let config = config::load_repaired(profile)
+        .map(|(config, _)| config)
+        .unwrap_or_default();
     set_language(&config.ui_language);
     config
 }

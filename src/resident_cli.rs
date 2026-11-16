@@ -11,6 +11,14 @@ use typlo_rust::{
 pub fn main() {
     if let Err(error) = run() {
         typlo_rust::runtime_error!("Typlo Rust: {error}");
+        #[cfg(windows)]
+        if env::args().len() == 1
+            && !error
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::AlreadyExists)
+        {
+            typlo_rust::windows::report_startup_failure(&config::profile(), &error);
+        }
         std::process::exit(1);
     }
 }
