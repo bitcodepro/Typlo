@@ -31,6 +31,9 @@ const LISTEN_POLL: Duration = Duration::from_millis(150);
 /// How long an address that failed the TLS handshake waits before it may take
 /// the single receive slot again, so idle connections cannot block the peer.
 const UNTRUSTED_COOLDOWN: Duration = Duration::from_secs(30);
+/// Pause before a pull started by a discovery query of the paired computer,
+/// and the minimum time between such pulls.
+const PULL_DEBOUNCE: Duration = Duration::from_secs(2);
 
 pub(super) struct Listener {
     peer: Peer,
@@ -51,8 +54,9 @@ impl Listener {
         let Some(peer) = desired? else { return Ok(()) };
         let identity = Identity::load(profile)?;
         let server = identity.server(&peer)?;
-        let identity = fingerprint(&identity.certificate);
+        let client = identity.client(&peer)?;
         let stop = Arc::new(AtomicBool::new(false));
+        let identity = fingerprint(&identity.certificate);
         let handle = {
             let profile = profile.to_owned();
             let peer = peer.clone();
@@ -60,7 +64,7 @@ impl Listener {
             thread::Builder::new()
                 .name("typlo-lan-clipboard".into())
                 .spawn(move || {
-                    if let Err(error) = listen(&profile, &peer, server, identity, stop) {
+                    if let Err(error) = listen(&profile, &peer, server, client, identity, stop) {
                         crate::runtime_error!("Typlo LAN clipboard: {error}");
                     }
                 })?
@@ -81,6 +85,7 @@ fn listen(
     profile: &Path,
     peer: &Peer,
     server: Arc<ServerConfig>,
+    client: Arc<rustls::ClientConfig>,
     identity: [u8; 32],
     stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
@@ -109,9 +114,43 @@ fn listen(
     let peer_fingerprint = fingerprint(&peer.certificate);
     let mut active: Option<(JoinHandle<()>, Ipv4Addr, Arc<AtomicBool>)> = None;
     let mut cooldown: HashMap<Ipv4Addr, Instant> = HashMap::new();
+    let mut puller: Option<(JoinHandle<()>, Instant)> = None;
     while !stop.load(Ordering::Acquire) {
-        if let Ok(discovery) = &discovery {
-            respond_to_discovery(discovery, &identity, &peer_fingerprint);
+        // The paired computer searches for this one when it has something to
+        // send. If it cannot connect here, it waits for this computer to
+        // connect to it and pick the entry up.
+        let searching = discovery
+            .as_ref()
+            .ok()
+            .and_then(|socket| respond_to_discovery(socket, &identity, &peer_fingerprint));
+        if puller.as_ref().is_some_and(|(worker, started)| {
+            worker.is_finished() && started.elapsed() >= PULL_DEBOUNCE
+        }) {
+            let _ = puller.take().expect("finished pull").0.join();
+        }
+        if let Some(ip) = searching
+            && puller.is_none()
+        {
+            let profile = profile.to_owned();
+            let peer = peer.clone();
+            let client = client.clone();
+            let stop = stop.clone();
+            puller = thread::Builder::new()
+                .name("typlo-lan-pull".into())
+                .spawn(move || {
+                    // The sender offers the entry only after its own connection
+                    // attempts fail; its next search starts another pull.
+                    thread::park_timeout(PULL_DEBOUNCE);
+                    let address = SocketAddrV4::new(ip, PORT);
+                    while !stop.load(Ordering::Acquire)
+                        && matches!(
+                            pull_from(&profile, &peer, &client, address, &stop),
+                            Ok(true)
+                        )
+                    {}
+                })
+                .ok()
+                .map(|worker| (worker, Instant::now()));
         }
         if active
             .as_ref()
@@ -149,7 +188,14 @@ fn listen(
     Ok(())
 }
 
-fn respond_to_discovery(socket: &UdpSocket, identity: &[u8; 32], peer: &[u8; 32]) {
+/// Answers discovery queries of the paired computer and returns its address
+/// when it searched for this one.
+fn respond_to_discovery(
+    socket: &UdpSocket,
+    identity: &[u8; 32],
+    peer: &[u8; 32],
+) -> Option<Ipv4Addr> {
+    let mut searching = None;
     let mut message = [0; DISCOVERY_PACKET + 1];
     for _ in 0..16 {
         let Ok((length, SocketAddr::V4(address))) = socket.recv_from(&mut message) else {
@@ -163,8 +209,10 @@ fn respond_to_discovery(socket: &UdpSocket, identity: &[u8; 32], peer: &[u8; 32]
         {
             message[..8].copy_from_slice(ANSWER);
             let _ = socket.send_to(&message[..DISCOVERY_PACKET], address);
+            searching = Some(*address.ip());
         }
     }
+    searching
 }
 
 struct Discovery {
@@ -259,23 +307,27 @@ fn send(
     let client = identity.client(&peer)?;
     check_cancelled(&stop)?;
     let payload = transfer::Payload::prepare(profile, id);
-    let send = |mut stream: StreamOwned<ClientConnection, Socket>| {
+    let send = |mut stream: StreamOwned<ClientConnection, Socket>, address: SocketAddrV4| {
         if !is_current_peer(profile, &peer)? {
             return Err(invalid("The paired computer changed during transfer"));
         }
         stream.sock.stop = Some(stop.clone());
-        send_payload(&mut stream, transfer_id, || payload, &mut progress)
+        send_payload(&mut stream, transfer_id, || payload, &mut progress)?;
+        // The connection works in this direction, so take whatever the other
+        // computer could not deliver here.
+        while matches!(pull_from(profile, &peer, &client, address, &stop), Ok(true)) {}
+        Ok(())
     };
     let manual = peer.address.map(|ip| SocketAddrV4::new(ip, PORT));
     let mut last_error = None;
     if let Some(address) = manual {
         check_cancelled(&stop)?;
         match connect(address.into(), &peer, client.clone()) {
-            Ok(stream) => return send(stream),
+            Ok(stream) => return send(stream, address),
             Err(error) => last_error = Some(error),
         }
     }
-    let discovery = discover(&identity, &peer)?;
+    let discovery = discover(&identity, &peer).map_err(unreachable)?;
     for address in discovery
         .addresses
         .into_iter()
@@ -283,14 +335,28 @@ fn send(
     {
         check_cancelled(&stop)?;
         match connect(address.into(), &peer, client.clone()) {
-            Ok(stream) => return send(stream),
+            Ok(stream) => return send(stream, address),
             Err(error) => last_error = Some(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| io::Error::new(
+    Err(last_error.map(unreachable).unwrap_or_else(|| io::Error::new(
         io::ErrorKind::NotConnected,
         "The paired Typlo did not answer discovery. Use Check connection in Settings to see the network status.",
     )))
+}
+
+/// Lets the paired computer know that an entry is waiting for it: it answers
+/// the search by connecting here and picking the entry up.
+pub(super) fn announce(profile: &Path) -> io::Result<()> {
+    let peer =
+        Peer::load(profile)?.ok_or_else(|| invalid("Pair the other computer in Settings"))?;
+    discover(&Identity::load(profile)?, &peer).map(drop)
+}
+
+/// Marks an error that happened before any connection to the paired computer,
+/// so the entry can wait for that computer to pick it up.
+fn unreachable(error: io::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::NotConnected, error.to_string())
 }
 
 fn check_cancelled(stop: &AtomicBool) -> io::Result<()> {
@@ -466,9 +532,27 @@ fn receive_tracked(
     authenticated.store(true, Ordering::Release);
     socket.extend_deadline();
     let mut stream = StreamOwned::new(connection, socket);
+    let mut version = [0; 8];
+    stream.read_exact(&mut version)?;
+    if version == *transfer::PULL {
+        return serve_pull(profile, peer, &mut stream);
+    }
+    answer(profile, peer, &mut stream, &stop, version)
+}
+
+/// Receives one entry whose version header was already read and replies with
+/// the result code.
+fn answer(
+    profile: &Path,
+    peer: &Peer,
+    stream: &mut (impl Read + Write),
+    stop: &AtomicBool,
+    version: [u8; 8],
+) -> io::Result<()> {
     let result = transfer::receive(
         profile,
-        &mut stream,
+        version,
+        stream,
         &fingerprint(&peer.certificate),
         || {
             if stop.load(Ordering::Acquire) || !is_current_peer(profile, peer)? {
@@ -489,6 +573,65 @@ fn receive_tracked(
     stream.write_all(&[code])?;
     stream.flush()?;
     result.map(|_| ())
+}
+
+/// Hands the entry waiting for `peer` to it over a connection that `peer`
+/// opened, for networks where this computer cannot connect to it.
+fn serve_pull(profile: &Path, peer: &Peer, stream: &mut (impl Read + Write)) -> io::Result<()> {
+    let Some(pending) = jobs::pending(profile, &fingerprint(&peer.certificate))? else {
+        stream.write_all(&[transfer::PULL_EMPTY])?;
+        return stream.flush();
+    };
+    stream.write_all(&[transfer::PULL_READY])?;
+    stream.flush()?;
+    let mut last = None::<Instant>;
+    let result = send_payload(
+        stream,
+        &pending.transfer,
+        || transfer::Payload::prepare(profile, pending.entry),
+        |done, total| {
+            if last.is_none_or(|time| time.elapsed() >= Duration::from_millis(200)) {
+                last = Some(Instant::now());
+                pending.progress(profile, done, total)?;
+            }
+            Ok(())
+        },
+    );
+    pending.finish(profile, &result);
+    result
+}
+
+/// Asks the paired computer at `address` for an entry it could not deliver
+/// directly. Returns true when an entry was received.
+fn pull_from(
+    profile: &Path,
+    peer: &Peer,
+    client: &Arc<rustls::ClientConfig>,
+    address: SocketAddrV4,
+    stop: &Arc<AtomicBool>,
+) -> io::Result<bool> {
+    let mut stream = connect(address.into(), peer, client.clone())?;
+    stream.sock.stop = Some(stop.clone());
+    pull_over(profile, peer, &mut stream, stop)
+}
+
+fn pull_over(
+    profile: &Path,
+    peer: &Peer,
+    stream: &mut (impl Read + Write),
+    stop: &AtomicBool,
+) -> io::Result<bool> {
+    stream.write_all(transfer::PULL)?;
+    stream.flush()?;
+    let mut reply = [0];
+    stream.read_exact(&mut reply)?;
+    if reply[0] != transfer::PULL_READY {
+        return Ok(false);
+    }
+    let mut version = [0; 8];
+    stream.read_exact(&mut version)?;
+    answer(profile, peer, stream, stop, version)?;
+    Ok(true)
 }
 
 fn matches_peer(
@@ -714,6 +857,95 @@ mod tests {
             assert_eq!(item.source.as_deref(), Some("Typlo LAN"));
             history.load(item.id).unwrap().unwrap()
         }
+    }
+
+    /// The receiver opens the connection and pulls what the sender offers.
+    fn pull(pair: &Paired) -> (io::Result<bool>, io::Result<()>) {
+        let sender_peer = Peer::load(pair.sender.path()).unwrap().unwrap();
+        let receiver_peer = Peer::load(pair.receiver.path()).unwrap().unwrap();
+        let server = Identity::load(pair.sender.path())
+            .unwrap()
+            .server(&sender_peer)
+            .unwrap();
+        let client = Identity::load(pair.receiver.path())
+            .unwrap()
+            .client(&receiver_peer)
+            .unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        thread::scope(|scope| {
+            let serving = scope.spawn(|| {
+                let (socket, _) = listener.accept()?;
+                receive(
+                    pair.sender.path(),
+                    &sender_peer,
+                    server,
+                    socket,
+                    Arc::default(),
+                )
+            });
+            let pulled = connect(address, &receiver_peer, client).and_then(|mut stream| {
+                pull_over(
+                    pair.receiver.path(),
+                    &receiver_peer,
+                    &mut stream,
+                    &AtomicBool::new(false),
+                )
+            });
+            (pulled, serving.join().unwrap())
+        })
+    }
+
+    #[test]
+    fn unreachable_sender_hands_its_entry_to_the_pulling_computer() {
+        let pair = Paired::new();
+        let (pulled, served) = pull(&pair);
+        assert!(!pulled.unwrap(), "nothing is offered yet");
+        served.unwrap();
+
+        let mut history = History::open(pair.sender.path()).unwrap();
+        history
+            .store(
+                &Clip::from_text("picked up over a reverse connection"),
+                Limits {
+                    max_items: 10,
+                    max_total: 1024 * 1024,
+                    max_image: 1024 * 1024,
+                    max_text: 1024 * 1024,
+                },
+            )
+            .unwrap();
+        let id = history.list(0).unwrap()[0].id;
+        let receiver = fingerprint(&Peer::load(pair.sender.path()).unwrap().unwrap().certificate);
+        let cancelled = AtomicBool::new(false);
+        thread::scope(|scope| {
+            let offer =
+                scope.spawn(|| jobs::offer_for_test(pair.sender.path(), id, receiver, &cancelled));
+            let until = Instant::now() + Duration::from_secs(5);
+            while jobs::pending(pair.sender.path(), &receiver)
+                .unwrap()
+                .is_none()
+            {
+                assert!(Instant::now() < until, "the entry is offered");
+                thread::sleep(Duration::from_millis(20));
+            }
+            let (pulled, served) = pull(&pair);
+            served.unwrap();
+            assert!(pulled.unwrap());
+            offer.join().unwrap().unwrap();
+        });
+        assert_eq!(
+            pair.receive_clip(Kind::Text).text(),
+            "picked up over a reverse connection"
+        );
+        assert!(
+            jobs::pending(pair.sender.path(), &receiver)
+                .unwrap()
+                .is_none()
+        );
+        let (pulled, served) = pull(&pair);
+        assert!(!pulled.unwrap(), "a delivered entry is not offered again");
+        served.unwrap();
     }
 
     #[test]

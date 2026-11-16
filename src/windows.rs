@@ -105,6 +105,13 @@ const TYPING_TIMER: usize = 1;
 const UPDATE_TIMER: usize = 2;
 const ACTIVITY_TIMER: usize = 3;
 const INPUT_RETRY_TIMER: usize = 4;
+const LAYOUT_ENTRY_TIMER: usize = 5;
+/// Windows applies the shared input language to a window after it reports the
+/// foreground change, so the layout of an application rule is checked a moment later.
+const LAYOUT_ENTRY_DELAY_MS: u32 = 60;
+/// After a switch the layout is checked again in case Windows replaced it.
+const LAYOUT_ENTRY_RETRY_MS: u32 = 120;
+const LAYOUT_ENTRY_ATTEMPTS: u8 = 3;
 const HOST_CLASS: &str = "TyploRustBackground";
 const SETTINGS_WINDOW: &str = "TyploRustSettingsWindow";
 const SCREENSHOT_EDITOR: &str = "TyploRustScreenshotEditor";
@@ -523,6 +530,8 @@ struct Resident {
     history_process: Option<std::process::Child>,
     history_previous_requested: bool,
     last_tray_target: Option<Target>,
+    /// Foreground window whose application rule layout is pending, and switch attempts.
+    layout_entry: Option<(usize, u8)>,
     hotkeys_suspended: bool,
     history_monitor: Option<history_monitor::Monitor>,
     history_pause: Option<HistoryPause>,
@@ -1060,6 +1069,7 @@ fn run_resident(
             editor_process: None,
             history_process: None,
             history_previous_requested: false,
+            layout_entry: None,
             last_tray_target: WinEdit::default()
                 .target()
                 .ok()
@@ -1852,18 +1862,39 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                     resident.spelling = None;
                 }
                 if resident.settings.applications.is_empty() {
+                    resident.layout_entry = None;
                     return;
                 }
+                resident.layout_entry = Some((wparam, 0));
+                unsafe { SetTimer(window, LAYOUT_ENTRY_TIMER, LAYOUT_ENTRY_DELAY_MS, None) };
+            });
+            0
+        }
+        WM_TIMER if wparam == LAYOUT_ENTRY_TIMER => {
+            unsafe { KillTimer(window, LAYOUT_ENTRY_TIMER) };
+            RESIDENT.with_borrow_mut(|resident| {
+                let Some(resident) = resident else { return };
+                let Some((foreground, attempts)) = resident.layout_entry.take() else {
+                    return;
+                };
                 let editor = WinEdit::default();
                 if let Ok(target) = editor.target()
-                    && target.foreground as usize == wparam
+                    && target.foreground as usize == foreground
                     && let Some(process) = process_name(target.pid)
                     && let Some(language) = resident
                         .settings
                         .layout_on_entry(&process, active_language(target))
                     && editor.target().is_ok_and(|current| current == target)
                 {
+                    if attempts >= LAYOUT_ENTRY_ATTEMPTS {
+                        crate::runtime_error!(
+                            "Typlo: the application layout for {process} was not applied"
+                        );
+                        return;
+                    }
                     switch_layout(target, language);
+                    resident.layout_entry = Some((foreground, attempts + 1));
+                    unsafe { SetTimer(window, LAYOUT_ENTRY_TIMER, LAYOUT_ENTRY_RETRY_MS, None) };
                 }
             });
             0
