@@ -1925,10 +1925,21 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             0
         }
         snippet_menu::READY => {
-            let profile =
-                RESIDENT.with_borrow(|resident| resident.as_ref().map(|item| item.profile.clone()));
-            if let Some(profile) = profile
-                && let Err(error) = snippet_menu::show(window, &profile)
+            let profile = RESIDENT.with_borrow(|resident| {
+                resident
+                    .as_ref()
+                    .map(|item| (item.profile.clone(), item.settings.ui_theme))
+            });
+            if let Some((profile, theme)) = profile
+                && let Err(error) = snippet_menu::show(
+                    window,
+                    &profile,
+                    match theme {
+                        config::UiTheme::Dark => true,
+                        config::UiTheme::Light => false,
+                        config::UiTheme::System => snippet_menu::system_dark(),
+                    },
+                )
             {
                 crate::runtime_error!("Typlo Rust snippet menu: {error}");
             }
