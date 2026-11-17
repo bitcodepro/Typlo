@@ -161,6 +161,41 @@ struct Menu {
     pin_error: bool,
     parameters: Option<ParameterForm>,
     palette: Palette,
+    /// Rows start this far below the header and are inset this far from the
+    /// sides. Painting and hit testing both use [`Rows`].
+    rows_layout: Rows,
+}
+
+/// Vertical and horizontal placement of list rows, shared by painting and
+/// mouse hit testing.
+#[derive(Clone, Copy)]
+struct Rows {
+    header: i32,
+    gap: i32,
+    margin: i32,
+    height: i32,
+}
+
+impl Rows {
+    fn new(dpi: i32, header: i32, height: i32) -> Self {
+        Self {
+            header,
+            gap: 4 * dpi / 96,
+            margin: 6 * dpi / 96,
+            height,
+        }
+    }
+
+    fn top(self, row: usize) -> i32 {
+        self.header + self.gap + row as i32 * self.height
+    }
+
+    /// The row under a client point, or None in the header and the padding.
+    fn at(self, x: i32, y: i32, width: i32) -> Option<usize> {
+        let offset = y - self.top(0);
+        (offset >= 0 && x >= self.margin && x < width - self.margin)
+            .then(|| (offset / self.height) as usize)
+    }
 }
 
 struct ParameterForm {
@@ -488,7 +523,7 @@ pub(super) fn show(host: HWND, profile: &Path, dark: bool) -> io::Result<()> {
         .clamp(1, MAX_VISIBLE)
         .min(((work.bottom - work.top - header - 8) / row_height).max(1) as usize);
     let width = (440 * dpi / 96).min(work.right - work.left);
-    let height = header + rows as i32 * row_height + 8 * dpi / 96;
+    let height = Rows::new(dpi, header, row_height).top(rows) + 4 * dpi / 96;
     let (x, y) = popup_position(anchor, work, width, height);
     let pins: HashSet<String> = fs::read(profile.join("snippet-pins.json"))
         .ok()
@@ -512,6 +547,7 @@ pub(super) fn show(host: HWND, profile: &Path, dark: bool) -> io::Result<()> {
         pin_error: false,
         parameters: None,
         palette: if dark { DARK } else { LIGHT },
+        rows_layout: Rows::new(dpi, header, row_height),
     }));
     WINDOW.store(window as usize, Ordering::Release);
     unsafe {
@@ -571,7 +607,7 @@ fn choose(window: HWND) {
         if names.is_empty() {
             return None;
         }
-        let height = menu.header + (names.len() as i32 + 1) * menu.row_height + 8;
+        let height = menu.rows_layout.top(names.len() + 1) + menu.rows_layout.gap;
         menu.parameters = Some(ParameterForm {
             snippet,
             values: vec![Vec::new(); names.len()],
@@ -665,14 +701,10 @@ fn row_at(window: HWND, menu: &Menu, lparam: LPARAM) -> Option<Hit> {
     let x = lparam as i16 as i32;
     let y = (lparam >> 16) as i16 as i32;
     let mut client = RECT::default();
-    if unsafe { GetClientRect(window, &mut client) } == 0
-        || x < 0
-        || x >= client.right
-        || y < menu.header
-    {
+    if unsafe { GetClientRect(window, &mut client) } == 0 {
         return None;
     }
-    let index = menu.first + ((y - menu.header) / menu.row_height) as usize;
+    let index = menu.first + menu.rows_layout.at(x, y, client.right)?;
     (index < menu.first + menu.rows && index < menu.matches.len()).then_some(Hit {
         index,
         pin: x >= client.right - menu.pin_width,
@@ -719,9 +751,11 @@ unsafe extern "system" fn window_proc(
                 }
             }
             WM_LBUTTONUP => {
+                let x = lparam as i16 as i32;
                 let y = (lparam >> 16) as i16 as i32;
-                if y >= menu.header {
-                    let row = ((y - menu.header) / menu.row_height) as usize;
+                let mut client = RECT::default();
+                unsafe { GetClientRect(window, &mut client) };
+                if let Some(row) = menu.rows_layout.at(x, y, client.right) {
                     if row == form.names.len() {
                         return Some(true);
                     }
@@ -1057,10 +1091,11 @@ fn paint(window: HWND) {
             palette.border,
             0,
         );
+        let margin = menu.rows_layout.margin;
         let inset = |top: i32, bottom: i32| RECT {
-            left: scale(6),
+            left: margin,
             top,
-            right: client.right - scale(6),
+            right: client.right - margin,
             bottom,
         };
         if let Some(form) = &menu.parameters {
@@ -1084,7 +1119,7 @@ fn paint(window: HWND) {
                 .unwrap_or(0)
                 .min(client.right / 3);
             for (index, name) in form.names.iter().enumerate() {
-                let top = menu.header + scale(4) + index as i32 * menu.row_height;
+                let top = menu.rows_layout.top(index);
                 let row = inset(top, top + menu.row_height);
                 if index == form.active {
                     fill(dc, &row, palette.selected, scale(8));
@@ -1115,7 +1150,7 @@ fn paint(window: HWND) {
                     0,
                 );
             }
-            let top = menu.header + scale(4) + form.names.len() as i32 * menu.row_height;
+            let top = menu.rows_layout.top(form.names.len());
             let row = inset(top, top + menu.row_height);
             text(
                 dc,
@@ -1175,7 +1210,7 @@ fn paint(window: HWND) {
             0,
         );
         if menu.matches.is_empty() {
-            let top = menu.header + scale(4);
+            let top = menu.rows_layout.top(0);
             text(
                 dc,
                 fonts.body,
@@ -1202,7 +1237,7 @@ fn paint(window: HWND) {
             .enumerate()
         {
             let snippet = &menu.prepared.snippets[index];
-            let top = menu.header + scale(4) + row_index as i32 * menu.row_height;
+            let top = menu.rows_layout.top(row_index);
             let row = inset(top, top + menu.row_height);
             if menu.first + row_index == menu.index {
                 fill(dc, &row, palette.selected, scale(8));
@@ -1299,6 +1334,37 @@ mod tests {
     }
 
     #[test]
+    fn clicks_select_the_row_that_is_painted_there() {
+        for dpi in [96, 120, 144, 192] {
+            let header = 38 * dpi / 96;
+            let height = 36 * dpi / 96;
+            let rows = Rows::new(dpi, header, height);
+            let width = 440 * dpi / 96;
+            let x = width / 2;
+            for row in 0..4 {
+                let top = rows.top(row);
+                assert_eq!(rows.at(x, top, width), Some(row), "first pixel, dpi {dpi}");
+                assert_eq!(
+                    rows.at(x, top + height - 1, width),
+                    Some(row),
+                    "last pixel of row {row} at dpi {dpi}"
+                );
+                assert_eq!(rows.at(x, top + height, width), Some(row + 1));
+            }
+            // The gap under the header and the side padding select nothing.
+            assert_eq!(rows.at(x, header, width), None);
+            assert_eq!(rows.at(x, rows.top(0) - 1, width), None);
+            assert_eq!(rows.at(rows.margin - 1, rows.top(0), width), None);
+            assert_eq!(rows.at(width - rows.margin, rows.top(0), width), None);
+            // With three parameters the bottom pixel of the last one is not
+            // the Insert row.
+            let last = rows.top(2) + height - 1;
+            assert_eq!(rows.at(x, last, width), Some(2), "dpi {dpi}");
+            assert_eq!(rows.at(x, last + 1, width), Some(3));
+        }
+    }
+
+    #[test]
     fn pin_and_unpin_persist_for_the_next_popup() {
         let profile = tempfile::tempdir().unwrap();
         let mut menu = Menu {
@@ -1331,6 +1397,7 @@ mod tests {
             pin_error: false,
             parameters: None,
             palette: LIGHT,
+            rows_layout: Rows::new(96, 38, 36),
         };
         let saved = || {
             serde_json::from_slice::<HashSet<String>>(
