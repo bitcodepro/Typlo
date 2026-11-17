@@ -32,9 +32,65 @@ use windows_sys::Win32::{
 pub(super) const READY: u32 = WM_APP + 16;
 pub(super) const APPLY: u32 = WM_APP + 17;
 const MAX_VISIBLE: usize = 8;
-const BACKGROUND: u32 = 0x00fcfafa;
-const SELECTED: u32 = 0x00fce8db;
-const FOREGROUND: u32 = 0x00252018;
+
+/// Colors of the menu, as Windows COLORREF values (0x00BBGGRR).
+#[derive(Clone, Copy)]
+struct Palette {
+    background: u32,
+    header: u32,
+    border: u32,
+    text: u32,
+    muted: u32,
+    selected: u32,
+    chip: u32,
+    chip_text: u32,
+    star: u32,
+}
+
+const LIGHT: Palette = Palette {
+    background: 0x00ffffff,
+    header: 0x00f7f5f3,
+    border: 0x00e3ddd9,
+    text: 0x0028231f,
+    muted: 0x0080726b,
+    selected: 0x00feefe6,
+    chip: 0x00f3f0ee,
+    chip_text: 0x00c4521a,
+    star: 0x000b9ef5,
+};
+
+const DARK: Palette = Palette {
+    background: 0x00262220,
+    header: 0x00332d2a,
+    border: 0x00463e3a,
+    text: 0x00ebe8e6,
+    muted: 0x00aca19a,
+    selected: 0x005e3f2d,
+    chip: 0x003e3733,
+    chip_text: 0x00f8b48a,
+    star: 0x0024bffb,
+};
+
+/// True when Windows uses the dark theme for apps.
+pub(super) fn system_dark() -> bool {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let value = wide("AppsUseLightTheme");
+    let mut data = 1u32;
+    let mut size = size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_DWORD,
+            null_mut(),
+            (&raw mut data).cast(),
+            &mut size,
+        )
+    };
+    status == 0 && data == 0
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct Origin(usize, usize, u32, u32);
@@ -104,6 +160,7 @@ struct Menu {
     pin_width: i32,
     pin_error: bool,
     parameters: Option<ParameterForm>,
+    palette: Palette,
 }
 
 struct ParameterForm {
@@ -179,6 +236,23 @@ impl Menu {
     }
 }
 
+/// The first non-empty line of the snippet text, with `{cursor}` removed.
+fn preview(snippet: &Snippet) -> String {
+    snippet
+        .text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .replace("{cursor}", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(160)
+        .collect()
+}
+
 fn title(snippet: &Snippet) -> &str {
     let name = snippet.name.trim();
     if !name.is_empty() {
@@ -229,10 +303,30 @@ pub(super) fn focus_existing() -> bool {
     if window.is_null() {
         return false;
     }
-    unsafe {
-        SetForegroundWindow(window);
-    }
+    bring_forward(window);
     true
+}
+
+/// Gives the menu keyboard focus. Windows refuses `SetForegroundWindow` to a
+/// process that did not receive the last input event, which is the case for
+/// shortcuts caught by the keyboard hook, so the menu briefly shares the input
+/// state of the window it opens over.
+fn bring_forward(window: HWND) {
+    use windows_sys::Win32::{
+        System::Threading::{AttachThreadInput, GetCurrentThreadId},
+        UI::Input::KeyboardAndMouse::SetFocus,
+    };
+    unsafe {
+        let current = GetCurrentThreadId();
+        let other = GetWindowThreadProcessId(GetForegroundWindow(), null_mut());
+        let attached = other != 0 && other != current && AttachThreadInput(current, other, 1) != 0;
+        BringWindowToTop(window);
+        SetForegroundWindow(window);
+        SetFocus(window);
+        if attached {
+            AttachThreadInput(current, other, 0);
+        }
+    }
 }
 
 pub(super) fn escape_outside() {
@@ -307,7 +401,7 @@ impl Drop for DpiScope {
     }
 }
 
-pub(super) fn show(host: HWND, profile: &Path) -> io::Result<()> {
+pub(super) fn show(host: HWND, profile: &Path, dark: bool) -> io::Result<()> {
     let Some(prepared) = PENDING.lock().ok().and_then(|mut slot| slot.take()) else {
         return Ok(());
     };
@@ -341,6 +435,7 @@ pub(super) fn show(host: HWND, profile: &Path) -> io::Result<()> {
     static REGISTERED: OnceLock<bool> = OnceLock::new();
     if !*REGISTERED.get_or_init(|| unsafe {
         RegisterClassW(&WNDCLASSW {
+            style: CS_DROPSHADOW,
             lpfnWndProc: Some(window_proc),
             hInstance: instance,
             lpszClassName: class.as_ptr(),
@@ -356,7 +451,7 @@ pub(super) fn show(host: HWND, profile: &Path) -> io::Result<()> {
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             class.as_ptr(),
             title.as_ptr(),
-            WS_POPUP | WS_BORDER,
+            WS_POPUP,
             anchor.left,
             anchor.top,
             1,
@@ -370,17 +465,30 @@ pub(super) fn show(host: HWND, profile: &Path) -> io::Result<()> {
     if window.is_null() {
         return Err(io::Error::last_os_error());
     }
+    // Rounded corners on Windows 11; older versions keep square corners.
+    unsafe {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+        };
+        let corner = DWMWCP_ROUND;
+        DwmSetWindowAttribute(
+            window,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            (&raw const corner).cast(),
+            size_of_val(&corner) as u32,
+        );
+    }
     let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForWindow(window) }.max(96) as i32;
-    let row_height = 32 * dpi / 96;
-    let header = 29 * dpi / 96;
+    let row_height = 36 * dpi / 96;
+    let header = 38 * dpi / 96;
     let work = info.rcWork;
     let rows = prepared
         .snippets
         .len()
         .clamp(1, MAX_VISIBLE)
         .min(((work.bottom - work.top - header - 8) / row_height).max(1) as usize);
-    let width = (350 * dpi / 96).min(work.right - work.left);
-    let height = header + rows as i32 * row_height + 2;
+    let width = (440 * dpi / 96).min(work.right - work.left);
+    let height = header + rows as i32 * row_height + 8 * dpi / 96;
     let (x, y) = popup_position(anchor, work, width, height);
     let pins: HashSet<String> = fs::read(profile.join("snippet-pins.json"))
         .ok()
@@ -400,14 +508,23 @@ pub(super) fn show(host: HWND, profile: &Path) -> io::Result<()> {
         pins,
         matches,
         query: Vec::new(),
-        pin_width: 32 * dpi / 96,
+        pin_width: 34 * dpi / 96,
         pin_error: false,
         parameters: None,
+        palette: if dark { DARK } else { LIGHT },
     }));
     WINDOW.store(window as usize, Ordering::Release);
     unsafe {
         SetWindowPos(window, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW);
-        SetForegroundWindow(window);
+    }
+    bring_forward(window);
+    if unsafe { GetForegroundWindow() } != window {
+        // Without focus, Enter and the arrow keys would go to the editor while
+        // the menu stayed on screen.
+        close(window, false);
+        return Err(io::Error::other(
+            "The snippet menu could not take keyboard focus",
+        ));
     }
     Ok(())
 }
@@ -454,7 +571,7 @@ fn choose(window: HWND) {
         if names.is_empty() {
             return None;
         }
-        let height = menu.header + (names.len() as i32 + 1) * menu.row_height + 2;
+        let height = menu.header + (names.len() as i32 + 1) * menu.row_height + 8;
         menu.parameters = Some(ParameterForm {
             snippet,
             values: vec![Vec::new(); names.len()],
@@ -628,6 +745,12 @@ unsafe extern "system" fn window_proc(
     }
     match message {
         WM_CLOSE => close(window, false),
+        // Like other popups, the menu closes when another window is activated.
+        WM_ACTIVATE
+            if wparam & 0xffff == WA_INACTIVE as usize && OPEN.with_borrow(Option::is_some) =>
+        {
+            close(window, false);
+        }
         WM_KEYDOWN if wparam == VK_RETURN as usize => {
             if OPEN.with_borrow(|menu| menu.as_ref().is_some_and(|menu| !menu.matches.is_empty())) {
                 choose(window);
@@ -757,195 +880,391 @@ unsafe extern "system" fn window_proc(
     0
 }
 
-fn paint(window: HWND) {
-    let mut paint = PAINTSTRUCT::default();
-    let dc = unsafe { BeginPaint(window, &mut paint) };
-    if !dc.is_null() {
-        unsafe {
-            let mut client = RECT::default();
-            GetClientRect(window, &mut client);
-            let brush = GetStockObject(DC_BRUSH) as HBRUSH;
-            SetDCBrushColor(dc, BACKGROUND);
-            FillRect(dc, &client, brush);
-            let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(window).max(96);
-            let font = CreateFontW(
-                -(14 * dpi as i32 / 96),
-                0,
-                0,
-                0,
-                FW_SEMIBOLD as i32,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET as u32,
-                OUT_DEFAULT_PRECIS as u32,
-                CLIP_DEFAULT_PRECIS as u32,
-                CLEARTYPE_QUALITY as u32,
-                DEFAULT_PITCH as u32,
-                wide("Segoe UI").as_ptr(),
-            );
-            let old_font = SelectObject(
-                dc,
-                if font.is_null() {
-                    GetStockObject(DEFAULT_GUI_FONT)
-                } else {
-                    font
-                },
-            );
-            SetBkMode(dc, TRANSPARENT as i32);
-            SetTextColor(dc, FOREGROUND);
-            OPEN.with_borrow(|menu| {
-                let Some(menu) = menu else { return };
-                if let Some(form) = &menu.parameters {
-                    draw_label(
-                        dc,
-                        tr("rust.snippet.fill", "Fill snippet parameters · Tab to move"),
-                        RECT {
-                            left: 12,
-                            top: 0,
-                            right: client.right - 12,
-                            bottom: menu.header,
-                        },
-                    );
-                    for (index, name) in form.names.iter().enumerate() {
-                        let top = menu.header + index as i32 * menu.row_height;
-                        let mut area = RECT {
-                            left: 4,
-                            top,
-                            right: client.right - 4,
-                            bottom: top + menu.row_height,
-                        };
-                        if index == form.active {
-                            SetDCBrushColor(dc, SELECTED);
-                            FillRect(dc, &area, brush);
-                        }
-                        area.left += 8;
-                        let value = String::from_utf16_lossy(&form.values[index]);
-                        draw_label(dc, &format!("{name}    {value}"), area);
-                    }
-                    let top = menu.header + form.names.len() as i32 * menu.row_height;
-                    draw_label(
-                        dc,
-                        tr("rust.snippet.insert", "Insert snippet"),
-                        RECT {
-                            left: 12,
-                            top,
-                            right: client.right - 12,
-                            bottom: top + menu.row_height,
-                        },
-                    );
-                    return;
-                }
-                let query = if menu.pin_error {
-                    tr("rust.snippet.pinError", "Could not save favorites").to_owned()
-                } else if !menu.query.is_empty() {
-                    String::from_utf16_lossy(&menu.query)
-                } else if menu.prepared.insertion_disabled {
-                    tr(
-                        "rust.snippet.disabledHere",
-                        "Snippets are disabled in this app",
-                    )
-                    .to_owned()
-                } else if menu.prepared.selection.is_none() && !menu.prepared.snippets.is_empty() {
-                    tr(
-                        "rust.snippet.readOnly",
-                        "Open an editable field to insert snippets",
-                    )
-                    .to_owned()
-                } else {
-                    tr("rust.snippet.search", "Type to search · Ctrl+P to pin").to_owned()
-                };
-                draw_label(
-                    dc,
-                    &query,
-                    RECT {
-                        left: 12,
-                        top: 0,
-                        right: client.right - 12,
-                        bottom: menu.header,
-                    },
-                );
-                if menu.matches.is_empty() {
-                    draw_label(
-                        dc,
-                        if menu.prepared.snippets.is_empty() {
-                            tr("rust.snippet.empty", "Add snippets in Settings")
-                        } else {
-                            tr("history.notFound", "Nothing found")
-                        },
-                        RECT {
-                            left: 12,
-                            top: menu.header,
-                            right: client.right - 12,
-                            bottom: menu.header + menu.row_height,
-                        },
-                    );
-                }
-                for (row, &index) in menu
-                    .matches
-                    .iter()
-                    .skip(menu.first)
-                    .take(menu.rows)
-                    .enumerate()
-                {
-                    let snippet = &menu.prepared.snippets[index];
-                    let y = menu.header + row as i32 * menu.row_height;
-                    let mut rect = RECT {
-                        left: 4,
-                        top: y,
-                        right: client.right - 4,
-                        bottom: y + menu.row_height,
-                    };
-                    if menu.first + row == menu.index {
-                        SetDCBrushColor(dc, SELECTED);
-                        FillRect(dc, &rect, brush);
-                    }
-                    rect.left += 8;
-                    rect.right -= menu.pin_width;
-                    let preview: String = title(snippet)
-                        .chars()
-                        .take(120)
-                        .collect::<String>()
-                        .replace("{cursor}", "");
-                    draw_label(dc, &format!("{}    {}", snippet.trigger, preview), rect);
-                    let star = if menu.pins.contains(&snippet.trigger.to_lowercase()) {
-                        "★"
-                    } else {
-                        "☆"
-                    };
-                    draw_label(
-                        dc,
-                        star,
-                        RECT {
-                            left: client.right - menu.pin_width + 6,
-                            top: y,
-                            right: client.right - 4,
-                            bottom: y + menu.row_height,
-                        },
-                    );
-                }
-            });
-            SelectObject(dc, old_font);
-            if !font.is_null() {
-                DeleteObject(font);
-            }
-        }
-    }
+fn font(dpi: i32, size: i32, weight: i32, face: &str) -> HFONT {
     unsafe {
-        EndPaint(window, &paint);
+        CreateFontW(
+            -(size * dpi / 96),
+            0,
+            0,
+            0,
+            weight,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET as u32,
+            OUT_DEFAULT_PRECIS as u32,
+            CLIP_DEFAULT_PRECIS as u32,
+            CLEARTYPE_QUALITY as u32,
+            DEFAULT_PITCH as u32,
+            wide(face).as_ptr(),
+        )
     }
 }
 
-fn draw_label(dc: HDC, text: &str, mut rect: RECT) {
-    let text = wide(text);
+struct Fonts {
+    body: HFONT,
+    small: HFONT,
+    code: HFONT,
+}
+
+impl Fonts {
+    fn new(dpi: i32) -> Self {
+        Self {
+            body: font(dpi, 14, FW_NORMAL as i32, "Segoe UI"),
+            small: font(dpi, 12, FW_NORMAL as i32, "Segoe UI"),
+            code: font(dpi, 13, FW_SEMIBOLD as i32, "Cascadia Mono"),
+        }
+    }
+}
+
+impl Drop for Fonts {
+    fn drop(&mut self) {
+        for font in [self.body, self.small, self.code] {
+            if !font.is_null() {
+                unsafe { DeleteObject(font) };
+            }
+        }
+    }
+}
+
+fn fill(dc: HDC, rect: &RECT, color: u32, radius: i32) {
     unsafe {
+        SetDCBrushColor(dc, color);
+        SetDCPenColor(dc, color);
+        let brush = SelectObject(dc, GetStockObject(DC_BRUSH));
+        let pen = SelectObject(dc, GetStockObject(DC_PEN));
+        if radius > 0 {
+            RoundRect(
+                dc,
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                radius,
+                radius,
+            );
+        } else {
+            FillRect(dc, rect, GetStockObject(DC_BRUSH) as HBRUSH);
+        }
+        SelectObject(dc, brush);
+        SelectObject(dc, pen);
+    }
+}
+
+fn text(dc: HDC, font: HFONT, color: u32, value: &str, mut rect: RECT, flags: u32) {
+    let value = wide(value);
+    unsafe {
+        SelectObject(dc, font);
+        SetTextColor(dc, color);
         DrawTextW(
             dc,
-            text.as_ptr(),
-            text.len() as i32 - 1,
+            value.as_ptr(),
+            value.len() as i32 - 1,
             &mut rect,
-            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX | flags,
         );
+    }
+}
+
+fn text_width(dc: HDC, font: HFONT, value: &str) -> i32 {
+    let value = wide(value);
+    let mut rect = RECT::default();
+    unsafe {
+        SelectObject(dc, font);
+        DrawTextW(
+            dc,
+            value.as_ptr(),
+            value.len() as i32 - 1,
+            &mut rect,
+            DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT,
+        );
+    }
+    rect.right - rect.left
+}
+
+/// Draws a trigger as a rounded chip and returns where the chip ends.
+fn chip(
+    dc: HDC,
+    fonts: &Fonts,
+    palette: Palette,
+    dpi: i32,
+    label: &str,
+    row: RECT,
+    max: i32,
+) -> i32 {
+    let pad = 7 * dpi / 96;
+    let width = (text_width(dc, fonts.code, label) + 2 * pad).min(max);
+    let height = 22 * dpi / 96;
+    let top = (row.top + row.bottom - height) / 2;
+    let area = RECT {
+        left: row.left,
+        top,
+        right: row.left + width,
+        bottom: top + height,
+    };
+    fill(dc, &area, palette.chip, 8 * dpi / 96);
+    text(
+        dc,
+        fonts.code,
+        palette.chip_text,
+        label,
+        RECT {
+            left: area.left + pad,
+            right: area.right - pad,
+            ..area
+        },
+        0,
+    );
+    area.right
+}
+
+fn paint(window: HWND) {
+    let mut paint = PAINTSTRUCT::default();
+    let target = unsafe { BeginPaint(window, &mut paint) };
+    if target.is_null() {
+        return;
+    }
+    let mut client = RECT::default();
+    unsafe { GetClientRect(window, &mut client) };
+    // Draw off screen first so rows do not flicker while the selection moves.
+    let (dc, bitmap) = unsafe {
+        let dc = CreateCompatibleDC(target);
+        let bitmap = CreateCompatibleBitmap(target, client.right, client.bottom);
+        (dc, bitmap)
+    };
+    let previous = unsafe { SelectObject(dc, bitmap) };
+    let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForWindow(window) }.max(96) as i32;
+    let fonts = Fonts::new(dpi);
+    let old_font = unsafe { SelectObject(dc, fonts.body) };
+    unsafe { SetBkMode(dc, TRANSPARENT as i32) };
+    OPEN.with_borrow(|menu| {
+        let Some(menu) = menu else { return };
+        let palette = menu.palette;
+        let scale = |value: i32| value * dpi / 96;
+        fill(dc, &client, palette.background, 0);
+        let header = RECT {
+            bottom: menu.header,
+            ..client
+        };
+        fill(dc, &header, palette.header, 0);
+        fill(
+            dc,
+            &RECT {
+                top: menu.header - 1,
+                bottom: menu.header,
+                ..client
+            },
+            palette.border,
+            0,
+        );
+        let inset = |top: i32, bottom: i32| RECT {
+            left: scale(6),
+            top,
+            right: client.right - scale(6),
+            bottom,
+        };
+        if let Some(form) = &menu.parameters {
+            text(
+                dc,
+                fonts.small,
+                palette.muted,
+                tr("rust.snippet.fill", "Fill snippet parameters · Tab to move"),
+                RECT {
+                    left: scale(14),
+                    right: client.right - scale(14),
+                    ..header
+                },
+                0,
+            );
+            let label_width = form
+                .names
+                .iter()
+                .map(|name| text_width(dc, fonts.code, name) + scale(14))
+                .max()
+                .unwrap_or(0)
+                .min(client.right / 3);
+            for (index, name) in form.names.iter().enumerate() {
+                let top = menu.header + scale(4) + index as i32 * menu.row_height;
+                let row = inset(top, top + menu.row_height);
+                if index == form.active {
+                    fill(dc, &row, palette.selected, scale(8));
+                }
+                chip(
+                    dc,
+                    &fonts,
+                    palette,
+                    dpi,
+                    name,
+                    RECT {
+                        left: row.left + scale(8),
+                        ..row
+                    },
+                    label_width,
+                );
+                let value = String::from_utf16_lossy(&form.values[index]);
+                text(
+                    dc,
+                    fonts.body,
+                    palette.text,
+                    &value,
+                    RECT {
+                        left: row.left + scale(16) + label_width,
+                        right: row.right - scale(8),
+                        ..row
+                    },
+                    0,
+                );
+            }
+            let top = menu.header + scale(4) + form.names.len() as i32 * menu.row_height;
+            let row = inset(top, top + menu.row_height);
+            text(
+                dc,
+                fonts.body,
+                palette.chip_text,
+                &format!("{}  ↵", tr("rust.snippet.insert", "Insert snippet")),
+                RECT {
+                    left: row.left + scale(8),
+                    right: row.right - scale(8),
+                    ..row
+                },
+                DT_RIGHT,
+            );
+            return;
+        }
+        let (hint, typed) = if menu.pin_error {
+            (
+                tr("rust.snippet.pinError", "Could not save favorites").to_owned(),
+                false,
+            )
+        } else if !menu.query.is_empty() {
+            (String::from_utf16_lossy(&menu.query), true)
+        } else if menu.prepared.insertion_disabled {
+            (
+                tr(
+                    "rust.snippet.disabledHere",
+                    "Snippets are disabled in this app",
+                )
+                .to_owned(),
+                false,
+            )
+        } else if menu.prepared.selection.is_none() && !menu.prepared.snippets.is_empty() {
+            (
+                tr(
+                    "rust.snippet.readOnly",
+                    "Open an editable field to insert snippets",
+                )
+                .to_owned(),
+                false,
+            )
+        } else {
+            (
+                tr("rust.snippet.search", "Type to search · Ctrl+P to pin").to_owned(),
+                false,
+            )
+        };
+        text(
+            dc,
+            if typed { fonts.body } else { fonts.small },
+            if typed { palette.text } else { palette.muted },
+            &hint,
+            RECT {
+                left: scale(14),
+                right: client.right - scale(14),
+                ..header
+            },
+            0,
+        );
+        if menu.matches.is_empty() {
+            let top = menu.header + scale(4);
+            text(
+                dc,
+                fonts.body,
+                palette.muted,
+                if menu.prepared.snippets.is_empty() {
+                    tr("rust.snippet.empty", "Add snippets in Settings")
+                } else {
+                    tr("history.notFound", "Nothing found")
+                },
+                RECT {
+                    left: scale(14),
+                    top,
+                    right: client.right - scale(14),
+                    bottom: top + menu.row_height,
+                },
+                0,
+            );
+        }
+        for (row_index, &index) in menu
+            .matches
+            .iter()
+            .skip(menu.first)
+            .take(menu.rows)
+            .enumerate()
+        {
+            let snippet = &menu.prepared.snippets[index];
+            let top = menu.header + scale(4) + row_index as i32 * menu.row_height;
+            let row = inset(top, top + menu.row_height);
+            if menu.first + row_index == menu.index {
+                fill(dc, &row, palette.selected, scale(8));
+            }
+            let content = RECT {
+                left: row.left + scale(8),
+                right: row.right - menu.pin_width,
+                ..row
+            };
+            let after_chip = chip(
+                dc,
+                &fonts,
+                palette,
+                dpi,
+                &snippet.trigger,
+                content,
+                (content.right - content.left) * 2 / 5,
+            );
+            let mut rest = RECT {
+                left: after_chip + scale(10),
+                ..content
+            };
+            let name = snippet.name.trim();
+            let body = preview(snippet);
+            let (main, extra) = if name.is_empty() {
+                (body.as_str(), "")
+            } else {
+                (name, body.as_str())
+            };
+            text(dc, fonts.body, palette.text, main, rest, 0);
+            if !extra.is_empty() {
+                rest.left += text_width(dc, fonts.body, main) + scale(10);
+                if rest.left < rest.right - scale(24) {
+                    text(dc, fonts.small, palette.muted, extra, rest, 0);
+                }
+            }
+            let pinned = menu.pins.contains(&snippet.trigger.to_lowercase());
+            text(
+                dc,
+                fonts.body,
+                if pinned { palette.star } else { palette.muted },
+                if pinned { "★" } else { "☆" },
+                RECT {
+                    left: row.right - menu.pin_width,
+                    right: row.right - scale(4),
+                    ..row
+                },
+                DT_CENTER,
+            );
+        }
+    });
+    unsafe {
+        // A thin border keeps the edge visible on Windows 10, where the shadow is faint.
+        let palette = OPEN.with_borrow(|menu| menu.as_ref().map_or(LIGHT, |menu| menu.palette));
+        SetDCBrushColor(dc, palette.border);
+        FrameRect(dc, &client, GetStockObject(DC_BRUSH) as HBRUSH);
+        BitBlt(target, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
+        SelectObject(dc, old_font);
+        SelectObject(dc, previous);
+        DeleteObject(bitmap);
+        DeleteDC(dc);
+        EndPaint(window, &paint);
     }
 }
 
@@ -1011,6 +1330,7 @@ mod tests {
             pin_width: 32,
             pin_error: false,
             parameters: None,
+            palette: LIGHT,
         };
         let saved = || {
             serde_json::from_slice::<HashSet<String>>(
