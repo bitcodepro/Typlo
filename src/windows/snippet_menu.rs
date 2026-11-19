@@ -711,6 +711,23 @@ fn close(window: HWND, apply: bool) {
     }
 }
 
+/// Clipboard text as field input: line breaks and tabs become spaces, other
+/// control characters are dropped, and the length is capped.
+fn pasted_units(text: &str) -> Vec<u16> {
+    let line: String = text
+        .trim_end_matches(['\r', '\n'])
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .collect();
+    let mut units: Vec<u16> = line.encode_utf16().collect();
+    units.truncate(4096);
+    if units.last().is_some_and(|u| (0xd800..=0xdbff).contains(u)) {
+        units.pop();
+    }
+    units
+}
+
 /// Puts the snippet text on the clipboard as plain text.
 pub(super) fn copy_to_clipboard(owner: HWND, text: &str) -> io::Result<()> {
     super::clipio::publish(owner, &super::clipio::Clip::from_text(text), true).map(drop)
@@ -823,6 +840,18 @@ unsafe extern "system" fn window_proc(
             });
             unsafe {
                 InvalidateRect(window, null_mut(), 0);
+            }
+        }
+        // Sent by the keyboard hook for Ctrl+V: types the clipboard text
+        // into the active field, one line, like typed characters.
+        WM_PASTE => {
+            let text = super::clipio::capture(super::clipio::sequence(), window, 64 * 1024, 0)
+                .ok()
+                .flatten()
+                .map(|clip| clip.text())
+                .unwrap_or_default();
+            for unit in pasted_units(&text) {
+                unsafe { SendMessageW(window, WM_CHAR, unit as usize, 0) };
             }
         }
         WM_CHAR => {
@@ -1332,6 +1361,14 @@ fn paint(window: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pasted_text_becomes_one_line_of_field_input() {
+        let units = pasted_units("a\tb\r\nc\u{7}d😀\r\n");
+        assert_eq!(String::from_utf16(&units).unwrap(), "a b  cd😀");
+        let long = "x".repeat(4095) + "😀";
+        assert_eq!(pasted_units(&long).len(), 4095);
+    }
 
     #[test]
     fn search_matches_names_or_triggers_and_prioritizes_favorites() {

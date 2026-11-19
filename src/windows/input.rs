@@ -653,7 +653,15 @@ impl HookState {
                 (WM_KEYDOWN, vk as usize, 0)
             }
             0x50 if control => (WM_KEYDOWN, vk as usize, 1),
+            // Ctrl+V pastes into the menu's own field.
+            0x56 if control => (WM_PASTE, 0, 0),
             VK_BACK if !control => (WM_CHAR, 8, 0),
+            // Other Ctrl shortcuts on letters, digits and Backspace (cut,
+            // undo, select all...) would edit the document under the menu.
+            VK_BACK | 0x30..=0x39 | 0x41..=0x5a if control => {
+                self.menu_keys.insert(vk);
+                return Some(suppress);
+            }
             _ if control => return None,
             _ => {
                 let foreground = unsafe { GetForegroundWindow() };
