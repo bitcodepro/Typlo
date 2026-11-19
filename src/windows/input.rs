@@ -635,10 +635,13 @@ impl HookState {
             return None;
         }
         let modifiers = system_modifiers();
-        if modifiers & (MOD_ALT | MOD_WIN) != 0 {
+        // AltGr arrives as Ctrl+Alt; on many layouts (German @, Polish
+        // letters...) it types characters, which belong in the menu field.
+        let altgr = modifiers & (MOD_CONTROL | MOD_ALT) == MOD_CONTROL | MOD_ALT;
+        if modifiers & MOD_WIN != 0 || (modifiers & MOD_ALT != 0 && !altgr) {
             return None;
         }
-        let control = modifiers & MOD_CONTROL != 0;
+        let control = modifiers & MOD_CONTROL != 0 && !altgr;
         // Editing and caret keys would change the document under the menu;
         // its fields only append, so these keys are swallowed.
         if matches!(
@@ -672,6 +675,11 @@ impl HookState {
                     state[VK_SHIFT as usize] = 0x80;
                 }
                 state[VK_CAPITAL as usize] = u8::from(self.caps);
+                if altgr {
+                    for vk in [VK_CONTROL, VK_LCONTROL, VK_MENU, VK_RMENU] {
+                        state[vk as usize] = 0x80;
+                    }
+                }
                 let mut output = [0u16; 4];
                 // Bit 2 keeps the keyboard's dead-key state unchanged.
                 let count = unsafe {
