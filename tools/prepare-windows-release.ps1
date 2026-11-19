@@ -72,8 +72,14 @@ if ($SoftwareOpenGL) {
 }
 & "$PSScriptRoot/package-windows.ps1" -PayloadDirectory $payload -OutputDirectory $output -Version $version
 if (@(Get-ChildItem $output -File -Filter '*.zip').Count -ne 1) { throw 'Expected one Windows installation/update ZIP' }
+# Do not change historical queued source release contracts.
+$schema = 1
+if (Test-Path (Join-Path $root 'tools/windows-installer.iss')) {
+    & "$PSScriptRoot/build-windows-installer.ps1" -ArchivePath "$output/typlo-win-x64.zip" -OutputDirectory $output -Version $version
+    $schema = 2
+}
 $assets = @(Get-ChildItem $output -File | Sort-Object Name | ForEach-Object {
     @{ name = $_.Name; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
 })
-@{ schema_version = 1; platform = 'windows-x64'; version = $version; commit = $commit; assets = $assets } | ConvertTo-Json -Depth 5 | Set-Content "$output/release-manifest.json" -Encoding utf8
+@{ schema_version = $schema; platform = 'windows-x64'; version = $version; commit = $commit; assets = $assets } | ConvertTo-Json -Depth 5 | Set-Content "$output/release-manifest.json" -Encoding utf8
 [void](Read-ReleaseManifest -Directory $output -Commit $commit -Version $version)
