@@ -1863,6 +1863,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
         }),
         FOREGROUND_CHANGED => {
             choice::cancel(window);
+            snippet_menu::dismiss_unless_foreground(unsafe { GetForegroundWindow() });
             RESIDENT.with_borrow_mut(|resident| {
                 let Some(resident) = resident else { return };
                 resident.foreground_changed(window);

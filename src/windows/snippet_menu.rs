@@ -53,9 +53,9 @@ const LIGHT: Palette = Palette {
     border: 0x00e3ddd9,
     text: 0x0028231f,
     muted: 0x0080726b,
-    selected: 0x00feefe6,
-    chip: 0x00f3f0ee,
-    chip_text: 0x00c4521a,
+    selected: 0x00f4f0ed,
+    chip: 0x00ebe7e4,
+    chip_text: 0x00514137,
     star: 0x000b9ef5,
 };
 
@@ -65,9 +65,9 @@ const DARK: Palette = Palette {
     border: 0x00463e3a,
     text: 0x00ebe8e6,
     muted: 0x00aca19a,
-    selected: 0x005e3f2d,
-    chip: 0x003e3733,
-    chip_text: 0x00f8b48a,
+    selected: 0x00403834,
+    chip: 0x00493f3a,
+    chip_text: 0x00dbd5d1,
     star: 0x0024bffb,
 };
 
@@ -333,43 +333,42 @@ pub(super) fn take_insertion() -> Option<Insertion> {
     INSERTION.lock().ok()?.take()
 }
 
+/// True while a menu is on screen; the shortcut then does not open another.
 pub(super) fn focus_existing() -> bool {
-    let window = WINDOW.load(Ordering::Acquire) as HWND;
-    if window.is_null() {
-        return false;
-    }
-    bring_forward(window);
-    true
+    !open_window().is_null()
 }
 
-/// Gives the menu keyboard focus. Windows refuses `SetForegroundWindow` to a
-/// process that did not receive the last input event, which is the case for
-/// shortcuts caught by the keyboard hook, so the menu briefly shares the input
-/// state of the window it opens over.
-fn bring_forward(window: HWND) {
-    use windows_sys::Win32::{
-        System::Threading::{AttachThreadInput, GetCurrentThreadId},
-        UI::Input::KeyboardAndMouse::SetFocus,
-    };
-    unsafe {
-        let current = GetCurrentThreadId();
-        let other = GetWindowThreadProcessId(GetForegroundWindow(), null_mut());
-        let attached = other != 0 && other != current && AttachThreadInput(current, other, 1) != 0;
-        BringWindowToTop(window);
-        SetForegroundWindow(window);
-        SetFocus(window);
-        if attached {
-            AttachThreadInput(current, other, 0);
-        }
+/// The open menu, for the keyboard hook that forwards keys to it.
+pub(super) fn open_window() -> HWND {
+    WINDOW.load(Ordering::Acquire) as HWND
+}
+
+/// Closes the menu when the mouse is pressed outside it.
+pub(super) fn dismiss_outside(point: POINT) {
+    let window = open_window();
+    let mut bounds = RECT::default();
+    if !window.is_null()
+        && unsafe { GetWindowRect(window, &mut bounds) } != 0
+        && !((bounds.left..bounds.right).contains(&point.x)
+            && (bounds.top..bounds.bottom).contains(&point.y))
+    {
+        unsafe { PostMessageW(window, WM_CLOSE, 0, 0) };
     }
 }
 
-pub(super) fn escape_outside() {
-    let window = WINDOW.load(Ordering::Acquire) as HWND;
-    if !window.is_null() && unsafe { GetForegroundWindow() } != window {
-        unsafe {
-            PostMessageW(window, WM_CLOSE, 0, 0);
-        }
+/// Closes the menu when the user switches to a window other than the one it
+/// was opened for. Runs on the resident thread, which owns the menu.
+pub(super) fn dismiss_unless_foreground(foreground: HWND) {
+    let window = open_window();
+    let origin = OPEN.with_borrow(|menu| {
+        menu.as_ref()
+            .map(|menu| menu.prepared.origin.target().foreground)
+    });
+    if !window.is_null()
+        && foreground != window
+        && origin.is_some_and(|origin| origin != foreground)
+    {
+        close(window, false);
     }
 }
 
@@ -483,7 +482,8 @@ pub(super) fn show(host: HWND, profile: &Path, dark: bool) -> io::Result<()> {
     let title = wide(tr("rust.snippet.menuTitle", "Typlo snippets"));
     let window = unsafe {
         CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            // The menu never takes focus; the keyboard hook forwards keys to it.
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
             class.as_ptr(),
             title.as_ptr(),
             WS_POPUP,
@@ -551,16 +551,15 @@ pub(super) fn show(host: HWND, profile: &Path, dark: bool) -> io::Result<()> {
     }));
     WINDOW.store(window as usize, Ordering::Release);
     unsafe {
-        SetWindowPos(window, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW);
-    }
-    bring_forward(window);
-    if unsafe { GetForegroundWindow() } != window {
-        // Without focus, Enter and the arrow keys would go to the editor while
-        // the menu stayed on screen.
-        close(window, false);
-        return Err(io::Error::other(
-            "The snippet menu could not take keyboard focus",
-        ));
+        SetWindowPos(
+            window,
+            HWND_TOPMOST,
+            x,
+            y,
+            width,
+            height,
+            SWP_SHOWWINDOW | SWP_NOACTIVATE,
+        );
     }
     Ok(())
 }
@@ -779,6 +778,7 @@ unsafe extern "system" fn window_proc(
     }
     match message {
         WM_CLOSE => close(window, false),
+        WM_MOUSEACTIVATE => return MA_NOACTIVATE as LRESULT,
         // Like other popups, the menu closes when another window is activated.
         WM_ACTIVATE
             if wparam & 0xffff == WA_INACTIVE as usize && OPEN.with_borrow(Option::is_some) =>
@@ -791,7 +791,11 @@ unsafe extern "system" fn window_proc(
             }
         }
         WM_KEYDOWN if wparam == VK_ESCAPE as usize => close(window, false),
-        WM_KEYDOWN if wparam == b'P' as usize && unsafe { GetKeyState(VK_CONTROL as i32) } < 0 => {
+        // The keyboard hook marks Ctrl+P with lparam 1.
+        WM_KEYDOWN
+            if wparam == b'P' as usize
+                && (lparam == 1 || unsafe { GetKeyState(VK_CONTROL as i32) } < 0) =>
+        {
             OPEN.with_borrow_mut(|menu| {
                 if let Some(menu) = menu {
                     menu.toggle_pin();
@@ -946,7 +950,9 @@ impl Fonts {
         Self {
             body: font(dpi, 14, FW_NORMAL as i32, "Segoe UI"),
             small: font(dpi, 12, FW_NORMAL as i32, "Segoe UI"),
-            code: font(dpi, 13, FW_SEMIBOLD as i32, "Cascadia Mono"),
+            // Segoe UI ships with every Windows version; a missing monospace
+            // font is replaced with one that draws some letters as boxes.
+            code: font(dpi, 13, FW_SEMIBOLD as i32, "Segoe UI"),
         }
     }
 }

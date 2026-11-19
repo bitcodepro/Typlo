@@ -1211,13 +1211,6 @@ impl Workspace {
                     ui.selectable_value(&mut self.settings.capture_shape, value, shape(value));
                 }
             });
-        ui.checkbox(
-            &mut self.settings.capture_editor_after_copy,
-            tr(
-                "capture.editorAfterCopy",
-                "Open the editor after copying a screenshot",
-            ),
-        );
         ui.horizontal(|ui| {
             for (label, mode) in [
                 (tr("capture.copy", "Copy screenshot"), "clipboard"),

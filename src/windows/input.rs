@@ -520,6 +520,8 @@ struct HookState {
     drawing_cursor: Option<HCURSOR>,
     brush_keys: BrushKeys,
     last_draw_move: Option<Instant>,
+    /// Keys whose press went to the snippet menu, so their release does too.
+    menu_keys: HashSet<u16>,
 }
 
 #[derive(Default)]
@@ -610,11 +612,81 @@ impl HookState {
         }
     }
 
+    /// Routes keys to the snippet menu while it is open. The menu never takes
+    /// focus, because many editors (Notepad++ among them) keep Windows from
+    /// moving the foreground to another process; it works like an
+    /// autocomplete popup instead.
+    fn menu_key(&mut self, down: bool, key: &KBDLLHOOKSTRUCT) -> Option<Decision> {
+        let menu = super::snippet_menu::open_window();
+        let vk = key.vkCode as u16;
+        if menu.is_null() {
+            self.menu_keys.clear();
+            return None;
+        }
+        let suppress = Decision {
+            suppress: true,
+            ..Default::default()
+        };
+        if !down {
+            return self.menu_keys.remove(&vk).then_some(suppress);
+        }
+        if modifier(vk) != 0 {
+            return None;
+        }
+        let modifiers = system_modifiers();
+        if modifiers & (MOD_ALT | MOD_WIN) != 0 {
+            return None;
+        }
+        let control = modifiers & MOD_CONTROL != 0;
+        let (message, value, flag) = match vk {
+            VK_RETURN | VK_ESCAPE | VK_UP | VK_DOWN | VK_TAB if !control => {
+                (WM_KEYDOWN, vk as usize, 0)
+            }
+            0x50 if control => (WM_KEYDOWN, vk as usize, 1),
+            VK_BACK if !control => (WM_CHAR, 8, 0),
+            _ if control => return None,
+            _ => {
+                let foreground = unsafe { GetForegroundWindow() };
+                let thread = unsafe { GetWindowThreadProcessId(foreground, null_mut()) };
+                let layout = unsafe { GetKeyboardLayout(thread) };
+                let mut state = [0u8; 256];
+                if modifiers & MOD_SHIFT != 0 {
+                    state[VK_SHIFT as usize] = 0x80;
+                }
+                state[VK_CAPITAL as usize] = u8::from(self.caps);
+                let mut output = [0u16; 4];
+                // Bit 2 keeps the keyboard's dead-key state unchanged.
+                let count = unsafe {
+                    ToUnicodeEx(
+                        key.vkCode,
+                        key.scanCode,
+                        state.as_ptr(),
+                        output.as_mut_ptr(),
+                        4,
+                        4,
+                        layout,
+                    )
+                };
+                if count != 1 || output[0] < 32 {
+                    return None;
+                }
+                (WM_CHAR, output[0] as usize, 0)
+            }
+        };
+        unsafe { PostMessageW(menu, message, value, flag) };
+        self.menu_keys.insert(vk);
+        Some(suppress)
+    }
+
     fn key(&mut self, message: u32, key: &KBDLLHOOKSTRUCT) -> Decision {
         let vk = key.vkCode as u16;
         let down = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
-        if down && vk == VK_ESCAPE {
-            super::snippet_menu::escape_outside();
+        // Typlo tags its own injected keys; keys sent by other tools, such as
+        // remote desktop clients, reach the menu like typed ones.
+        if (key.flags & LLKHF_INJECTED == 0 || key.dwExtraInfo == 0)
+            && let Some(decision) = self.menu_key(down, key)
+        {
+            return decision;
         }
         if key.flags & LLKHF_INJECTED != 0 && !fixture_printable(key) {
             if down
@@ -749,6 +821,9 @@ impl HookState {
         use super::phantom;
         if data.dwExtraInfo == DRAWING_CLICK {
             return false;
+        }
+        if matches!(message, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN) {
+            super::snippet_menu::dismiss_outside(data.pt);
         }
         let host = self.host as HWND;
         if let Some((button, pressed)) = drawing_button(message) {
@@ -1216,6 +1291,7 @@ impl Hooks {
                     drawing_cursor: None,
                     brush_keys: BrushKeys::default(),
                     last_draw_move: None,
+                    menu_keys: HashSet::new(),
                 }));
                 let instance = GetModuleHandleW(null_mut());
                 let keys = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), instance, 0);
@@ -1537,6 +1613,7 @@ mod tests {
             drawing_cursor: None,
             brush_keys: BrushKeys::default(),
             last_draw_move: None,
+            menu_keys: HashSet::new(),
         };
         // The modifier was released, and the user changed the configured shortcut.
         // The original button-up still belongs to the captured stroke.
@@ -1590,6 +1667,7 @@ mod tests {
             drawing_cursor: None,
             brush_keys: BrushKeys::default(),
             last_draw_move: None,
+            menu_keys: HashSet::new(),
         };
         let injected = |vk| KBDLLHOOKSTRUCT {
             flags: LLKHF_INJECTED,
