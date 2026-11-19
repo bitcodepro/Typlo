@@ -619,16 +619,17 @@ impl HookState {
     fn menu_key(&mut self, down: bool, key: &KBDLLHOOKSTRUCT) -> Option<Decision> {
         let menu = super::snippet_menu::open_window();
         let vk = key.vkCode as u16;
-        if menu.is_null() {
-            self.menu_keys.clear();
-            return None;
-        }
         let suppress = Decision {
             suppress: true,
             ..Default::default()
         };
+        // A key the menu took keeps its key-up (and auto-repeat) away from
+        // the editor even when that key closed the menu.
         if !down {
             return self.menu_keys.remove(&vk).then_some(suppress);
+        }
+        if menu.is_null() {
+            return self.menu_keys.contains(&vk).then_some(suppress);
         }
         if modifier(vk) != 0 {
             return None;
@@ -638,6 +639,15 @@ impl HookState {
             return None;
         }
         let control = modifiers & MOD_CONTROL != 0;
+        // Editing and caret keys would change the document under the menu;
+        // its fields only append, so these keys are swallowed.
+        if matches!(
+            vk,
+            VK_DELETE | VK_INSERT | VK_LEFT | VK_RIGHT | VK_HOME | VK_END | VK_PRIOR | VK_NEXT
+        ) {
+            self.menu_keys.insert(vk);
+            return Some(suppress);
+        }
         let (message, value, flag) = match vk {
             VK_RETURN | VK_ESCAPE | VK_UP | VK_DOWN | VK_TAB if !control => {
                 (WM_KEYDOWN, vk as usize, 0)
@@ -1679,5 +1689,42 @@ mod tests {
         assert!(receiver.try_recv().is_err());
         hook.key(WM_KEYDOWN, &injected(b'A'.into()));
         assert!(matches!(receiver.try_recv().unwrap().kind, Key::Reset));
+    }
+
+    #[test]
+    fn key_that_closed_the_snippet_menu_keeps_its_release_from_the_editor() {
+        let (events, _receiver) = sync_channel(8);
+        let mut hook = HookState {
+            host: 0,
+            events,
+            bindings: Arc::new(RwLock::new(Bindings {
+                chords: Vec::new(),
+                physical: Vec::new(),
+                drawing: None,
+                switch: None,
+            })),
+            caps: false,
+            caps_down: false,
+            gesture: Gesture::default(),
+            physical_down: 0,
+            pressed_scans: 0,
+            drawing_button: None,
+            drawing_start: None,
+            drawing_cursor: None,
+            brush_keys: BrushKeys::default(),
+            last_draw_move: None,
+            menu_keys: HashSet::from([VK_RETURN]),
+        };
+        // The menu is already closed; auto-repeat and the release stay hidden.
+        assert!(
+            hook.menu_key(true, &key(VK_RETURN))
+                .is_some_and(|d| d.suppress)
+        );
+        assert!(
+            hook.menu_key(false, &key(VK_RETURN))
+                .is_some_and(|d| d.suppress)
+        );
+        assert!(hook.menu_key(true, &key(VK_RETURN)).is_none());
+        assert!(hook.menu_key(false, &key(VK_ESCAPE)).is_none());
     }
 }
