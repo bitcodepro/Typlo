@@ -34,7 +34,8 @@ function Read-ReleaseManifest {
     $expected = @($archiveName, "$archiveName.sha256")
     $schema = $manifest.PSObject.Properties['schema_version']
     $platform = $manifest.PSObject.Properties['platform']
-    if ($schema -and $platform -and $schema.Value -eq 1 -and $platform.Value -ceq 'windows-x64') {
+    if ($schema -and $platform -and $schema.Value -in @(1, 2) -and $platform.Value -ceq 'windows-x64') {
+        if ($schema.Value -eq 2) { $expected += @('typlo-win-x64-setup.exe', 'typlo-win-x64-setup.exe.sha256') }
         # Only this platform has a tested release workflow. Add other platforms
         # with their own build/package gates before accepting their manifests.
     } elseif ($AllowLegacy -and $Version -ceq '0.1.0' -and !$schema -and !$platform) {
@@ -54,13 +55,19 @@ function Read-ReleaseManifest {
     $line = (Get-Content (Join-Path $Directory "$archiveName.sha256") -Raw).Trim()
     $digest = ($manifest.assets | Where-Object name -CEQ $archiveName).sha256
     if ($line -cne "$digest  $archiveName") { throw 'Updater checksum mismatch' }
+    if ($schema -and $schema.Value -eq 2) {
+        $name = 'typlo-win-x64-setup.exe'
+        $hash = ($manifest.assets | Where-Object name -CEQ $name).sha256
+        if ((Get-Content (Join-Path $Directory "$name.sha256") -Raw).Trim() -cne "$hash  $name") { throw 'Installer checksum mismatch' }
+    }
     return $manifest
 }
 function Test-ReleaseDescriptor {
     param($Manifest, [string]$Commit, [string]$Version)
-    if ($Manifest.commit -cne $Commit -or $Manifest.version -cne $Version -or $Manifest.schema_version -ne 1 -or $Manifest.platform -cne 'windows-x64') { throw 'Release descriptor identity mismatch' }
+    if ($Manifest.commit -cne $Commit -or $Manifest.version -cne $Version -or $Manifest.schema_version -notin @(1, 2) -or $Manifest.platform -cne 'windows-x64') { throw 'Release descriptor identity mismatch' }
     $names = @('typlo-win-x64.zip', 'typlo-win-x64.zip.sha256')
-    if (@($Manifest.assets).Count -ne 2) { throw 'Unexpected descriptor assets' }
+    if ($Manifest.schema_version -eq 2) { $names += @('typlo-win-x64-setup.exe', 'typlo-win-x64-setup.exe.sha256') }
+    if (@($Manifest.assets).Count -ne $names.Count) { throw 'Unexpected descriptor assets' }
     foreach ($name in $names) {
         $entry = @($Manifest.assets | Where-Object { $_.name -ceq $name })
         if ($entry.Count -ne 1 -or $entry[0].sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid descriptor asset/hash' }
