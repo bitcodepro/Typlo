@@ -1,4 +1,4 @@
-use super::{Target, WinEdit, accessible::Captured, input, wide};
+use super::{Target, accessible::Captured, input, wide};
 use crate::{
     locale::text as tr,
     snippets::{Snippet, Template},
@@ -439,8 +439,10 @@ pub(super) fn show(host: HWND, profile: &Path, dark: bool) -> io::Result<()> {
     let Some(prepared) = PENDING.lock().ok().and_then(|mut slot| slot.take()) else {
         return Ok(());
     };
+    // The menu also opens without an editable field: Enter then copies the
+    // snippet. It only needs the same window to be in front.
     if prepared.sequence != input::sequence()
-        || WinEdit::default().target().ok() != Some(prepared.origin.target())
+        || unsafe { GetForegroundWindow() } != prepared.origin.target().foreground
         || focus_existing()
     {
         return Ok(());
@@ -590,10 +592,7 @@ fn popup_position(anchor: RECT, work: RECT, width: i32, height: i32) -> (i32, i3
 }
 
 fn choose(window: HWND) {
-    if !OPEN.with_borrow(|slot| {
-        slot.as_ref()
-            .is_some_and(|menu| menu.prepared.selection.is_some() && !menu.matches.is_empty())
-    }) {
+    if !OPEN.with_borrow(|slot| slot.as_ref().is_some_and(|menu| !menu.matches.is_empty())) {
         return;
     }
     let form_height = OPEN.with_borrow_mut(|slot| {
@@ -659,41 +658,62 @@ fn close(window: HWND, apply: bool) {
                 SetForegroundWindow(target.foreground);
             }
         }
-        if apply
-            && let Some(selection) = menu.prepared.selection
-            && (unsafe { GetForegroundWindow() } == target.foreground
-                || unsafe { SetForegroundWindow(target.foreground) } != 0)
-            && let Some(template) = if let Some(form) = menu.parameters {
-                let values = form
-                    .names
-                    .into_iter()
-                    .zip(
-                        form.values
-                            .into_iter()
-                            .map(|value| String::from_utf16_lossy(&value)),
-                    )
-                    .collect::<Vec<_>>();
-                menu.prepared.snippets[form.snippet].fill(&values).ok()
-            } else {
-                menu.matches
-                    .get(menu.index)
-                    .and_then(|&index| menu.prepared.snippets[index].fill(&[]).ok())
-            }
-            && let Ok(mut insertion) = INSERTION.lock()
-        {
-            *insertion = Some(Insertion {
-                origin: menu.prepared.origin,
-                selection,
-                template,
-            });
-            unsafe {
-                PostMessageW(menu.host, APPLY, 0, 0);
+        let template = if !apply {
+            None
+        } else if let Some(form) = menu.parameters {
+            let values = form
+                .names
+                .into_iter()
+                .zip(
+                    form.values
+                        .into_iter()
+                        .map(|value| String::from_utf16_lossy(&value)),
+                )
+                .collect::<Vec<_>>();
+            menu.prepared.snippets[form.snippet].fill(&values).ok()
+        } else {
+            menu.matches
+                .get(menu.index)
+                .and_then(|&index| menu.prepared.snippets[index].fill(&[]).ok())
+        };
+        if let Some(template) = template {
+            let selection = menu
+                .prepared
+                .selection
+                .filter(|_| !menu.prepared.insertion_disabled);
+            match selection {
+                Some(selection)
+                    if (unsafe { GetForegroundWindow() } == target.foreground
+                        || unsafe { SetForegroundWindow(target.foreground) } != 0) =>
+                {
+                    if let Ok(mut insertion) = INSERTION.lock() {
+                        *insertion = Some(Insertion {
+                            origin: menu.prepared.origin,
+                            selection,
+                            template,
+                        });
+                        unsafe {
+                            PostMessageW(menu.host, APPLY, 0, 0);
+                        }
+                    }
+                }
+                // Nowhere to insert: the snippet goes to the clipboard for Ctrl+V.
+                _ => {
+                    if let Err(error) = copy_to_clipboard(menu.host, &template.text) {
+                        crate::runtime_error!("Typlo Rust snippet copy: {error}");
+                    }
+                }
             }
         }
     }
     unsafe {
         DestroyWindow(window);
     }
+}
+
+/// Puts the snippet text on the clipboard as plain text.
+pub(super) fn copy_to_clipboard(owner: HWND, text: &str) -> io::Result<()> {
+    super::clipio::publish(owner, &super::clipio::Clip::from_text(text), true).map(drop)
 }
 
 fn row_at(window: HWND, menu: &Menu, lparam: LPARAM) -> Option<Hit> {
@@ -1191,8 +1211,8 @@ fn paint(window: HWND) {
         } else if menu.prepared.selection.is_none() && !menu.prepared.snippets.is_empty() {
             (
                 tr(
-                    "rust.snippet.readOnly",
-                    "Open an editable field to insert snippets",
+                    "rust.snippet.copyHere",
+                    "Enter copies the snippet to the clipboard",
                 )
                 .to_owned(),
                 false,
