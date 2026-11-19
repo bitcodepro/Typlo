@@ -44,5 +44,5 @@ begin
      DirExists(ExpandConstant('{app}\versions')) then
     Result := 'An existing Typlo installation or updater state was found. Use Settings > Check for updates in Typlo, or choose a clean folder. Setup does not replace portable installations or reset updater state.';
 end;
-; No Run, InstallDelete or UninstallDelete: never start the app during setup,
-; modify profiles, or delete data/versions created by the app on uninstall.
+// No Run, InstallDelete or UninstallDelete: never start the app during setup,
+// modify profiles, or delete data/versions created by the app on uninstall.
