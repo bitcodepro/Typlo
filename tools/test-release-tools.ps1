@@ -253,3 +253,32 @@ Write-Host 'PASS one Windows package, platform schema, legacy assets and verifie
 Assert-Rejected { & "$PSScriptRoot/package-windows.ps1" -PayloadDirectory $fixture -OutputDirectory "$fixture/output" -Version '0.1.1-rc1' }
 Assert-Rejected { & "$PSScriptRoot/package-windows.ps1" -PayloadDirectory $fixture -OutputDirectory "$fixture/output" -Version '0.1.1' }
 Write-Host 'PASS packaging refuses preview versions and nested archive directories'
+
+# Schema 2 adds an installer without relaxing historical v1 exact asset sets.
+$v2 = Join-Path $fixture 'installer-schema'
+New-Item -ItemType Directory $v2 | Out-Null
+Set-Content "$v2/typlo-win-x64.zip" 'zip fixture'
+Set-Content "$v2/typlo-win-x64-setup.exe" 'installer fixture'
+foreach ($name in @('typlo-win-x64.zip', 'typlo-win-x64-setup.exe')) {
+    $hash = (Get-FileHash "$v2/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
+    Set-Content "$v2/$name.sha256" "$hash  $name"
+}
+$entries = @(Get-ChildItem $v2 -File | ForEach-Object { @{ name = $_.Name; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() } })
+$descriptor = @{ schema_version = 2; platform = 'windows-x64'; version = '0.2.0'; commit = $commit; assets = $entries }
+$descriptor | ConvertTo-Json -Depth 5 | Set-Content "$v2/release-manifest.json"
+$valid = Read-ReleaseManifest $v2 $commit '0.2.0'
+Test-ReleaseDescriptor $valid $commit '0.2.0'
+$descriptor.schema_version = 1
+$descriptor | ConvertTo-Json -Depth 5 | Set-Content "$v2/release-manifest.json"
+Assert-Rejected { Read-ReleaseManifest $v2 $commit '0.2.0' }
+Assert-Rejected { Test-ReleaseDescriptor ([pscustomobject]$descriptor) $commit '0.2.0' }
+$descriptor.schema_version = 2
+$descriptor.assets = @($entries | Select-Object -First 2)
+$descriptor | ConvertTo-Json -Depth 5 | Set-Content "$v2/release-manifest.json"
+Assert-Rejected { Read-ReleaseManifest $v2 $commit '0.2.0' }
+Assert-Rejected { Test-ReleaseDescriptor ([pscustomobject]$descriptor) $commit '0.2.0' }
+$descriptor.assets = $entries
+$descriptor | ConvertTo-Json -Depth 5 | Set-Content "$v2/release-manifest.json"
+Add-Content "$v2/typlo-win-x64-setup.exe" 'tampered'
+Assert-Rejected { Read-ReleaseManifest $v2 $commit '0.2.0' }
+Write-Host 'PASS schema 2 installer, exact historical schema 1, missing/tampered installer rejection'
