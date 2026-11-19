@@ -64,10 +64,8 @@ pub fn run_capture(profile: PathBuf, destination: &str, shape: CaptureShape) -> 
             capture::write_jpeg(&image, &path)?;
         }
     } else {
+        // Copying only fills the clipboard. The editor has its own shortcut.
         clipio::publish_screenshot(&image, std::ptr::null_mut())?;
-        if crate::config::load(&profile)?.capture_editor_after_copy {
-            return run_editor(&profile, false);
-        }
     }
     Ok(())
 }

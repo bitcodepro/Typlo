@@ -1,4 +1,4 @@
-use super::{Target, WinEdit, accessible::Captured, input, wide};
+use super::{Target, accessible::Captured, input, wide};
 use crate::{
     locale::text as tr,
     snippets::{Snippet, Template},
@@ -53,9 +53,9 @@ const LIGHT: Palette = Palette {
     border: 0x00e3ddd9,
     text: 0x0028231f,
     muted: 0x0080726b,
-    selected: 0x00feefe6,
-    chip: 0x00f3f0ee,
-    chip_text: 0x00c4521a,
+    selected: 0x00f4f0ed,
+    chip: 0x00ebe7e4,
+    chip_text: 0x00514137,
     star: 0x000b9ef5,
 };
 
@@ -65,9 +65,9 @@ const DARK: Palette = Palette {
     border: 0x00463e3a,
     text: 0x00ebe8e6,
     muted: 0x00aca19a,
-    selected: 0x005e3f2d,
-    chip: 0x003e3733,
-    chip_text: 0x00f8b48a,
+    selected: 0x00403834,
+    chip: 0x00493f3a,
+    chip_text: 0x00dbd5d1,
     star: 0x0024bffb,
 };
 
@@ -333,43 +333,42 @@ pub(super) fn take_insertion() -> Option<Insertion> {
     INSERTION.lock().ok()?.take()
 }
 
+/// True while a menu is on screen; the shortcut then does not open another.
 pub(super) fn focus_existing() -> bool {
-    let window = WINDOW.load(Ordering::Acquire) as HWND;
-    if window.is_null() {
-        return false;
-    }
-    bring_forward(window);
-    true
+    !open_window().is_null()
 }
 
-/// Gives the menu keyboard focus. Windows refuses `SetForegroundWindow` to a
-/// process that did not receive the last input event, which is the case for
-/// shortcuts caught by the keyboard hook, so the menu briefly shares the input
-/// state of the window it opens over.
-fn bring_forward(window: HWND) {
-    use windows_sys::Win32::{
-        System::Threading::{AttachThreadInput, GetCurrentThreadId},
-        UI::Input::KeyboardAndMouse::SetFocus,
-    };
-    unsafe {
-        let current = GetCurrentThreadId();
-        let other = GetWindowThreadProcessId(GetForegroundWindow(), null_mut());
-        let attached = other != 0 && other != current && AttachThreadInput(current, other, 1) != 0;
-        BringWindowToTop(window);
-        SetForegroundWindow(window);
-        SetFocus(window);
-        if attached {
-            AttachThreadInput(current, other, 0);
-        }
+/// The open menu, for the keyboard hook that forwards keys to it.
+pub(super) fn open_window() -> HWND {
+    WINDOW.load(Ordering::Acquire) as HWND
+}
+
+/// Closes the menu when the mouse is pressed outside it.
+pub(super) fn dismiss_outside(point: POINT) {
+    let window = open_window();
+    let mut bounds = RECT::default();
+    if !window.is_null()
+        && unsafe { GetWindowRect(window, &mut bounds) } != 0
+        && !((bounds.left..bounds.right).contains(&point.x)
+            && (bounds.top..bounds.bottom).contains(&point.y))
+    {
+        unsafe { PostMessageW(window, WM_CLOSE, 0, 0) };
     }
 }
 
-pub(super) fn escape_outside() {
-    let window = WINDOW.load(Ordering::Acquire) as HWND;
-    if !window.is_null() && unsafe { GetForegroundWindow() } != window {
-        unsafe {
-            PostMessageW(window, WM_CLOSE, 0, 0);
-        }
+/// Closes the menu when the user switches to a window other than the one it
+/// was opened for. Runs on the resident thread, which owns the menu.
+pub(super) fn dismiss_unless_foreground(foreground: HWND) {
+    let window = open_window();
+    let origin = OPEN.with_borrow(|menu| {
+        menu.as_ref()
+            .map(|menu| menu.prepared.origin.target().foreground)
+    });
+    if !window.is_null()
+        && foreground != window
+        && origin.is_some_and(|origin| origin != foreground)
+    {
+        close(window, false);
     }
 }
 
@@ -440,8 +439,10 @@ pub(super) fn show(host: HWND, profile: &Path, dark: bool) -> io::Result<()> {
     let Some(prepared) = PENDING.lock().ok().and_then(|mut slot| slot.take()) else {
         return Ok(());
     };
+    // The menu also opens without an editable field: Enter then copies the
+    // snippet. It only needs the same window to be in front.
     if prepared.sequence != input::sequence()
-        || WinEdit::default().target().ok() != Some(prepared.origin.target())
+        || unsafe { GetForegroundWindow() } != prepared.origin.target().foreground
         || focus_existing()
     {
         return Ok(());
@@ -483,7 +484,8 @@ pub(super) fn show(host: HWND, profile: &Path, dark: bool) -> io::Result<()> {
     let title = wide(tr("rust.snippet.menuTitle", "Typlo snippets"));
     let window = unsafe {
         CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            // The menu never takes focus; the keyboard hook forwards keys to it.
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
             class.as_ptr(),
             title.as_ptr(),
             WS_POPUP,
@@ -551,16 +553,15 @@ pub(super) fn show(host: HWND, profile: &Path, dark: bool) -> io::Result<()> {
     }));
     WINDOW.store(window as usize, Ordering::Release);
     unsafe {
-        SetWindowPos(window, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW);
-    }
-    bring_forward(window);
-    if unsafe { GetForegroundWindow() } != window {
-        // Without focus, Enter and the arrow keys would go to the editor while
-        // the menu stayed on screen.
-        close(window, false);
-        return Err(io::Error::other(
-            "The snippet menu could not take keyboard focus",
-        ));
+        SetWindowPos(
+            window,
+            HWND_TOPMOST,
+            x,
+            y,
+            width,
+            height,
+            SWP_SHOWWINDOW | SWP_NOACTIVATE,
+        );
     }
     Ok(())
 }
@@ -591,10 +592,7 @@ fn popup_position(anchor: RECT, work: RECT, width: i32, height: i32) -> (i32, i3
 }
 
 fn choose(window: HWND) {
-    if !OPEN.with_borrow(|slot| {
-        slot.as_ref()
-            .is_some_and(|menu| menu.prepared.selection.is_some() && !menu.matches.is_empty())
-    }) {
+    if !OPEN.with_borrow(|slot| slot.as_ref().is_some_and(|menu| !menu.matches.is_empty())) {
         return;
     }
     let form_height = OPEN.with_borrow_mut(|slot| {
@@ -660,41 +658,79 @@ fn close(window: HWND, apply: bool) {
                 SetForegroundWindow(target.foreground);
             }
         }
-        if apply
-            && let Some(selection) = menu.prepared.selection
-            && (unsafe { GetForegroundWindow() } == target.foreground
-                || unsafe { SetForegroundWindow(target.foreground) } != 0)
-            && let Some(template) = if let Some(form) = menu.parameters {
-                let values = form
-                    .names
-                    .into_iter()
-                    .zip(
-                        form.values
-                            .into_iter()
-                            .map(|value| String::from_utf16_lossy(&value)),
-                    )
-                    .collect::<Vec<_>>();
-                menu.prepared.snippets[form.snippet].fill(&values).ok()
-            } else {
-                menu.matches
-                    .get(menu.index)
-                    .and_then(|&index| menu.prepared.snippets[index].fill(&[]).ok())
-            }
-            && let Ok(mut insertion) = INSERTION.lock()
-        {
-            *insertion = Some(Insertion {
-                origin: menu.prepared.origin,
-                selection,
-                template,
-            });
-            unsafe {
-                PostMessageW(menu.host, APPLY, 0, 0);
+        let template = if !apply {
+            None
+        } else if let Some(form) = menu.parameters {
+            let values = form
+                .names
+                .into_iter()
+                .zip(
+                    form.values
+                        .into_iter()
+                        .map(|value| String::from_utf16_lossy(&value)),
+                )
+                .collect::<Vec<_>>();
+            menu.prepared.snippets[form.snippet].fill(&values).ok()
+        } else {
+            menu.matches
+                .get(menu.index)
+                .and_then(|&index| menu.prepared.snippets[index].fill(&[]).ok())
+        };
+        if let Some(template) = template {
+            let selection = menu
+                .prepared
+                .selection
+                .filter(|_| !menu.prepared.insertion_disabled);
+            match selection {
+                Some(selection)
+                    if (unsafe { GetForegroundWindow() } == target.foreground
+                        || unsafe { SetForegroundWindow(target.foreground) } != 0) =>
+                {
+                    if let Ok(mut insertion) = INSERTION.lock() {
+                        *insertion = Some(Insertion {
+                            origin: menu.prepared.origin,
+                            selection,
+                            template,
+                        });
+                        unsafe {
+                            PostMessageW(menu.host, APPLY, 0, 0);
+                        }
+                    }
+                }
+                // Nowhere to insert: the snippet goes to the clipboard for Ctrl+V.
+                _ => {
+                    if let Err(error) = copy_to_clipboard(menu.host, &template.text) {
+                        crate::runtime_error!("Typlo Rust snippet copy: {error}");
+                    }
+                }
             }
         }
     }
     unsafe {
         DestroyWindow(window);
     }
+}
+
+/// Clipboard text as field input: line breaks and tabs become spaces, other
+/// control characters are dropped, and the length is capped.
+fn pasted_units(text: &str) -> Vec<u16> {
+    let line: String = text
+        .trim_end_matches(['\r', '\n'])
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .collect();
+    let mut units: Vec<u16> = line.encode_utf16().collect();
+    units.truncate(4096);
+    if units.last().is_some_and(|u| (0xd800..=0xdbff).contains(u)) {
+        units.pop();
+    }
+    units
+}
+
+/// Puts the snippet text on the clipboard as plain text.
+pub(super) fn copy_to_clipboard(owner: HWND, text: &str) -> io::Result<()> {
+    super::clipio::publish(owner, &super::clipio::Clip::from_text(text), true).map(drop)
 }
 
 fn row_at(window: HWND, menu: &Menu, lparam: LPARAM) -> Option<Hit> {
@@ -779,6 +815,7 @@ unsafe extern "system" fn window_proc(
     }
     match message {
         WM_CLOSE => close(window, false),
+        WM_MOUSEACTIVATE => return MA_NOACTIVATE as LRESULT,
         // Like other popups, the menu closes when another window is activated.
         WM_ACTIVATE
             if wparam & 0xffff == WA_INACTIVE as usize && OPEN.with_borrow(Option::is_some) =>
@@ -791,7 +828,11 @@ unsafe extern "system" fn window_proc(
             }
         }
         WM_KEYDOWN if wparam == VK_ESCAPE as usize => close(window, false),
-        WM_KEYDOWN if wparam == b'P' as usize && unsafe { GetKeyState(VK_CONTROL as i32) } < 0 => {
+        // The keyboard hook marks Ctrl+P with lparam 1.
+        WM_KEYDOWN
+            if wparam == b'P' as usize
+                && (lparam == 1 || unsafe { GetKeyState(VK_CONTROL as i32) } < 0) =>
+        {
             OPEN.with_borrow_mut(|menu| {
                 if let Some(menu) = menu {
                     menu.toggle_pin();
@@ -799,6 +840,18 @@ unsafe extern "system" fn window_proc(
             });
             unsafe {
                 InvalidateRect(window, null_mut(), 0);
+            }
+        }
+        // Sent by the keyboard hook for Ctrl+V: types the clipboard text
+        // into the active field, one line, like typed characters.
+        WM_PASTE => {
+            let text = super::clipio::capture(super::clipio::sequence(), window, 64 * 1024, 0)
+                .ok()
+                .flatten()
+                .map(|clip| clip.text())
+                .unwrap_or_default();
+            for unit in pasted_units(&text) {
+                unsafe { SendMessageW(window, WM_CHAR, unit as usize, 0) };
             }
         }
         WM_CHAR => {
@@ -946,7 +999,9 @@ impl Fonts {
         Self {
             body: font(dpi, 14, FW_NORMAL as i32, "Segoe UI"),
             small: font(dpi, 12, FW_NORMAL as i32, "Segoe UI"),
-            code: font(dpi, 13, FW_SEMIBOLD as i32, "Cascadia Mono"),
+            // Segoe UI ships with every Windows version; a missing monospace
+            // font is replaced with one that draws some letters as boxes.
+            code: font(dpi, 13, FW_SEMIBOLD as i32, "Segoe UI"),
         }
     }
 }
@@ -1185,8 +1240,8 @@ fn paint(window: HWND) {
         } else if menu.prepared.selection.is_none() && !menu.prepared.snippets.is_empty() {
             (
                 tr(
-                    "rust.snippet.readOnly",
-                    "Open an editable field to insert snippets",
+                    "rust.snippet.copyHere",
+                    "Enter copies the snippet to the clipboard",
                 )
                 .to_owned(),
                 false,
@@ -1306,6 +1361,14 @@ fn paint(window: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pasted_text_becomes_one_line_of_field_input() {
+        let units = pasted_units("a\tb\r\nc\u{7}d😀\r\n");
+        assert_eq!(String::from_utf16(&units).unwrap(), "a b  cd😀");
+        let long = "x".repeat(4095) + "😀";
+        assert_eq!(pasted_units(&long).len(), 4095);
+    }
 
     #[test]
     fn search_matches_names_or_triggers_and_prioritizes_favorites() {

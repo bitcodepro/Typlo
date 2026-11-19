@@ -520,6 +520,8 @@ struct HookState {
     drawing_cursor: Option<HCURSOR>,
     brush_keys: BrushKeys,
     last_draw_move: Option<Instant>,
+    /// Keys whose press went to the snippet menu, so their release does too.
+    menu_keys: HashSet<u16>,
 }
 
 #[derive(Default)]
@@ -610,11 +612,107 @@ impl HookState {
         }
     }
 
+    /// Routes keys to the snippet menu while it is open. The menu never takes
+    /// focus, because many editors (Notepad++ among them) keep Windows from
+    /// moving the foreground to another process; it works like an
+    /// autocomplete popup instead.
+    fn menu_key(&mut self, down: bool, key: &KBDLLHOOKSTRUCT) -> Option<Decision> {
+        let menu = super::snippet_menu::open_window();
+        let vk = key.vkCode as u16;
+        let suppress = Decision {
+            suppress: true,
+            ..Default::default()
+        };
+        // A key the menu took keeps its key-up (and auto-repeat) away from
+        // the editor even when that key closed the menu.
+        if !down {
+            return self.menu_keys.remove(&vk).then_some(suppress);
+        }
+        if menu.is_null() {
+            return self.menu_keys.contains(&vk).then_some(suppress);
+        }
+        if modifier(vk) != 0 {
+            return None;
+        }
+        let modifiers = system_modifiers();
+        // AltGr arrives as Ctrl+Alt; on many layouts (German @, Polish
+        // letters...) it types characters, which belong in the menu field.
+        let altgr = modifiers & (MOD_CONTROL | MOD_ALT) == MOD_CONTROL | MOD_ALT;
+        if modifiers & MOD_WIN != 0 || (modifiers & MOD_ALT != 0 && !altgr) {
+            return None;
+        }
+        let control = modifiers & MOD_CONTROL != 0 && !altgr;
+        // Editing and caret keys would change the document under the menu;
+        // its fields only append, so these keys are swallowed.
+        if matches!(
+            vk,
+            VK_DELETE | VK_INSERT | VK_LEFT | VK_RIGHT | VK_HOME | VK_END | VK_PRIOR | VK_NEXT
+        ) {
+            self.menu_keys.insert(vk);
+            return Some(suppress);
+        }
+        let (message, value, flag) = match vk {
+            VK_RETURN | VK_ESCAPE | VK_UP | VK_DOWN | VK_TAB if !control => {
+                (WM_KEYDOWN, vk as usize, 0)
+            }
+            0x50 if control => (WM_KEYDOWN, vk as usize, 1),
+            // Ctrl+V pastes into the menu's own field.
+            0x56 if control => (WM_PASTE, 0, 0),
+            VK_BACK if !control => (WM_CHAR, 8, 0),
+            // Other Ctrl shortcuts on letters, digits and Backspace (cut,
+            // undo, select all...) would edit the document under the menu.
+            VK_BACK | 0x30..=0x39 | 0x41..=0x5a if control => {
+                self.menu_keys.insert(vk);
+                return Some(suppress);
+            }
+            _ if control => return None,
+            _ => {
+                let foreground = unsafe { GetForegroundWindow() };
+                let thread = unsafe { GetWindowThreadProcessId(foreground, null_mut()) };
+                let layout = unsafe { GetKeyboardLayout(thread) };
+                let mut state = [0u8; 256];
+                if modifiers & MOD_SHIFT != 0 {
+                    state[VK_SHIFT as usize] = 0x80;
+                }
+                state[VK_CAPITAL as usize] = u8::from(self.caps);
+                if altgr {
+                    for vk in [VK_CONTROL, VK_LCONTROL, VK_MENU, VK_RMENU] {
+                        state[vk as usize] = 0x80;
+                    }
+                }
+                let mut output = [0u16; 4];
+                // Bit 2 keeps the keyboard's dead-key state unchanged.
+                let count = unsafe {
+                    ToUnicodeEx(
+                        key.vkCode,
+                        key.scanCode,
+                        state.as_ptr(),
+                        output.as_mut_ptr(),
+                        4,
+                        4,
+                        layout,
+                    )
+                };
+                if count != 1 || output[0] < 32 {
+                    return None;
+                }
+                (WM_CHAR, output[0] as usize, 0)
+            }
+        };
+        unsafe { PostMessageW(menu, message, value, flag) };
+        self.menu_keys.insert(vk);
+        Some(suppress)
+    }
+
     fn key(&mut self, message: u32, key: &KBDLLHOOKSTRUCT) -> Decision {
         let vk = key.vkCode as u16;
         let down = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
-        if down && vk == VK_ESCAPE {
-            super::snippet_menu::escape_outside();
+        // Typlo tags its own injected keys; keys sent by other tools, such as
+        // remote desktop clients, reach the menu like typed ones.
+        if (key.flags & LLKHF_INJECTED == 0 || key.dwExtraInfo == 0)
+            && let Some(decision) = self.menu_key(down, key)
+        {
+            return decision;
         }
         if key.flags & LLKHF_INJECTED != 0 && !fixture_printable(key) {
             if down
@@ -749,6 +847,9 @@ impl HookState {
         use super::phantom;
         if data.dwExtraInfo == DRAWING_CLICK {
             return false;
+        }
+        if matches!(message, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN) {
+            super::snippet_menu::dismiss_outside(data.pt);
         }
         let host = self.host as HWND;
         if let Some((button, pressed)) = drawing_button(message) {
@@ -1216,6 +1317,7 @@ impl Hooks {
                     drawing_cursor: None,
                     brush_keys: BrushKeys::default(),
                     last_draw_move: None,
+                    menu_keys: HashSet::new(),
                 }));
                 let instance = GetModuleHandleW(null_mut());
                 let keys = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), instance, 0);
@@ -1537,6 +1639,7 @@ mod tests {
             drawing_cursor: None,
             brush_keys: BrushKeys::default(),
             last_draw_move: None,
+            menu_keys: HashSet::new(),
         };
         // The modifier was released, and the user changed the configured shortcut.
         // The original button-up still belongs to the captured stroke.
@@ -1590,6 +1693,7 @@ mod tests {
             drawing_cursor: None,
             brush_keys: BrushKeys::default(),
             last_draw_move: None,
+            menu_keys: HashSet::new(),
         };
         let injected = |vk| KBDLLHOOKSTRUCT {
             flags: LLKHF_INJECTED,
@@ -1601,5 +1705,42 @@ mod tests {
         assert!(receiver.try_recv().is_err());
         hook.key(WM_KEYDOWN, &injected(b'A'.into()));
         assert!(matches!(receiver.try_recv().unwrap().kind, Key::Reset));
+    }
+
+    #[test]
+    fn key_that_closed_the_snippet_menu_keeps_its_release_from_the_editor() {
+        let (events, _receiver) = sync_channel(8);
+        let mut hook = HookState {
+            host: 0,
+            events,
+            bindings: Arc::new(RwLock::new(Bindings {
+                chords: Vec::new(),
+                physical: Vec::new(),
+                drawing: None,
+                switch: None,
+            })),
+            caps: false,
+            caps_down: false,
+            gesture: Gesture::default(),
+            physical_down: 0,
+            pressed_scans: 0,
+            drawing_button: None,
+            drawing_start: None,
+            drawing_cursor: None,
+            brush_keys: BrushKeys::default(),
+            last_draw_move: None,
+            menu_keys: HashSet::from([VK_RETURN]),
+        };
+        // The menu is already closed; auto-repeat and the release stay hidden.
+        assert!(
+            hook.menu_key(true, &key(VK_RETURN))
+                .is_some_and(|d| d.suppress)
+        );
+        assert!(
+            hook.menu_key(false, &key(VK_RETURN))
+                .is_some_and(|d| d.suppress)
+        );
+        assert!(hook.menu_key(true, &key(VK_RETURN)).is_none());
+        assert!(hook.menu_key(false, &key(VK_ESCAPE)).is_none());
     }
 }

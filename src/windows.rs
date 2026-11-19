@@ -1494,7 +1494,24 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                     if snippet_menu::focus_existing() {
                         return Ok(());
                     }
-                    let target = WinEdit::default().target()?;
+                    let Ok(target) = WinEdit::default().target() else {
+                        // No focused field (desktop, a window without text
+                        // input): open the menu anyway; Enter copies.
+                        if let Some(target) = foreground_target() {
+                            snippet_menu::publish(
+                                window,
+                                snippet_menu::Prepared {
+                                    origin: snippet_menu::Origin::new(target),
+                                    selection: None,
+                                    insertion_disabled: false,
+                                    sequence: input::sequence(),
+                                    anchor: snippet_menu::pointer_anchor(),
+                                    snippets: resident.settings.snippets.clone(),
+                                },
+                            );
+                        }
+                        return Ok(());
+                    };
                     let process = process_name(target.pid).unwrap_or_default();
                     let can_insert = resident.settings.snippets_for(&process);
                     return resident.accessible_edit(
@@ -1863,6 +1880,7 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
         }),
         FOREGROUND_CHANGED => {
             choice::cancel(window);
+            snippet_menu::dismiss_unless_foreground(unsafe { GetForegroundWindow() });
             RESIDENT.with_borrow_mut(|resident| {
                 let Some(resident) = resident else { return };
                 resident.foreground_changed(window);
@@ -1946,9 +1964,10 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             0
         }
         snippet_menu::APPLY => {
+            let item = snippet_menu::take_insertion();
+            let text = item.as_ref().map(|item| item.template.text.clone());
             let result = RESIDENT.with_borrow_mut(|resident| -> io::Result<()> {
-                let (Some(resident), Some(item)) = (resident, snippet_menu::take_insertion())
-                else {
+                let (Some(resident), Some(item)) = (resident, item) else {
                     return Ok(());
                 };
                 let target = item.origin.target();
@@ -2008,6 +2027,13 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
             });
             if let Err(error) = result {
                 crate::runtime_error!("Typlo Rust snippet insertion: {error}");
+                // The field went away before the insertion: keep the snippet
+                // on the clipboard so it can still be pasted.
+                if let Some(text) = text
+                    && let Err(error) = snippet_menu::copy_to_clipboard(window, &text)
+                {
+                    crate::runtime_error!("Typlo Rust snippet copy: {error}");
+                }
             }
             0
         }
