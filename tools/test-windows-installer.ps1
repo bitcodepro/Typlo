@@ -7,10 +7,10 @@ $root = Join-Path $env:RUNNER_TEMP ('Typlo installer smoke ' + [guid]::NewGuid()
 $installed = Join-Path $root 'Installed app'
 $expected = Join-Path $root 'Expected payload'
 Expand-Archive -LiteralPath $ArchivePath -DestinationPath $expected
-function Invoke-Setup([string]$Exe, [string]$Arguments, [bool]$ShouldPass = $true) {
+function Invoke-Setup([string]$Exe, [string]$Arguments, [int]$ExpectedExit = 0) {
     $p = Start-Process -FilePath $Exe -ArgumentList $Arguments -PassThru
     if (!$p.WaitForExit(120000)) { $p.Kill($true); throw 'Installer timed out' }
-    if (($p.ExitCode -eq 0) -ne $ShouldPass) { throw "Unexpected setup exit: $($p.ExitCode)" }
+    if ($p.ExitCode -ne $ExpectedExit) { throw "Unexpected setup exit: $($p.ExitCode)" }
 }
 Invoke-Setup $installer "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=`"$installed`" /LOG=`"$root/install.log`""
 foreach ($file in (Get-ChildItem $expected -Recurse -File)) {
@@ -23,7 +23,8 @@ $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
 if ($link.TargetPath -ine (Join-Path $installed 'Typlo.exe')) { throw 'Shortcut target mismatch' }
 New-Item -ItemType Directory "$installed/data" | Out-Null
 Set-Content "$installed/data/installer-smoke.txt" 'preserve me'
-Invoke-Setup $installer "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=`"$installed`"" $false
+Invoke-Setup $installer "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=`"$installed`"" 2
+Invoke-Setup $installer "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=`"$root/Alternate clean app`"" 2
 # Simulate updater-owned bytes and marker without invoking any live update feed.
 New-Item -ItemType Directory "$installed/versions/99.0.0" -Force | Out-Null
 Set-Content "$installed/versions/99.0.0/Typlo.exe" 'updater-owned sentinel'
@@ -34,6 +35,6 @@ if (Test-Path $shortcut) { throw 'Uninstall retained shortcut' }
 if ((Get-Content "$installed/data/installer-smoke.txt" -Raw).Trim() -cne 'preserve me') { throw 'Uninstall modified profile' }
 # Refuse updater-managed folders, even if their base executable is missing.
 if ((Get-Content "$installed/versions/99.0.0/Typlo.exe" -Raw).Trim() -cne 'updater-owned sentinel') { throw 'Uninstall modified updater-owned files' }
-Invoke-Setup $installer "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=`"$installed`"" $false
+Invoke-Setup $installer "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=`"$installed`"" 7
 if ((Get-Content "$installed/rust-current.txt" -Raw).Trim() -cne '99.0.0') { throw 'Setup modified updater marker' }
 Write-Host 'PASS fresh install, payload hashes, shortcut, existing-install refusal, uninstall and profile preservation'
