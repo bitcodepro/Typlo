@@ -958,12 +958,14 @@ fn run_edit(
                     }
                 }
             };
-            editor.native.target()?;
+            // If the field changed meanwhile the menu still opens; Enter then
+            // copies the snippet instead of inserting it.
+            let unchanged = editor.native.target().is_ok();
             snippet_menu::publish(
                 owner,
                 Prepared {
                     origin: Origin::new(target),
-                    selection: selection.filter(|_| can_insert),
+                    selection: selection.filter(|_| can_insert && unchanged),
                     insertion_disabled: !can_insert,
                     sequence: job.sequence,
                     anchor: anchor.unwrap_or_else(snippet_menu::pointer_anchor),
