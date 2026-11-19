@@ -31,7 +31,7 @@ function InitializeSetup(): Boolean;
 begin
   Result := not RegKeyExists(HKCU64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{65B79E48-68D3-4619-B75D-BA7F7F7BE680}_is1');
   if not Result then
-    MsgBox('Typlo setup is already registered for this user. Use the built-in updater, or close Typlo and uninstall it before installing to a clean folder. Your data is preserved by uninstall.', mbError, MB_OK);
+    SuppressibleMsgBox('Typlo setup is already registered for this user. Use the built-in updater, or close Typlo and uninstall it before installing to a clean folder. Your data is preserved by uninstall.', mbError, MB_OK, IDOK);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
