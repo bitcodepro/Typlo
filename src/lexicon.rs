@@ -27,10 +27,15 @@ const SPELLING_LOCALES: [&str; 3] = ["en_US", "ru_RU", "uk_UA"];
 /// Full spelling dictionaries for English, Russian and Ukrainian, shared by
 /// the process and loaded once. The frequency list lacks many ordinary and
 /// technical words. Missing or broken files give no dictionary.
-fn spelling_dictionary(vocabulary: &Path, index: usize) -> Option<&'static spellbook::Dictionary> {
-    static DICTIONARIES: [std::sync::OnceLock<Option<spellbook::Dictionary>>; 3] =
-        [const { std::sync::OnceLock::new() }; 3];
-    DICTIONARIES[index]
+static SPELLING_DICTIONARIES: [std::sync::OnceLock<Option<spellbook::Dictionary>>; 3] =
+    [const { std::sync::OnceLock::new() }; 3];
+
+/// Loads a spelling dictionary, waiting while another thread loads it.
+fn load_spelling_dictionary(
+    vocabulary: &Path,
+    index: usize,
+) -> Option<&'static spellbook::Dictionary> {
+    SPELLING_DICTIONARIES[index]
         .get_or_init(|| {
             let stem = vocabulary
                 .parent()?
@@ -240,20 +245,37 @@ impl Vocabulary {
         if !own_script || !word.chars().any(char::is_alphabetic) {
             return false;
         }
-        spelling_dictionary(&self.path, index).is_some_and(|dictionary| dictionary.check(word))
+        // Never wait for a dictionary on the input path: until it is loaded,
+        // the frequency list alone decides, as it did before.
+        self.preload_spelling();
+        SPELLING_DICTIONARIES[index]
+            .get()
+            .and_then(Option::as_ref)
+            .is_some_and(|dictionary| dictionary.check(word))
     }
 
-    /// Loads the spelling dictionaries in the background, so the first word
-    /// typed does not wait for them.
+    /// Starts loading the spelling dictionaries in the background once, so
+    /// typing never waits for them.
     pub fn preload_spelling(&self) {
-        let path = self.path.clone();
-        let _ = std::thread::Builder::new()
-            .name("typlo-spelling-preload".into())
-            .spawn(move || {
-                for index in 0..SPELLING_LOCALES.len() {
-                    spelling_dictionary(&path, index);
-                }
-            });
+        static STARTED: std::sync::Once = std::sync::Once::new();
+        STARTED.call_once(|| {
+            let path = self.path.clone();
+            let _ = std::thread::Builder::new()
+                .name("typlo-spelling-preload".into())
+                .spawn(move || {
+                    for index in 0..SPELLING_LOCALES.len() {
+                        load_spelling_dictionary(&path, index);
+                    }
+                });
+        });
+    }
+
+    /// Loads the spelling dictionaries now, for checks that need them.
+    #[cfg(test)]
+    fn load_spelling(&self) {
+        for index in 0..SPELLING_LOCALES.len() {
+            load_spelling_dictionary(&self.path, index);
+        }
     }
 
     pub fn suggest(
@@ -297,13 +319,16 @@ impl Vocabulary {
             return Ok((None, Decision::Excluded));
         }
         let current = self.score(personal, typed, source)?;
+        if current >= RELIABLE {
+            return Ok((None, Decision::AlreadyRecognized));
+        }
         // A correctly spelled word of the current layout stays, even when it
         // is too rare for the frequency list. Spelling dictionaries accept
         // many short letter groups, so for those only a very common word in
         // another layout wins.
         let spelled = self.spelled(typed, source);
         let short = typed.chars().filter(|c| c.is_alphabetic()).count() < WEAK_LENGTH;
-        if current >= RELIABLE || (spelled && !short) {
+        if spelled && !short {
             return Ok((None, Decision::AlreadyRecognized));
         }
         let mut candidates = Vec::new();
@@ -317,14 +342,16 @@ impl Vocabulary {
         {
             let result = layout::convert(typed, source, target, true);
             // A letter key that becomes punctuation at the edge of the word
-            // would be trimmed away and leave a different, shorter word.
-            let edges = |text: &str| {
-                let trimmed = text.trim_matches(|c: char| !c.is_alphanumeric());
-                text.len() - trimmed.len()
-            };
+            // would be trimmed away and leave a different, shorter word. Only
+            // sentence punctuation at the end ("hello." from "руддщю") is a
+            // plausible part of what was meant.
+            let core = result.trim_end_matches(|c: char| ".,!?;:".contains(c));
             if result == typed
                 || result.chars().count() != typed.chars().count()
-                || (edges(&result) > 0 && edges(typed) == 0)
+                || (typed.starts_with(char::is_alphanumeric)
+                    && !result.starts_with(char::is_alphanumeric))
+                || (typed.ends_with(char::is_alphanumeric)
+                    && !core.ends_with(char::is_alphanumeric))
             {
                 continue;
             }
@@ -591,6 +618,7 @@ mod tests {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("resources/language-detection/words.sqlite3"),
         );
+        corpus.load_spelling();
         let empty = Dictionary::empty();
         let all = [Language::En, Language::Ru, Language::Uk];
         let cases: [(Language, &[&str]); 3] = [
@@ -699,5 +727,43 @@ mod tests {
                 "{word}"
             );
         }
+        // Sentence punctuation typed with a letter key stays part of the word.
+        for (typed, language, expected) in [
+            ("руддщю", Language::Ru, "hello."),
+            ("цщкдвб", Language::Ru, "world,"),
+        ] {
+            let result = corpus.suggest(&empty, typed, language, &all, true).unwrap();
+            assert_eq!(
+                result.map(|(text, _)| text).as_deref(),
+                Some(expected),
+                "{typed}"
+            );
+        }
+    }
+
+    #[test]
+    fn known_words_do_not_wait_for_spelling_dictionaries() {
+        let mut corpus = Vocabulary::new(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/language-detection/words.sqlite3"),
+        );
+        let empty = Dictionary::empty();
+        let all = [Language::En, Language::Ru];
+        // Frequent words and their conversions are decided by the frequency
+        // list alone, whether or not the dictionaries have loaded yet.
+        assert_eq!(
+            corpus
+                .suggest(&empty, "ghbdtn", Language::En, &all, true)
+                .unwrap()
+                .map(|(text, _)| text)
+                .as_deref(),
+            Some("привет")
+        );
+        assert_eq!(
+            corpus
+                .suggest(&empty, "hello", Language::En, &all, true)
+                .unwrap(),
+            None
+        );
     }
 }
