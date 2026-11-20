@@ -428,18 +428,29 @@ impl Spelling {
             if mask & (1 << language) == 0 {
                 continue;
             }
-            let mut suggestions = Vec::new();
-            dictionary
+            let suggester = dictionary
                 .as_ref()
                 .expect("each suggestion language has been checked")
                 .suggester()
-                .with_ngram_suggestions(ngram)
-                .suggest(word, &mut suggestions);
-            for proposal in suggestions
-                .into_iter()
-                .filter(|proposal| proposal.len() <= 128)
-                .take(5)
-            {
+                .with_ngram_suggestions(ngram);
+            let mut suggestions = Vec::new();
+            suggester.suggest(word, &mut suggestions);
+            suggestions.retain(|proposal| proposal.len() <= 128);
+            suggestions.truncate(5);
+            // A capitalized word is usually a common word at a sentence start ("Teh"), while
+            // Hunspell answers it with proper nouns ("Eh"); also rank the lowercase repairs.
+            let mut letters = word.chars();
+            if letters.next().is_some_and(char::is_uppercase) && letters.all(char::is_lowercase) {
+                let mut lowercase = Vec::new();
+                suggester.suggest(&word.to_lowercase(), &mut lowercase);
+                suggestions.extend(
+                    lowercase
+                        .into_iter()
+                        .filter(|proposal| proposal.len() <= 128)
+                        .take(5),
+                );
+            }
+            for proposal in suggestions {
                 let proposal = case_like(word, &proposal);
                 if proposal == word || !seen.insert(proposal.clone()) {
                     continue;
@@ -469,7 +480,12 @@ impl Spelling {
                 candidates.push(RankedSuggestion {
                     distance,
                     frequency: evidence,
-                    edge_deletion: candidate == after_first || candidate == before_last,
+                    // Dropping a doubled letter at an edge ("usefull") is a repair, not a truncation.
+                    edge_deletion: (candidate == after_first
+                        && original.get(1) != original.first())
+                        || (candidate == before_last
+                            && original.len() >= 2
+                            && original[original.len() - 2] != original[original.len() - 1]),
                     letter_insertion: distance == 1 && inserts_letter(&original, &candidate),
                     word_split,
                     proposal,
@@ -727,7 +743,7 @@ mod tests {
     fn quick_spelling_keeps_the_full_review_winner_for_common_typos() {
         let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
         let mut engine = Spelling::new(resources.join("spelling"));
-        let text = "This is a speling test with a mistke. Please send the new adress to me. We lit the latern.\nЭто проверка ошыбки в русском тексте.\nЦе перевірка помлки в українському тексті.";
+        let text = "This is a speling test with a mistke. Please send the new adress to me. We lit the latern. Teh tool is usefull.\nЭто проверка ошыбки в русском тексте.\nЦе перевірка помлки в українському тексті.";
         let personal = Dictionary::empty();
         let quick = engine.check_mode(text, &personal, None, true).unwrap();
         let full = engine.check(text, &personal, None).unwrap();
@@ -745,6 +761,8 @@ mod tests {
                 "mistake",
                 "address",
                 "lantern",
+                "The",
+                "useful",
                 "ошибки",
                 "помилки"
             ]
