@@ -356,15 +356,17 @@ impl Vocabulary {
                 continue;
             }
             let mut score = self.score(personal, &result, target)?;
-            if unknown_source && score < WEAK && self.spelled(&result, target) {
+            if unknown_source && score < WEAK && self.spelled(core, target) {
                 score = WEAK;
             }
+            // The word itself decides; trailing sentence punctuation is kept
+            // in the result.
             let weak = unknown_source
                 && score >= WEAK
-                && result
+                && core
                     .chars()
                     .all(|c| c.is_alphabetic() || c == '\'' || c == '’' || c == '-')
-                && result.chars().filter(|c| c.is_alphabetic()).count() >= WEAK_LENGTH;
+                && core.chars().filter(|c| c.is_alphabetic()).count() >= WEAK_LENGTH;
             if score >= RELIABLE || weak {
                 candidates.push((result, target, score));
             }
@@ -738,6 +740,18 @@ mod tests {
                 Some(expected),
                 "{typed}"
             );
+        }
+        // A rare word known only to the spelling dictionary converts the same
+        // with or without trailing punctuation.
+        for word in ["gherkin", "marmot", "brisket", "zeppelin"] {
+            for ending in ["", ".", ","] {
+                let expected = format!("{word}{ending}");
+                let typed = layout::convert(&expected, Language::En, Language::Ru, true);
+                let result = corpus
+                    .suggest(&empty, &typed, Language::Ru, &all, true)
+                    .unwrap();
+                assert_eq!(result.map(|(text, _)| text), Some(expected), "{typed}");
+            }
         }
     }
 
