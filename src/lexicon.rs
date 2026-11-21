@@ -9,12 +9,44 @@ use std::{
 
 pub const LANGUAGES: [&str; 8] = ["en", "ru", "uk", "fr", "es", "it", "de", "pt"];
 const RELIABLE: u8 = 120;
+// Evidence for a word whose typed form is unknown in its own layout.
+const WEAK: u8 = 60;
+const WEAK_LENGTH: usize = 4;
+// A very common word: beats a short spelled word typed in another layout.
+const COMMON: u8 = 170;
 const SCORE_CACHE_SIZE: usize = 256;
 
 pub struct Vocabulary {
     path: PathBuf,
     reader: Option<Connection>,
     scores: Vec<Option<(String, [u8; 8])>>,
+}
+
+const SPELLING_LOCALES: [&str; 3] = ["en_US", "ru_RU", "uk_UA"];
+
+/// Full spelling dictionaries for English, Russian and Ukrainian, shared by
+/// the process and loaded once. The frequency list lacks many ordinary and
+/// technical words. Missing or broken files give no dictionary.
+static SPELLING_DICTIONARIES: [std::sync::OnceLock<Option<spellbook::Dictionary>>; 3] =
+    [const { std::sync::OnceLock::new() }; 3];
+
+/// Loads a spelling dictionary, waiting while another thread loads it.
+fn load_spelling_dictionary(
+    vocabulary: &Path,
+    index: usize,
+) -> Option<&'static spellbook::Dictionary> {
+    SPELLING_DICTIONARIES[index]
+        .get_or_init(|| {
+            let stem = vocabulary
+                .parent()?
+                .parent()?
+                .join("spelling")
+                .join(SPELLING_LOCALES[index]);
+            let aff = std::fs::read_to_string(stem.with_extension("aff")).ok()?;
+            let dic = std::fs::read_to_string(stem.with_extension("dic")).ok()?;
+            spellbook::Dictionary::new(&aff, &dic).ok()
+        })
+        .as_ref()
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -190,6 +222,62 @@ impl Vocabulary {
         Ok(scores)
     }
 
+    /// Whether the full spelling dictionary of the language accepts the word.
+    /// Missing or broken dictionaries count as no evidence.
+    fn spelled(&self, word: &str, language: Language) -> bool {
+        let Some(index) = language.dictionary_index().filter(|&index| index < 3) else {
+            return false;
+        };
+        // Leading commas and dots are letter keys on Cyrillic layouts (б, ю),
+        // so only quotes and brackets are trimmed at the start.
+        let word = word
+            .trim_start_matches(|c: char| "\"“”„(«".contains(c))
+            .trim_end_matches(|c: char| ".,!?;:\"“”)»…".contains(c));
+        // Each dictionary also lists some foreign words; only the language's
+        // own script counts.
+        let own_script = word.chars().filter(|c| c.is_alphabetic()).all(|c| {
+            if index == 0 {
+                c.is_ascii_alphabetic()
+            } else {
+                ('\u{0400}'..='\u{04ff}').contains(&c)
+            }
+        });
+        if !own_script || !word.chars().any(char::is_alphabetic) {
+            return false;
+        }
+        // Never wait for a dictionary on the input path: until it is loaded,
+        // the frequency list alone decides, as it did before.
+        self.preload_spelling();
+        SPELLING_DICTIONARIES[index]
+            .get()
+            .and_then(Option::as_ref)
+            .is_some_and(|dictionary| dictionary.check(word))
+    }
+
+    /// Starts loading the spelling dictionaries in the background once, so
+    /// typing never waits for them.
+    pub fn preload_spelling(&self) {
+        static STARTED: std::sync::Once = std::sync::Once::new();
+        STARTED.call_once(|| {
+            let path = self.path.clone();
+            let _ = std::thread::Builder::new()
+                .name("typlo-spelling-preload".into())
+                .spawn(move || {
+                    for index in 0..SPELLING_LOCALES.len() {
+                        load_spelling_dictionary(&path, index);
+                    }
+                });
+        });
+    }
+
+    /// Loads the spelling dictionaries now, for checks that need them.
+    #[cfg(test)]
+    fn load_spelling(&self) {
+        for index in 0..SPELLING_LOCALES.len() {
+            load_spelling_dictionary(&self.path, index);
+        }
+    }
+
     pub fn suggest(
         &mut self,
         personal: &crate::dictionary::Dictionary,
@@ -234,35 +322,52 @@ impl Vocabulary {
         if current >= RELIABLE {
             return Ok((None, Decision::AlreadyRecognized));
         }
+        // A correctly spelled word of the current layout stays, even when it
+        // is too rare for the frequency list. Spelling dictionaries accept
+        // many short letter groups, so for those only a very common word in
+        // another layout wins.
+        let spelled = self.spelled(typed, source);
+        let short = typed.chars().filter(|c| c.is_alphabetic()).count() < WEAK_LENGTH;
+        if spelled && !short {
+            return Ok((None, Decision::AlreadyRecognized));
+        }
         let mut candidates = Vec::new();
-        // A dot inside a long word can be a Cyrillic letter on the same key.
-        let misplaced_dot = typed.len() >= 8
-            && typed.split_once('.').is_some_and(|(before, after)| {
-                !before.is_empty()
-                    && !after.is_empty()
-                    && before
-                        .bytes()
-                        .chain(after.bytes())
-                        .all(|byte| byte.is_ascii_alphabetic())
-            });
-        let weak_cyrillic_source = current == 0
-            && typed.len() >= 4
-            && (misplaced_dot || typed.bytes().all(|byte| byte.is_ascii_alphabetic()));
+        // The typed text is not a known word at all: a less frequent word in
+        // another layout is then enough evidence. Keys typed for letters such
+        // as ж, х, ї or є appear as punctuation, so the converted text decides.
+        let unknown_source = current == 0 && typed.chars().count() >= WEAK_LENGTH;
         for &target in allowed
             .iter()
             .filter(|&&target| target != source && target.convertible())
         {
             let result = layout::convert(typed, source, target, true);
-            if result == typed {
+            // A letter key that becomes punctuation at the edge of the word
+            // would be trimmed away and leave a different, shorter word. Only
+            // sentence punctuation at the end ("hello." from "руддщю") is a
+            // plausible part of what was meant.
+            let core = result.trim_end_matches(|c: char| ".,!?;:".contains(c));
+            if result == typed
+                || result.chars().count() != typed.chars().count()
+                || (typed.starts_with(char::is_alphanumeric)
+                    && !result.starts_with(char::is_alphanumeric))
+                || (typed.ends_with(char::is_alphanumeric)
+                    && !core.ends_with(char::is_alphanumeric))
+            {
                 continue;
             }
-            let score = self.score(personal, &result, target)?;
-            let weak_cyrillic = score >= if misplaced_dot { 100 } else { 110 }
-                && weak_cyrillic_source
-                && result
+            let mut score = self.score(personal, &result, target)?;
+            if unknown_source && score < WEAK && self.spelled(core, target) {
+                score = WEAK;
+            }
+            // The word itself decides; trailing sentence punctuation is kept
+            // in the result.
+            let weak = unknown_source
+                && score >= WEAK
+                && core
                     .chars()
-                    .all(|c| ('\u{0400}'..='\u{04ff}').contains(&c));
-            if score >= RELIABLE || weak_cyrillic {
+                    .all(|c| c.is_alphabetic() || c == '\'' || c == '’' || c == '-')
+                && core.chars().filter(|c| c.is_alphabetic()).count() >= WEAK_LENGTH;
+            if score >= RELIABLE || weak {
                 candidates.push((result, target, score));
             }
         }
@@ -277,6 +382,9 @@ impl Vocabulary {
             return Ok((None, Decision::NoCandidate));
         };
         let (text, target, score) = candidates.swap_remove(index);
+        if spelled && score < COMMON {
+            return Ok((None, Decision::AlreadyRecognized));
+        }
         if score.saturating_sub(current) < 32
             || candidates
                 .iter()
@@ -328,15 +436,36 @@ impl Vocabulary {
         rendered: &str,
         language: Language,
     ) -> io::Result<u8> {
-        let word = normalize(rendered.trim_matches(|c: char| ".,!?;:\"“”„()[]{}«»…".contains(c)));
+        // Brackets stay: on Cyrillic layouts they are the keys of х, ъ and ї.
+        let word = normalize(rendered.trim_matches(|c: char| ".,!?;:\"“”„()«»…".contains(c)));
         let Some(index) = language.dictionary_index() else {
             return Ok(0);
         };
         if personal.contains(&word, LANGUAGES[index])? {
             return Ok(250);
         }
-        Ok(self.normalized_scores(&word)?[index])
+        let score = self.normalized_scores(&word)?[index];
+        Ok(if index == 0 && technical_term(&word) {
+            score.max(TECHNICAL_TERM)
+        } else {
+            score
+        })
     }
+}
+
+/// Score of a listed technical term: it counts as a common English word.
+const TECHNICAL_TERM: u8 = 150;
+
+fn technical_term(word: &str) -> bool {
+    static TERMS: std::sync::LazyLock<std::collections::HashSet<&'static str>> =
+        std::sync::LazyLock::new(|| {
+            include_str!("it_terms.txt")
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .collect()
+        });
+    TERMS.contains(word)
 }
 
 pub(crate) fn normalize(word: &str) -> String {
@@ -373,7 +502,10 @@ pub fn technical(word: &str) -> bool {
     let bare = word.trim_matches(|c: char| ".,!?;\"“”„()[]{}«»…".contains(c));
     if bare
         .chars()
-        .any(|c| c.is_numeric() || "@_\\/:=`$|<>+*&".contains(c))
+        .any(|c| c.is_numeric() || "@_\\/:=$|<>+*&".contains(c))
+        // Inline code is quoted with backticks; one inside a word is the key
+        // of ё or the Ukrainian apostrophe.
+        || (bare.len() > 1 && bare.starts_with('`') && bare.ends_with('`'))
         || bare.starts_with(['-', '~', '#'])
         || bare.contains("--")
         || (bare.chars().skip(1).any(char::is_uppercase) && bare.chars().any(char::is_lowercase))
@@ -480,5 +612,172 @@ mod tests {
         assert!(!technical("(Speling)"));
         assert!(!technical("“Ghbdtn”"));
         assert!(!technical("htdm.dftim"));
+    }
+
+    #[test]
+    fn converts_ukrainian_russian_english_and_technical_words_both_ways() {
+        let mut corpus = Vocabulary::new(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/language-detection/words.sqlite3"),
+        );
+        corpus.load_spelling();
+        let empty = Dictionary::empty();
+        let all = [Language::En, Language::Ru, Language::Uk];
+        let cases: [(Language, &[&str]); 3] = [
+            (
+                Language::Uk,
+                &[
+                    "привіт",
+                    "дякую",
+                    "розробка",
+                    "їжак",
+                    "тестування",
+                    "налаштування",
+                    "користувач",
+                    "клавіатура",
+                    "комп'ютер",
+                    "м'ясо",
+                    "проєкт",
+                    "український",
+                    "пам'ятаю",
+                    "яблуко",
+                    "весна",
+                    "кнопка",
+                ],
+            ),
+            (
+                Language::Ru,
+                &[
+                    "привет",
+                    "разработка",
+                    "ёжик",
+                    "клавиатура",
+                    "пользователь",
+                    "браузер",
+                    "подъезд",
+                    "объект",
+                    "сахар",
+                    "кнопка",
+                    "мочь",
+                ],
+            ),
+            (
+                Language::En,
+                &[
+                    "hello",
+                    "server",
+                    "error",
+                    "user",
+                    "menu",
+                    "password",
+                    "keyboard",
+                    "settings",
+                    "docker",
+                    "json",
+                    "kubernetes",
+                    "typescript",
+                    "readme",
+                ],
+            ),
+        ];
+        for (language, words) in cases {
+            for word in words {
+                let sources: &[Language] = if language == Language::En {
+                    &[Language::Ru, Language::Uk]
+                } else {
+                    &[Language::En]
+                };
+                for &source in sources {
+                    let typed = layout::convert(word, language, source, true);
+                    let result = corpus.suggest(&empty, &typed, source, &all, true).unwrap();
+                    assert_eq!(
+                        result.as_ref().map(|(text, _)| text.as_str()),
+                        Some(*word),
+                        "{word} typed as {typed}"
+                    );
+                    // Text typed the same on Russian and Ukrainian layouts may
+                    // switch to either of them.
+                    if layout::convert(&typed, source, Language::Ru, true)
+                        != layout::convert(&typed, source, Language::Uk, true)
+                    {
+                        assert_eq!(result.unwrap().1, language, "{word}");
+                    }
+                }
+                assert_eq!(
+                    corpus.suggest(&empty, word, language, &all, true).unwrap(),
+                    None,
+                    "{word} as typed"
+                );
+            }
+        }
+        // Rare but correctly spelled words stay in their own layout, including
+        // short ones and Russian and Ukrainian look-alikes.
+        for (word, language) in [
+            ("lei", Language::En),
+            ("tut", Language::En),
+            ("peke", Language::En),
+            ("jwt", Language::En),
+            ("вытку", Language::Ru),
+            ("хук", Language::Ru),
+            ("біло", Language::Uk),
+            ("брук", Language::Uk),
+            ("сіро", Language::Uk),
+        ] {
+            assert_eq!(
+                corpus.suggest(&empty, word, language, &all, true).unwrap(),
+                None,
+                "{word}"
+            );
+        }
+        // Sentence punctuation typed with a letter key stays part of the word.
+        for (typed, language, expected) in [
+            ("руддщю", Language::Ru, "hello."),
+            ("цщкдвб", Language::Ru, "world,"),
+        ] {
+            let result = corpus.suggest(&empty, typed, language, &all, true).unwrap();
+            assert_eq!(
+                result.map(|(text, _)| text).as_deref(),
+                Some(expected),
+                "{typed}"
+            );
+        }
+        // A rare word known only to the spelling dictionary converts the same
+        // with or without trailing punctuation.
+        for word in ["gherkin", "marmot", "brisket", "zeppelin"] {
+            for ending in ["", ".", ","] {
+                let expected = format!("{word}{ending}");
+                let typed = layout::convert(&expected, Language::En, Language::Ru, true);
+                let result = corpus
+                    .suggest(&empty, &typed, Language::Ru, &all, true)
+                    .unwrap();
+                assert_eq!(result.map(|(text, _)| text), Some(expected), "{typed}");
+            }
+        }
+    }
+
+    #[test]
+    fn known_words_do_not_wait_for_spelling_dictionaries() {
+        let mut corpus = Vocabulary::new(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/language-detection/words.sqlite3"),
+        );
+        let empty = Dictionary::empty();
+        let all = [Language::En, Language::Ru];
+        // Frequent words and their conversions are decided by the frequency
+        // list alone, whether or not the dictionaries have loaded yet.
+        assert_eq!(
+            corpus
+                .suggest(&empty, "ghbdtn", Language::En, &all, true)
+                .unwrap()
+                .map(|(text, _)| text)
+                .as_deref(),
+            Some("привет")
+        );
+        assert_eq!(
+            corpus
+                .suggest(&empty, "hello", Language::En, &all, true)
+                .unwrap(),
+            None
+        );
     }
 }

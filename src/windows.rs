@@ -1068,7 +1068,11 @@ fn run_resident(
             recent: RecentInput::default(),
             snippets,
             pending_typing: None,
-            vocabulary: Vocabulary::installed()?,
+            vocabulary: {
+                let vocabulary = Vocabulary::installed()?;
+                vocabulary.preload_spelling();
+                vocabulary
+            },
             dictionary: Dictionary::new(profile),
             spelling: None,
             capture_process: None,
