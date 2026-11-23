@@ -31,6 +31,52 @@ struct SpellingToken {
     correction: Option<CommonCorrection>,
 }
 
+/// Personal words grouped by language and length. A letter-set mask skips
+/// words that differ in too many letters before the edit distance is computed.
+#[derive(Default)]
+struct PersonalWords {
+    languages: [HashMap<usize, Vec<(u64, String)>>; 3],
+}
+
+impl PersonalWords {
+    fn insert(&mut self, language: usize, words: Vec<String>) {
+        for word in words {
+            let letters: Vec<char> = word.chars().collect();
+            self.languages[language]
+                .entry(letters.len())
+                .or_default()
+                .push((letter_mask(&letters), word));
+        }
+    }
+
+    fn near(
+        &self,
+        mask: u8,
+        length: usize,
+        limit: usize,
+        letters: u64,
+    ) -> impl Iterator<Item = &str> {
+        self.languages
+            .iter()
+            .enumerate()
+            .filter(move |(language, _)| mask & (1 << language) != 0)
+            .flat_map(move |(_, lengths)| {
+                (length.saturating_sub(limit)..=length + limit)
+                    .filter_map(|length| lengths.get(&length))
+                    .flatten()
+            })
+            // Each edit changes at most two letters of the set.
+            .filter(move |(other, _)| (other ^ letters).count_ones() as usize <= 2 * limit)
+            .map(|(_, word)| word.as_str())
+    }
+}
+
+fn letter_mask(letters: &[char]) -> u64 {
+    letters
+        .iter()
+        .fold(0, |mask, &letter| mask | 1 << (u32::from(letter) % 64))
+}
+
 struct RankedSuggestion {
     proposal: String,
     distance: usize,
@@ -321,11 +367,11 @@ impl Spelling {
         }
         // Personal words are suggestions too, so a word added to the
         // dictionary also repairs its misspellings.
-        let mut personal_words: [Vec<String>; 3] = Default::default();
+        let mut personal_words = PersonalWords::default();
         let wanted = suggestion_jobs.iter().fold(0, |mask, (_, job)| mask | job);
-        for (language, words) in personal_words.iter_mut().enumerate() {
+        for (language, code) in LANGUAGES.iter().enumerate().take(LOCALES.len()) {
             if wanted & (1 << language) != 0 {
-                *words = personal.words(LANGUAGES[language])?;
+                personal_words.insert(language, personal.words(code)?);
             }
         }
         let suggestions = self.resolve(&suggestion_jobs, quick, &personal_words);
@@ -339,7 +385,7 @@ impl Spelling {
         &self,
         jobs: &[(&str, u8)],
         quick: bool,
-        personal: &[Vec<String>; 3],
+        personal: &PersonalWords,
     ) -> Vec<Vec<String>> {
         if jobs.is_empty() {
             return Vec::new();
@@ -411,7 +457,7 @@ impl Spelling {
         mask: u8,
         corpus: &mut Vocabulary,
         quick: bool,
-        personal: &[Vec<String>; 3],
+        personal: &PersonalWords,
     ) -> Vec<String> {
         if quick && !word.contains('-') {
             let mut ranked = self.rank_suggestions(word, mask, corpus, false, personal);
@@ -441,7 +487,7 @@ impl Spelling {
         mask: u8,
         corpus: &mut Vocabulary,
         ngram: bool,
-        personal: &[Vec<String>; 3],
+        personal: &PersonalWords,
     ) -> Vec<RankedSuggestion> {
         let mut candidates = Vec::new();
         let mut seen = HashSet::new();
@@ -520,15 +566,9 @@ impl Spelling {
         // A close personal word is what the user meant more often than any
         // dictionary word: it ranks first at the same distance.
         let limit = if original.len() >= 8 { 2 } else { 1 };
-        for (language, words) in personal.iter().enumerate() {
-            if mask & (1 << language) == 0 {
-                continue;
-            }
-            for candidate in words {
-                let length = candidate.chars().count();
-                if length.abs_diff(original.len()) > limit {
-                    continue;
-                }
+        let letters = letter_mask(&original);
+        for candidate in personal.near(mask, original.len(), limit, letters) {
+            {
                 let distance = distance(&original, candidate);
                 if distance == 0 || distance > limit {
                     continue;

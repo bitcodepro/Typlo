@@ -300,7 +300,7 @@ impl Dictionary {
         self.access(false, |connection| Ok(delete(connection, &entry)? == 1))
     }
 
-    #[cfg(feature = "gui")]
+    #[cfg(any(feature = "gui", test))]
     pub(crate) fn add_priority(&self, entry: &Entry, corpus: &mut Vocabulary) -> io::Result<bool> {
         let entry = Entry::new(&entry.word, &entry.language)?;
         let invalid = || {

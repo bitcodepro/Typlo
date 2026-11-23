@@ -950,6 +950,7 @@ mod tests {
 
     #[test]
     #[ignore = "Run explicitly for clipboard, screenshot and LAN endurance testing"]
+    #[cfg(feature = "gui")]
     fn paired_history_and_screenshot_soak() {
         let seconds = std::env::var("TYPLO_SOAK_SECONDS")
             .ok()
