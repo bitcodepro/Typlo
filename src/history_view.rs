@@ -281,6 +281,10 @@ fn search_history(
 ) -> io::Result<SearchResults> {
     let version = store.data_version()?;
     let mut result = SearchResults::default();
+    // Matches of the query as typed come first, then matches of the query
+    // read in another keyboard layout.
+    let queries = crate::layout::search_variants(query);
+    let mut other_layout = Vec::new();
     if cache.version == Some(version) && cache.complete {
         for row in &cache.rows {
             if canceled() {
@@ -289,20 +293,22 @@ fn search_history(
             if received_only && !received_file(&row.entry) {
                 continue;
             }
-            let found = row.matches(query, image_terms)
-                || (row.long
-                    && row.full.is_none()
-                    && match full_search_text(store, row.entry.id) {
-                        Ok(text) => text.contains(query),
-                        Err(_) => {
-                            result.unreadable += 1;
-                            false
-                        }
-                    });
-            if found {
-                result.entries.push(row.entry.clone());
+            let mut rank = queries
+                .iter()
+                .position(|query| row.matches(query, image_terms));
+            if rank.is_none() && row.long && row.full.is_none() {
+                match full_search_text(store, row.entry.id) {
+                    Ok(text) => rank = queries.iter().position(|query| text.contains(query)),
+                    Err(_) => result.unreadable += 1,
+                }
+            }
+            match rank {
+                Some(0) => result.entries.push(row.entry.clone()),
+                Some(_) => other_layout.push(row.entry.clone()),
+                None => {}
             }
         }
+        result.entries.append(&mut other_layout);
         return Ok(result);
     }
     let mut previous: HashMap<_, _> = std::mem::take(&mut cache.rows)
@@ -347,18 +353,22 @@ fn search_history(
             }
         };
         if !received_only || received_file(&row.entry) {
-            let mut found = row.matches(query, image_terms);
-            if !found && row.long && row.full.is_none() {
+            let mut rank = queries
+                .iter()
+                .position(|query| row.matches(query, image_terms));
+            if rank.is_none() && row.long && row.full.is_none() {
                 match full_search_text(store, row.entry.id) {
                     Ok(text) => {
-                        found = text.contains(query);
+                        rank = queries.iter().position(|query| text.contains(query));
                         row.full = Some(text);
                     }
                     Err(_) => result.unreadable += 1,
                 }
             }
-            if found {
-                result.entries.push(row.entry.clone());
+            match rank {
+                Some(0) => result.entries.push(row.entry.clone()),
+                Some(_) => other_layout.push(row.entry.clone()),
+                None => {}
             }
         }
         let bytes = row.bytes();
@@ -376,6 +386,7 @@ fn search_history(
     }
     cache.version = Some(version);
     cache.complete = !omitted && result.unreadable == 0;
+    result.entries.append(&mut other_layout);
     Ok(result)
 }
 
@@ -2183,6 +2194,41 @@ mod tests {
             max_total: 8 * 1024 * 1024,
             max_image: 1024,
             max_text: 32 * 1024,
+        }
+    }
+
+    #[test]
+    fn search_also_finds_text_typed_on_another_layout_ranked_last() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut writer = History::open(profile.path()).unwrap();
+        for text in [
+            "Hello from the server",
+            "фис рядом",
+            "abc direct",
+            "Привет, мир",
+        ] {
+            writer
+                .store(&Clip::from_text(text), search_limits())
+                .unwrap();
+        }
+        let reader = writer.background_reader(profile.path())().unwrap();
+        let mut cache = SearchCache::default();
+        let mut find = |query: &str| {
+            search_history(&reader, &mut cache, query, false, "image", || false)
+                .unwrap()
+                .entries
+                .into_iter()
+                .map(|entry| entry.preview)
+                .collect::<Vec<_>>()
+        };
+        // Typed on the Russian layout, the English entry is still found.
+        assert_eq!(find("руддщ"), ["Hello from the server"]);
+        assert_eq!(find("ghbdtn"), ["Привет, мир"]);
+        // A direct match comes first, the other-layout match after it; the
+        // cached second search keeps the same order.
+        for _ in 0..2 {
+            assert_eq!(find("abc"), ["abc direct", "фис рядом"]);
+            assert_eq!(find("фис"), ["фис рядом", "abc direct"]);
         }
     }
 

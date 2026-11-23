@@ -428,6 +428,25 @@ pub fn detect(
     best
 }
 
+/// A search query as typed, then as it would read if typed on another
+/// layout ("руддщ" also finds "hello", "ghbdtn" also finds "привет").
+pub fn search_variants(query: &str) -> Vec<String> {
+    let mut variants = vec![query.to_owned()];
+    let layouts = [Language::En, Language::Ru, Language::Uk];
+    for source in layouts {
+        for target in layouts {
+            if source == target {
+                continue;
+            }
+            let variant = convert(query, source, target, true).to_lowercase();
+            if !variant.trim().is_empty() && !variants.contains(&variant) {
+                variants.push(variant);
+            }
+        }
+    }
+    variants
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
