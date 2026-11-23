@@ -428,9 +428,72 @@ pub fn detect(
     best
 }
 
+/// A search query as typed, then as it would read if typed on another
+/// layout ("руддщ" also finds "hello", "ghbdtn" also finds "привет").
+pub fn search_variants(query: &str) -> Vec<String> {
+    let mut variants = vec![query.to_owned()];
+    let layouts = [Language::En, Language::Ru, Language::Uk];
+    for source in layouts {
+        for target in layouts {
+            if source == target {
+                continue;
+            }
+            let variant = convert(query, source, target, true).to_lowercase();
+            // Ukrainian (Enhanced) types "\" and "/" on the backslash key,
+            // where the classic Ukrainian layout types "ґ" and "Ґ".
+            let backslash_key = |language| match language {
+                Language::En => ['\\', '|'],
+                _ => ['\\', '/'],
+            };
+            let (from, to) = (backslash_key(source), backslash_key(target));
+            let enhanced = (Language::Uk == source || Language::Uk == target)
+                .then(|| {
+                    let converted: Vec<char> = variant.chars().collect();
+                    let typed: Vec<char> = query.chars().collect();
+                    (converted.len() == typed.len() && typed.iter().any(|c| from.contains(c))).then(
+                        || {
+                            typed
+                                .iter()
+                                .zip(converted)
+                                .map(|(typed, converted)| {
+                                    from.iter()
+                                        .position(|key| key == typed)
+                                        .map_or(converted, |shift| to[shift])
+                                })
+                                .collect::<String>()
+                        },
+                    )
+                })
+                .flatten();
+            for variant in std::iter::once(variant).chain(enhanced) {
+                if !variant.trim().is_empty() && !variants.contains(&variant) {
+                    variants.push(variant);
+                }
+            }
+        }
+    }
+    variants
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_variants_include_ukrainian_enhanced_backslash() {
+        let variants = search_variants("s\\foo");
+        assert!(variants.contains(&"іґащщ".to_owned()), "{variants:?}");
+        assert!(variants.contains(&"і\\ащщ".to_owned()), "{variants:?}");
+        assert_eq!(search_variants("руддщ")[1], "hello");
+        // Shift on the same key: "|" in English is "/" in Ukrainian
+        // (Enhanced), both ways.
+        let variants = search_variants("s|foo");
+        assert!(variants.contains(&"і/ащщ".to_owned()), "{variants:?}");
+        let variants = search_variants("і/ащщ");
+        assert!(variants.contains(&"s|foo".to_owned()), "{variants:?}");
+        let variants = search_variants("і\\ащщ");
+        assert!(variants.contains(&"s\\foo".to_owned()), "{variants:?}");
+    }
 
     #[test]
     fn maps_physical_keys_and_preserves_unmapped_characters() {

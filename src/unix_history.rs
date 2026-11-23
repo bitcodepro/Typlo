@@ -235,13 +235,24 @@ impl History {
 
     pub fn list(&self, query: &str, offset: usize) -> io::Result<Vec<Entry>> {
         let query = query.trim().to_lowercase();
+        // Matches of the query as typed come first, then matches of the query
+        // read in another keyboard layout.
+        let queries = if query.is_empty() {
+            vec![query]
+        } else {
+            crate::layout::search_variants(&query)
+        };
+        let image_terms = crate::locale::text("history.imageSearch", "image picture");
+        let wanted = offset + 51;
+        let mut direct = Vec::new();
+        let mut other_layout = Vec::new();
         let mut sql = self.db.prepare_cached(
             "SELECT id,kind,pinned,preview FROM clips ORDER BY pinned DESC,display_order DESC,id DESC"
         ).map_err(io::Error::other)?;
         let mut rows = sql.query([]).map_err(io::Error::other)?;
-        let mut output = Vec::new();
-        let mut passed = 0;
-        while let Some(row) = rows.next().map_err(io::Error::other)? {
+        while direct.len() < wanted
+            && let Some(row) = rows.next().map_err(io::Error::other)?
+        {
             let (id, kind, pinned, preview): (i64, u8, bool, Vec<u8>) = (
                 row.get(0).map_err(io::Error::other)?,
                 row.get(1).map_err(io::Error::other)?,
@@ -249,37 +260,53 @@ impl History {
                 row.get(3).map_err(io::Error::other)?,
             );
             let preview = String::from_utf8(self.unseal(&preview)?).map_err(io::Error::other)?;
-            if query.is_empty()
-                || preview.to_lowercase().contains(&query)
-                || (kind == 2
-                    && (crate::locale::text("history.imageSearch", "image picture")
-                        .contains(&query)
-                        || "image".contains(&query)))
-                || (kind != 2
-                    && preview.chars().count() == 400
-                    && self.load(id)?.is_some_and(|clip| match clip {
-                        Clip::Text { text, .. } => text.to_lowercase().contains(&query),
-                        Clip::Files(paths) => paths
-                            .iter()
-                            .any(|path| path.to_string_lossy().to_lowercase().contains(&query)),
-                        Clip::Image(_) => false,
-                    }))
+            let lowercase = preview.to_lowercase();
+            let mut rank = queries.iter().position(|query| {
+                query.is_empty()
+                    || lowercase.contains(query)
+                    || (kind == 2 && (image_terms.contains(query) || "image".contains(query)))
+            });
+            // A preview found only through another layout may still contain
+            // the query as typed further on.
+            if rank != Some(0)
+                && kind != 2
+                && preview.chars().count() == 400
+                && let Some(clip) = self.load(id)?
             {
-                if passed >= offset {
-                    output.push(Entry {
-                        id,
-                        kind,
-                        pinned,
-                        preview,
-                    });
-                    if output.len() >= 51 {
-                        break;
-                    }
-                }
-                passed += 1;
+                let texts: Vec<String> = match clip {
+                    Clip::Text { text, .. } => vec![text.to_lowercase()],
+                    Clip::Files(paths) => paths
+                        .iter()
+                        .map(|path| path.to_string_lossy().to_lowercase())
+                        .collect(),
+                    Clip::Image(_) => Vec::new(),
+                };
+                let full = queries
+                    .iter()
+                    .position(|query| texts.iter().any(|text| text.contains(query)));
+                rank = match (rank, full) {
+                    (Some(preview), Some(full)) => Some(preview.min(full)),
+                    (preview, full) => preview.or(full),
+                };
+            }
+            let entry = Entry {
+                id,
+                kind,
+                pinned,
+                preview,
+            };
+            match rank {
+                Some(0) => direct.push(entry),
+                Some(_) if other_layout.len() < wanted => other_layout.push(entry),
+                _ => {}
             }
         }
-        Ok(output)
+        Ok(direct
+            .into_iter()
+            .chain(other_layout)
+            .skip(offset)
+            .take(51)
+            .collect())
     }
 
     pub fn load(&self, id: i64) -> io::Result<Option<Clip>> {
@@ -695,6 +722,43 @@ mod tests {
         history.touch(old, false).unwrap();
         assert_eq!(history.list("", 0).unwrap()[0].preview, "second");
         assert_eq!(history.list("secret", 0).unwrap()[0].id, old);
+        // Typed on another layout, the query still finds the entry, ranked
+        // after direct matches.
+        assert_eq!(history.list("ыусщтв", 0).unwrap()[0].preview, "second");
+        history
+            .store(
+                &Clip::Text {
+                    text: "ыусщтв direct".to_owned(),
+                    html: None,
+                },
+                &settings,
+            )
+            .unwrap();
+        let found: Vec<_> = history
+            .list("ыусщтв", 0)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.preview)
+            .collect();
+        assert_eq!(found, ["ыусщтв direct", "second"]);
+        // A long entry whose preview matches only through the layout but
+        // whose full text has the query as typed ranks with direct matches.
+        history
+            .store(
+                &Clip::Text {
+                    text: format!("second {} ыусщтв", "x".repeat(410)),
+                    html: None,
+                },
+                &settings,
+            )
+            .unwrap();
+        let found: Vec<_> = history
+            .list("ыусщтв", 0)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.preview.chars().take(9).collect::<String>())
+            .collect();
+        assert_eq!(found, ["second xx", "ыусщтв di", "second"]);
         let raw: Vec<u8> = history
             .db
             .query_row("SELECT payload FROM clips WHERE id=?1", [old], |row| {
