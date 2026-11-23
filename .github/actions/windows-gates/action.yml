@@ -24,6 +24,11 @@ runs:
       run: |
         cargo test --locked --all-features
         if ($LASTEXITCODE -ne 0) { throw 'cargo test failed' }
+    - name: Test without GUI
+      shell: pwsh
+      run: |
+        cargo test --locked --no-default-features
+        if ($LASTEXITCODE -ne 0) { throw 'cargo test without GUI failed' }
     - name: Clippy
       shell: pwsh
       run: |

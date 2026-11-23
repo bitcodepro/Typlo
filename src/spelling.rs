@@ -31,6 +31,52 @@ struct SpellingToken {
     correction: Option<CommonCorrection>,
 }
 
+/// Personal words grouped by language and length. A letter-set mask skips
+/// words that differ in too many letters before the edit distance is computed.
+#[derive(Default)]
+struct PersonalWords {
+    languages: [HashMap<usize, Vec<(u64, String)>>; 3],
+}
+
+impl PersonalWords {
+    fn insert(&mut self, language: usize, words: Vec<String>) {
+        for word in words {
+            let letters: Vec<char> = word.chars().collect();
+            self.languages[language]
+                .entry(letters.len())
+                .or_default()
+                .push((letter_mask(&letters), word));
+        }
+    }
+
+    fn near(
+        &self,
+        mask: u8,
+        length: usize,
+        limit: usize,
+        letters: u64,
+    ) -> impl Iterator<Item = &str> {
+        self.languages
+            .iter()
+            .enumerate()
+            .filter(move |(language, _)| mask & (1 << language) != 0)
+            .flat_map(move |(_, lengths)| {
+                (length.saturating_sub(limit)..=length + limit)
+                    .filter_map(|length| lengths.get(&length))
+                    .flatten()
+            })
+            // Each edit changes at most two letters of the set.
+            .filter(move |(other, _)| (other ^ letters).count_ones() as usize <= 2 * limit)
+            .map(|(_, word)| word.as_str())
+    }
+}
+
+fn letter_mask(letters: &[char]) -> u64 {
+    letters
+        .iter()
+        .fold(0, |mask, &letter| mask | 1 << (u32::from(letter) % 64))
+}
+
 struct RankedSuggestion {
     proposal: String,
     distance: usize,
@@ -319,14 +365,28 @@ impl Spelling {
                 });
             }
         }
-        let suggestions = self.resolve(&suggestion_jobs, quick);
+        // Personal words are suggestions too, so a word added to the
+        // dictionary also repairs its misspellings.
+        let mut personal_words = PersonalWords::default();
+        let wanted = suggestion_jobs.iter().fold(0, |mask, (_, job)| mask | job);
+        for (language, code) in LANGUAGES.iter().enumerate().take(LOCALES.len()) {
+            if wanted & (1 << language) != 0 {
+                personal_words.insert(language, personal.words(code)?);
+            }
+        }
+        let suggestions = self.resolve(&suggestion_jobs, quick, &personal_words);
         for (issue, job) in pending {
             issues[issue].suggestions.clone_from(&suggestions[job]);
         }
         Ok(issues)
     }
 
-    fn resolve(&self, jobs: &[(&str, u8)], quick: bool) -> Vec<Vec<String>> {
+    fn resolve(
+        &self,
+        jobs: &[(&str, u8)],
+        quick: bool,
+        personal: &PersonalWords,
+    ) -> Vec<Vec<String>> {
         if jobs.is_empty() {
             return Vec::new();
         }
@@ -336,7 +396,10 @@ impl Spelling {
             indices
                 .map(|index| {
                     let (word, mask) = jobs[index];
-                    (index, self.suggest(word, mask, &mut corpus, quick))
+                    (
+                        index,
+                        self.suggest(word, mask, &mut corpus, quick, personal),
+                    )
                 })
                 .collect::<Vec<_>>()
         };
@@ -382,15 +445,22 @@ impl Spelling {
         if let Some(&accepted) = cache.get(&(word, language)) {
             return Ok(accepted);
         }
-        let accepted =
-            personal.contains(word, LANGUAGES[language])? || self.dictionary(language)?.check(word);
+        let accepted = personal.contains(&normalize(word), LANGUAGES[language])?
+            || self.dictionary(language)?.check(word);
         cache.insert((word, language), accepted);
         Ok(accepted)
     }
 
-    fn suggest(&self, word: &str, mask: u8, corpus: &mut Vocabulary, quick: bool) -> Vec<String> {
+    fn suggest(
+        &self,
+        word: &str,
+        mask: u8,
+        corpus: &mut Vocabulary,
+        quick: bool,
+        personal: &PersonalWords,
+    ) -> Vec<String> {
         if quick && !word.contains('-') {
-            let mut ranked = self.rank_suggestions(word, mask, corpus, false);
+            let mut ranked = self.rank_suggestions(word, mask, corpus, false, personal);
             if let [first, rest @ ..] = ranked.as_slice()
                 && first.distance == 1
                 && !first.edge_deletion
@@ -405,7 +475,7 @@ impl Spelling {
                 return vec![ranked.swap_remove(0).proposal];
             }
         }
-        self.rank_suggestions(word, mask, corpus, true)
+        self.rank_suggestions(word, mask, corpus, true, personal)
             .into_iter()
             .map(|candidate| candidate.proposal)
             .collect()
@@ -417,6 +487,7 @@ impl Spelling {
         mask: u8,
         corpus: &mut Vocabulary,
         ngram: bool,
+        personal: &PersonalWords,
     ) -> Vec<RankedSuggestion> {
         let mut candidates = Vec::new();
         let mut seen = HashSet::new();
@@ -424,6 +495,15 @@ impl Spelling {
         let original: Vec<_> = normalized.chars().collect();
         let after_first = &normalized[original[0].len_utf8()..];
         let before_last = &normalized[..normalized.len() - original[original.len() - 1].len_utf8()];
+        // A proposal that only drops the first or last typed letter truncates
+        // the word, whichever dictionary it comes from. Dropping a doubled
+        // letter at an edge ("usefull") is a repair, not a truncation.
+        let edge_deletion = |candidate: &str| {
+            (candidate == after_first && original.get(1) != original.first())
+                || (candidate == before_last
+                    && original.len() >= 2
+                    && original[original.len() - 2] != original[original.len() - 1])
+        };
         for (language, dictionary) in self.dictionaries.iter().enumerate() {
             if mask & (1 << language) == 0 {
                 continue;
@@ -480,14 +560,32 @@ impl Spelling {
                 candidates.push(RankedSuggestion {
                     distance,
                     frequency: evidence,
-                    // Dropping a doubled letter at an edge ("usefull") is a repair, not a truncation.
-                    edge_deletion: (candidate == after_first
-                        && original.get(1) != original.first())
-                        || (candidate == before_last
-                            && original.len() >= 2
-                            && original[original.len() - 2] != original[original.len() - 1]),
+                    edge_deletion: edge_deletion(&candidate),
                     letter_insertion: distance == 1 && inserts_letter(&original, &candidate),
                     word_split,
+                    proposal,
+                });
+            }
+        }
+        // A close personal word is what the user meant more often than any
+        // dictionary word: it ranks first at the same distance.
+        let limit = if original.len() >= 8 { 2 } else { 1 };
+        let letters = letter_mask(&original);
+        for candidate in personal.near(mask, original.len(), limit, letters) {
+            {
+                let distance = distance(&original, candidate);
+                if distance == 0 || distance > limit {
+                    continue;
+                }
+                let proposal = case_like(word, candidate);
+                candidates.retain(|other| other.proposal != proposal);
+                seen.insert(proposal.clone());
+                candidates.push(RankedSuggestion {
+                    distance,
+                    frequency: u8::MAX,
+                    edge_deletion: edge_deletion(candidate),
+                    letter_insertion: distance == 1 && inserts_letter(&original, candidate),
+                    word_split: false,
                     proposal,
                 });
             }
@@ -845,5 +943,58 @@ mod tests {
         assert!(engine.dictionary(1).unwrap().check("привет"));
         assert!(engine.dictionary(2).unwrap().check("привіт"));
         assert_eq!(case_like("HELO-WORLD", "hello-world"), "HELLO-WORLD");
+    }
+
+    #[test]
+    fn personal_words_repair_their_misspellings() {
+        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/spelling");
+        let mut engine = Spelling::new(directory);
+        let profile = tempfile::tempdir().unwrap();
+        let personal = Dictionary::new(profile.path());
+        let mut corpus = Vocabulary::new(engine.vocabulary_path());
+        let words = [
+            ("deployed", "en"),
+            ("задеплоить", "ru"),
+            ("апка", "ru"),
+            ("апка", "uk"),
+        ];
+        for (word, language) in words {
+            let entry = crate::dictionary::Entry::new(word, language).unwrap();
+            let added = personal
+                .add(std::slice::from_ref(&entry), &mut corpus)
+                .unwrap();
+            if added.inserted == 0 {
+                assert!(personal.add_priority(&entry, &mut corpus).unwrap());
+            }
+        }
+        for (text, expected) in [
+            ("deployed задеплоить апка", vec![]),
+            ("We depoyed it", vec!["deployed"]),
+            ("Deploeyd", vec!["Deployed"]),
+            ("Надо задеплоть сегодня", vec!["задеплоить"]),
+            ("задиплоить", vec!["задеплоить"]),
+            ("Эта апкка", vec!["апка"]),
+            ("Ця апкка", vec!["апка"]),
+            ("Апкка", vec!["Апка"]),
+        ] {
+            let issues = engine.check_mode(text, &personal, None, true).unwrap();
+            let first: Vec<_> = issues
+                .iter()
+                .filter_map(|issue| issue.suggestions.first().map(String::as_str))
+                .collect();
+            assert_eq!(first, expected, "{text}");
+        }
+
+        // Two personal words one edit away: inserting a letter keeps every
+        // typed letter, so it beats dropping the first or last one.
+        let profile = tempfile::tempdir().unwrap();
+        let personal = Dictionary::new(profile.path());
+        let words = ["лапр", "клапор", "клап"]
+            .map(|word| crate::dictionary::Entry::new(word, "ru").unwrap());
+        assert_eq!(personal.add(&words, &mut corpus).unwrap().inserted, 3);
+        for quick in [true, false] {
+            let issues = engine.check_mode("клапр", &personal, None, quick).unwrap();
+            assert_eq!(issues[0].suggestions[0], "клапор", "quick={quick}");
+        }
     }
 }

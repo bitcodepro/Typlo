@@ -149,7 +149,6 @@ pub fn run(profile: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 vocabulary: Vocabulary::installed()?,
                 exclusion: false,
                 status: String::new(),
-                priority: None,
             }))
         }),
     )?;
@@ -162,7 +161,6 @@ struct Window {
     vocabulary: Vocabulary,
     exclusion: bool,
     status: String,
-    priority: Option<Entry>,
 }
 
 impl eframe::App for Window {
@@ -200,9 +198,6 @@ impl eframe::App for Window {
                         LANGUAGES[*language]
                     };
                     let entry = Entry::new(word, language_code);
-                    if self.priority.as_ref() != entry.as_ref().ok() {
-                        self.priority = None;
-                    }
                     if ui
                         .add(crate::appearance::primary_button(tr(
                             "rust.common.add",
@@ -217,37 +212,20 @@ impl eframe::App for Window {
                             if result.inserted == 1 {
                                 return Ok(tr("manage.saved", "Saved").into());
                             }
+                            // A word the layout list already knows may still be
+                            // missing from the spelling dictionary: keep it as a
+                            // personal word, so spelling accepts and suggests it.
                             if !entry.language.is_empty()
                                 && !self.dictionary.contains(&entry.word, &entry.language)?
+                                && self.dictionary.add_priority(&entry, &mut self.vocabulary)?
                             {
-                                self.priority = Some(entry.clone());
-                                return Ok(tr(
-                                    "dictionary.existsBundled",
-                                    "“{0}” is already in the built-in dictionary.",
-                                )
-                                .replace("{0}", &entry.word));
+                                return Ok(tr("manage.saved", "Saved").into());
                             }
                             Ok(tr("rust.dictionary.duplicate", "Слово уже есть в словаре").into())
                         }) {
                             Ok(status) => status,
                             Err(error) => error.to_string(),
                         };
-                    }
-                    if self.priority.is_some()
-                        && ui
-                            .button(tr("dictionary.addPriority", "Add personal priority"))
-                            .clicked()
-                        && let Some(entry) = self.priority.take()
-                    {
-                        self.status =
-                            match self.dictionary.add_priority(&entry, &mut self.vocabulary) {
-                                Ok(true) => tr("manage.saved", "Saved").into(),
-                                Ok(false) => {
-                                    tr("rust.dictionary.duplicate", "Слово уже есть в словаре")
-                                        .into()
-                                }
-                                Err(error) => error.to_string(),
-                            };
                     }
                 }
                 Request::Choices { origin, choices } => {

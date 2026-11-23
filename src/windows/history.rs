@@ -1190,6 +1190,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "gui")]
     fn editing_an_entry_preserves_its_identity_in_history_and_checks_stale_edits() {
         let profile = tempfile::tempdir().unwrap();
         let mut history = History::open(profile.path()).unwrap();
