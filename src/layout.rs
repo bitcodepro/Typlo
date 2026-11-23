@@ -439,25 +439,30 @@ pub fn search_variants(query: &str) -> Vec<String> {
                 continue;
             }
             let variant = convert(query, source, target, true).to_lowercase();
-            // Ukrainian (Enhanced) keeps the backslash key as "\" and "|"
+            // Ukrainian (Enhanced) types "\" and "/" on the backslash key,
             // where the classic Ukrainian layout types "ґ" and "Ґ".
-            let enhanced = (target == Language::Uk && query.contains(['\\', '|']))
+            let backslash_key = |language| match language {
+                Language::En => ['\\', '|'],
+                _ => ['\\', '/'],
+            };
+            let (from, to) = (backslash_key(source), backslash_key(target));
+            let enhanced = (Language::Uk == source || Language::Uk == target)
                 .then(|| {
                     let converted: Vec<char> = variant.chars().collect();
                     let typed: Vec<char> = query.chars().collect();
-                    (converted.len() == typed.len()).then(|| {
-                        typed
-                            .iter()
-                            .zip(converted)
-                            .map(|(&typed, converted)| {
-                                if typed == '\\' || typed == '|' {
-                                    typed
-                                } else {
-                                    converted
-                                }
-                            })
-                            .collect::<String>()
-                    })
+                    (converted.len() == typed.len() && typed.iter().any(|c| from.contains(c))).then(
+                        || {
+                            typed
+                                .iter()
+                                .zip(converted)
+                                .map(|(typed, converted)| {
+                                    from.iter()
+                                        .position(|key| key == typed)
+                                        .map_or(converted, |shift| to[shift])
+                                })
+                                .collect::<String>()
+                        },
+                    )
                 })
                 .flatten();
             for variant in std::iter::once(variant).chain(enhanced) {
@@ -480,6 +485,14 @@ mod tests {
         assert!(variants.contains(&"іґащщ".to_owned()), "{variants:?}");
         assert!(variants.contains(&"і\\ащщ".to_owned()), "{variants:?}");
         assert_eq!(search_variants("руддщ")[1], "hello");
+        // Shift on the same key: "|" in English is "/" in Ukrainian
+        // (Enhanced), both ways.
+        let variants = search_variants("s|foo");
+        assert!(variants.contains(&"і/ащщ".to_owned()), "{variants:?}");
+        let variants = search_variants("і/ащщ");
+        assert!(variants.contains(&"s|foo".to_owned()), "{variants:?}");
+        let variants = search_variants("і\\ащщ");
+        assert!(variants.contains(&"s\\foo".to_owned()), "{variants:?}");
     }
 
     #[test]
