@@ -266,7 +266,9 @@ impl History {
                     || lowercase.contains(query)
                     || (kind == 2 && (image_terms.contains(query) || "image".contains(query)))
             });
-            if rank.is_none()
+            // A preview found only through another layout may still contain
+            // the query as typed further on.
+            if rank != Some(0)
                 && kind != 2
                 && preview.chars().count() == 400
                 && let Some(clip) = self.load(id)?
@@ -279,9 +281,13 @@ impl History {
                         .collect(),
                     Clip::Image(_) => Vec::new(),
                 };
-                rank = queries
+                let full = queries
                     .iter()
                     .position(|query| texts.iter().any(|text| text.contains(query)));
+                rank = match (rank, full) {
+                    (Some(preview), Some(full)) => Some(preview.min(full)),
+                    (preview, full) => preview.or(full),
+                };
             }
             let entry = Entry {
                 id,
@@ -735,6 +741,24 @@ mod tests {
             .map(|entry| entry.preview)
             .collect();
         assert_eq!(found, ["ыусщтв direct", "second"]);
+        // A long entry whose preview matches only through the layout but
+        // whose full text has the query as typed ranks with direct matches.
+        history
+            .store(
+                &Clip::Text {
+                    text: format!("second {} ыусщтв", "x".repeat(410)),
+                    html: None,
+                },
+                &settings,
+            )
+            .unwrap();
+        let found: Vec<_> = history
+            .list("ыусщтв", 0)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.preview.chars().take(9).collect::<String>())
+            .collect();
+        assert_eq!(found, ["second xx", "ыусщтв di", "second"]);
         let raw: Vec<u8> = history
             .db
             .query_row("SELECT payload FROM clips WHERE id=?1", [old], |row| {

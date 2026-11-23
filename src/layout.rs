@@ -439,8 +439,31 @@ pub fn search_variants(query: &str) -> Vec<String> {
                 continue;
             }
             let variant = convert(query, source, target, true).to_lowercase();
-            if !variant.trim().is_empty() && !variants.contains(&variant) {
-                variants.push(variant);
+            // Ukrainian (Enhanced) keeps the backslash key as "\" and "|"
+            // where the classic Ukrainian layout types "ґ" and "Ґ".
+            let enhanced = (target == Language::Uk && query.contains(['\\', '|']))
+                .then(|| {
+                    let converted: Vec<char> = variant.chars().collect();
+                    let typed: Vec<char> = query.chars().collect();
+                    (converted.len() == typed.len()).then(|| {
+                        typed
+                            .iter()
+                            .zip(converted)
+                            .map(|(&typed, converted)| {
+                                if typed == '\\' || typed == '|' {
+                                    typed
+                                } else {
+                                    converted
+                                }
+                            })
+                            .collect::<String>()
+                    })
+                })
+                .flatten();
+            for variant in std::iter::once(variant).chain(enhanced) {
+                if !variant.trim().is_empty() && !variants.contains(&variant) {
+                    variants.push(variant);
+                }
             }
         }
     }
@@ -450,6 +473,14 @@ pub fn search_variants(query: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_variants_include_ukrainian_enhanced_backslash() {
+        let variants = search_variants("s\\foo");
+        assert!(variants.contains(&"іґащщ".to_owned()), "{variants:?}");
+        assert!(variants.contains(&"і\\ащщ".to_owned()), "{variants:?}");
+        assert_eq!(search_variants("руддщ")[1], "hello");
+    }
 
     #[test]
     fn maps_physical_keys_and_preserves_unmapped_characters() {

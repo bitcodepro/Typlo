@@ -271,6 +271,14 @@ impl Default for SearchCache {
     }
 }
 
+/// The better of two match ranks; a lower rank is a closer match.
+fn best(first: Option<usize>, second: Option<usize>) -> Option<usize> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(first.min(second)),
+        (first, second) => first.or(second),
+    }
+}
+
 fn search_history(
     store: &History,
     cache: &mut SearchCache,
@@ -296,9 +304,14 @@ fn search_history(
             let mut rank = queries
                 .iter()
                 .position(|query| row.matches(query, image_terms));
-            if rank.is_none() && row.long && row.full.is_none() {
+            // A preview found only through another layout may still contain
+            // the query as typed further on.
+            if rank != Some(0) && row.long && row.full.is_none() {
                 match full_search_text(store, row.entry.id) {
-                    Ok(text) => rank = queries.iter().position(|query| text.contains(query)),
+                    Ok(text) => {
+                        let full = queries.iter().position(|query| text.contains(query));
+                        rank = best(rank, full);
+                    }
                     Err(_) => result.unreadable += 1,
                 }
             }
@@ -356,10 +369,11 @@ fn search_history(
             let mut rank = queries
                 .iter()
                 .position(|query| row.matches(query, image_terms));
-            if rank.is_none() && row.long && row.full.is_none() {
+            if rank != Some(0) && row.long && row.full.is_none() {
                 match full_search_text(store, row.entry.id) {
                     Ok(text) => {
-                        rank = queries.iter().position(|query| text.contains(query));
+                        let full = queries.iter().position(|query| text.contains(query));
+                        rank = best(rank, full);
                         row.full = Some(text);
                     }
                     Err(_) => result.unreadable += 1,
@@ -2228,7 +2242,34 @@ mod tests {
         // cached second search keeps the same order.
         for _ in 0..2 {
             assert_eq!(find("abc"), ["abc direct", "фис рядом"]);
+            assert_eq!(find("руддщ"), ["Hello from the server"]);
             assert_eq!(find("фис"), ["фис рядом", "abc direct"]);
+        }
+    }
+
+    #[test]
+    fn search_ranks_a_direct_match_past_the_preview_above_layout_matches() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut writer = History::open(profile.path()).unwrap();
+        // The preview matches "фис" only through the layout; the full text
+        // contains "abc" as typed.
+        let long = format!("фис {} abc", "x".repeat(410));
+        for text in ["abc short", long.as_str(), "фис only"] {
+            writer
+                .store(&Clip::from_text(text), search_limits())
+                .unwrap();
+        }
+        let reader = writer.background_reader(profile.path())().unwrap();
+        let mut cache = SearchCache::default();
+        for _ in 0..2 {
+            let found: Vec<_> =
+                search_history(&reader, &mut cache, "abc", false, "image", || false)
+                    .unwrap()
+                    .entries
+                    .into_iter()
+                    .map(|entry| entry.preview.chars().take(9).collect::<String>())
+                    .collect();
+            assert_eq!(found, ["фис xxxxx", "abc short", "фис only"]);
         }
     }
 
