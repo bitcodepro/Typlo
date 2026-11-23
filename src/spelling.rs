@@ -495,6 +495,15 @@ impl Spelling {
         let original: Vec<_> = normalized.chars().collect();
         let after_first = &normalized[original[0].len_utf8()..];
         let before_last = &normalized[..normalized.len() - original[original.len() - 1].len_utf8()];
+        // A proposal that only drops the first or last typed letter truncates
+        // the word, whichever dictionary it comes from. Dropping a doubled
+        // letter at an edge ("usefull") is a repair, not a truncation.
+        let edge_deletion = |candidate: &str| {
+            (candidate == after_first && original.get(1) != original.first())
+                || (candidate == before_last
+                    && original.len() >= 2
+                    && original[original.len() - 2] != original[original.len() - 1])
+        };
         for (language, dictionary) in self.dictionaries.iter().enumerate() {
             if mask & (1 << language) == 0 {
                 continue;
@@ -551,12 +560,7 @@ impl Spelling {
                 candidates.push(RankedSuggestion {
                     distance,
                     frequency: evidence,
-                    // Dropping a doubled letter at an edge ("usefull") is a repair, not a truncation.
-                    edge_deletion: (candidate == after_first
-                        && original.get(1) != original.first())
-                        || (candidate == before_last
-                            && original.len() >= 2
-                            && original[original.len() - 2] != original[original.len() - 1]),
+                    edge_deletion: edge_deletion(&candidate),
                     letter_insertion: distance == 1 && inserts_letter(&original, &candidate),
                     word_split,
                     proposal,
@@ -579,7 +583,7 @@ impl Spelling {
                 candidates.push(RankedSuggestion {
                     distance,
                     frequency: u8::MAX,
-                    edge_deletion: false,
+                    edge_deletion: edge_deletion(candidate),
                     letter_insertion: distance == 1 && inserts_letter(&original, candidate),
                     word_split: false,
                     proposal,
@@ -979,6 +983,18 @@ mod tests {
                 .filter_map(|issue| issue.suggestions.first().map(String::as_str))
                 .collect();
             assert_eq!(first, expected, "{text}");
+        }
+
+        // Two personal words one edit away: inserting a letter keeps every
+        // typed letter, so it beats dropping the first or last one.
+        let profile = tempfile::tempdir().unwrap();
+        let personal = Dictionary::new(profile.path());
+        let words = ["лапр", "клапор", "клап"]
+            .map(|word| crate::dictionary::Entry::new(word, "ru").unwrap());
+        assert_eq!(personal.add(&words, &mut corpus).unwrap().inserted, 3);
+        for quick in [true, false] {
+            let issues = engine.check_mode("клапр", &personal, None, quick).unwrap();
+            assert_eq!(issues[0].suggestions[0], "клапор", "quick={quick}");
         }
     }
 }
