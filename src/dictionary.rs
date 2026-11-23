@@ -179,6 +179,16 @@ impl Dictionary {
         })
     }
 
+    /// The personal words of one language, for spelling suggestions.
+    pub fn words(&self, language: &str) -> io::Result<Vec<String>> {
+        self.access(false, |connection| {
+            connection
+                .prepare_cached("SELECT word FROM words WHERE language=?1 LIMIT 100000")?
+                .query_map([language], |row| row.get(0))?
+                .collect()
+        })
+    }
+
     pub fn is_excluded(&self, word: &str) -> io::Result<bool> {
         let full = normalize(word);
         let token = full.trim_matches(|c: char| ".,!?;:\"“”„()[]{}«»…".contains(c));
