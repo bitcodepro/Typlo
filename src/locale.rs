@@ -107,14 +107,19 @@ pub fn fonts(ctx: &egui::Context, language: &str) {
         return;
     }
     #[cfg(windows)]
-    let path = std::env::var_os("WINDIR").map(|root| {
-        std::path::PathBuf::from(root)
-            .join("Fonts")
-            .join(if language == "ja" {
-                "meiryo.ttc"
-            } else {
-                "msyh.ttc"
-            })
+    // Meiryo is an optional font on non-Japanese Windows; Yu Gothic ships
+    // with Windows 10 and later.
+    let path = std::env::var_os("WINDIR").and_then(|root| {
+        let directory = std::path::PathBuf::from(root).join("Fonts");
+        let names: &[&str] = if language == "ja" {
+            &["meiryo.ttc", "YuGothM.ttc"]
+        } else {
+            &["msyh.ttc"]
+        };
+        names
+            .iter()
+            .map(|name| directory.join(name))
+            .find(|path| path.exists())
     });
     #[cfg(target_os = "linux")]
     let path = Some(std::path::PathBuf::from(

@@ -179,12 +179,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         frame: args.next().map(PathBuf::from),
         requested: false,
     });
-    let workspace = Workspace::new(profile, report, page);
+    // A probe can also pick the Settings section and window width, to check
+    // each section and the narrow layout.
+    let probe_tab = report
+        .is_some()
+        .then(|| args.next()?.to_str()?.parse::<usize>().ok())
+        .flatten()
+        .and_then(|index| SettingsTab::ALL.get(index).copied());
+    let probe_width = report
+        .is_some()
+        .then(|| args.next()?.to_str()?.parse::<f32>().ok())
+        .flatten();
+    let mut workspace = Workspace::new(profile, report, page);
+    if let Some(tab) = probe_tab {
+        workspace.tab = tab;
+    }
+    let size = page.size();
+    let size = [probe_width.unwrap_or(size[0]), size[1]];
     let options = eframe::NativeOptions {
         viewport: typlo_rust::appearance::window()
-            .with_inner_size(page.size())
+            .with_inner_size(size)
             .with_min_inner_size(if page == Page::Settings {
-                [560., 500.]
+                [640., 480.]
             } else {
                 [440., 360.]
             }),
@@ -247,14 +263,14 @@ impl SettingsTab {
         Self::General,
         Self::Text,
         Self::Shortcuts,
+        Self::Dictionary,
         Self::Applications,
         Self::Clipboard,
-        #[cfg(windows)]
-        Self::Computers,
         Self::Snippets,
         #[cfg(windows)]
         Self::Capture,
-        Self::Dictionary,
+        #[cfg(windows)]
+        Self::Computers,
         Self::Backup,
         #[cfg(windows)]
         Self::Diagnostics,
@@ -278,6 +294,108 @@ impl SettingsTab {
             Self::Diagnostics => tr("rust.tabs.diagnostics", "Diagnostics"),
         }
     }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::General => "\u{2699}",
+            Self::Text => "\u{270E}",
+            Self::Shortcuts => "\u{2328}",
+            Self::Applications => "\u{25A6}",
+            Self::Clipboard => "\u{1F4CB}",
+            #[cfg(windows)]
+            Self::Computers => "\u{1F5A7}",
+            Self::Snippets => "\u{2702}",
+            #[cfg(windows)]
+            Self::Capture => "\u{1F4F7}",
+            Self::Dictionary => "\u{1F4D6}",
+            Self::Backup => "\u{1F4BE}",
+            #[cfg(windows)]
+            Self::Diagnostics => "\u{1F527}",
+        }
+    }
+
+    /// The sidebar section the tab is listed under.
+    fn group(self) -> NavGroup {
+        match self {
+            Self::General | Self::Text | Self::Shortcuts | Self::Applications => NavGroup::Typing,
+            Self::Dictionary => NavGroup::Typing,
+            Self::Clipboard | Self::Snippets => NavGroup::Clipboard,
+            #[cfg(windows)]
+            Self::Computers | Self::Capture => NavGroup::Clipboard,
+            Self::Backup => NavGroup::Data,
+            #[cfg(windows)]
+            Self::Diagnostics => NavGroup::Data,
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::General => tr(
+                "rust.nav.generalHint",
+                "Language, theme and how Typlo starts with the system.",
+            ),
+            Self::Text => tr(
+                "rust.nav.textHint",
+                "How Typlo fixes the keyboard layout of typed and selected text.",
+            ),
+            Self::Shortcuts => tr(
+                "rust.nav.shortcutsHint",
+                "Key combinations for every Typlo action.",
+            ),
+            Self::Applications => tr(
+                "rust.nav.appsHint",
+                "The keyboard layout Typlo switches to in each application.",
+            ),
+            Self::Clipboard => tr(
+                "rust.nav.clipboardHint",
+                "What clipboard history keeps and how pasting from it works.",
+            ),
+            #[cfg(windows)]
+            Self::Computers => tr(
+                "rust.nav.computersHint",
+                "Share the clipboard with another computer on your network.",
+            ),
+            Self::Snippets => tr(
+                "rust.nav.snippetsHint",
+                "Ready-made text you insert from the snippet menu.",
+            ),
+            #[cfg(windows)]
+            Self::Capture => tr(
+                "rust.nav.captureHint",
+                "Capture an area of the screen, then copy, save or edit it.",
+            ),
+            Self::Dictionary => tr(
+                "rust.nav.dictionaryHint",
+                "Your own words for layout and spelling fixes, and words never to change.",
+            ),
+            Self::Backup => tr(
+                "rust.nav.backupHint",
+                "Export your settings and personal data to a file, or restore them.",
+            ),
+            #[cfg(windows)]
+            Self::Diagnostics => tr(
+                "rust.nav.diagnosticsHint",
+                "Checks and logs that help find out why something does not work.",
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NavGroup {
+    Typing,
+    Clipboard,
+    Data,
+}
+
+impl NavGroup {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Typing => tr("rust.nav.typing", "Typing"),
+            Self::Clipboard => tr("rust.nav.clipboard", "Clipboard and screen"),
+            Self::Data => tr("rust.nav.data", "Data and support"),
+        }
+    }
 }
 
 impl Page {
@@ -293,7 +411,7 @@ impl Page {
 
     fn size(self) -> [f32; 2] {
         match self {
-            Self::Settings => [680., 800.],
+            Self::Settings => [900., 720.],
             Self::Shortcuts => [560., 640.],
             Self::Tools => [850., 670.],
             Self::Dictionary => [680., 650.],
@@ -605,29 +723,68 @@ impl Workspace {
         );
     }
 
-    fn settings_tabs(&mut self, ui: &mut Ui) {
+    /// Vertical navigation: grouped sections with an icon each. Narrow
+    /// windows keep only the icons, with the name as a tooltip.
+    fn settings_navigation(&mut self, ui: &mut Ui) {
         let previous = self.tab;
-        Frame::new()
-            .inner_margin(Margin::symmetric(20, 8))
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    let widgets = &mut ui.visuals_mut().widgets;
-                    let border_width = widgets.inactive.bg_stroke.width;
-                    for state in [
-                        &mut widgets.inactive,
-                        &mut widgets.hovered,
-                        &mut widgets.active,
-                        &mut widgets.open,
-                    ] {
-                        state.expansion = 0.;
-                        state.bg_stroke.width = border_width;
-                    }
-                    for &tab in SettingsTab::ALL {
-                        if settings_tab_button(ui, tab, self.tab == tab).clicked() {
-                            self.tab = tab;
-                        }
-                    }
-                });
+        let compact = ui.available_width() < 760.;
+        let width = if compact { 64. } else { 232. };
+        let fill = if ui.visuals().dark_mode {
+            typlo_rust::appearance::rgb(0x1a1a1a)
+        } else {
+            typlo_rust::appearance::rgb(0xf0f1f4)
+        };
+        egui::Panel::left("settings-navigation")
+            .exact_size(width)
+            .resizable(false)
+            .show_separator_line(true)
+            .frame(Frame::new().fill(fill))
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("settings-navigation-scroll")
+                    .show(ui, |ui| {
+                        Frame::new()
+                            .inner_margin(Margin::symmetric(if compact { 8 } else { 12 }, 16))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                if !compact {
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(6.);
+                                        ui.label(RichText::new("Typlo").size(20.).strong());
+                                    });
+                                    ui.add_space(10.);
+                                }
+                                let mut group = None;
+                                for &tab in SettingsTab::ALL {
+                                    if group != Some(tab.group()) {
+                                        let first = group.is_none();
+                                        if !first {
+                                            ui.add_space(10.);
+                                        }
+                                        group = Some(tab.group());
+                                        if compact {
+                                            if !first {
+                                                ui.separator();
+                                            }
+                                        } else {
+                                            ui.horizontal(|ui| {
+                                                ui.add_space(6.);
+                                                ui.label(
+                                                    RichText::new(tab.group().label())
+                                                        .size(12.)
+                                                        .color(ui.visuals().weak_text_color()),
+                                                );
+                                            });
+                                            ui.add_space(2.);
+                                        }
+                                    }
+                                    if navigation_item(ui, tab, self.tab == tab, compact).clicked()
+                                    {
+                                        self.tab = tab;
+                                    }
+                                }
+                            });
+                    });
             });
         #[cfg(windows)]
         if self.tab == SettingsTab::Diagnostics && self.tab != previous {
@@ -636,10 +793,19 @@ impl Workspace {
         if self.tab != previous {
             ui.ctx().request_repaint();
         }
-        ui.separator();
     }
 
     fn settings_content(&mut self, ui: &mut Ui) {
+        ui.add_space(10.);
+        ui.label(RichText::new(self.tab.label()).size(24.).strong());
+        ui.add_space(2.);
+        ui.label(
+            RichText::new(self.tab.description())
+                .size(13.)
+                .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(8.);
+        ui.separator();
         match self.tab {
             SettingsTab::General => self.preferences(ui),
             SettingsTab::Text => {
@@ -1800,7 +1966,7 @@ impl eframe::App for Workspace {
                 });
         }
         if page == Page::Settings {
-            self.settings_tabs(ui);
+            self.settings_navigation(ui);
         }
         let scroll = egui::ScrollArea::vertical();
         let scroll = if page == Page::Settings {
@@ -1810,9 +1976,22 @@ impl eframe::App for Workspace {
         };
         scroll.show(ui, |ui| {
             Frame::new()
-                .inner_margin(Margin::symmetric(20, 6))
+                .inner_margin(if page == Page::Settings {
+                    Margin {
+                        left: 28,
+                        right: 28,
+                        top: 12,
+                        bottom: 16,
+                    }
+                } else {
+                    Margin::symmetric(20, 6)
+                })
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
+                    // Long pages stay readable on wide windows.
+                    if page == Page::Settings {
+                        ui.set_max_width(ui.available_width().min(720.));
+                    }
                     match page {
                         Page::Settings => self.settings_content(ui),
                         Page::Shortcuts => self.shortcuts(ui),
@@ -1856,13 +2035,83 @@ fn open_diagnostic_logs(profile: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn settings_tab_button(ui: &mut Ui, tab: SettingsTab, selected: bool) -> egui::Response {
-    ui.add(
-        egui::Button::new(tab.label())
-            .selected(selected)
-            .frame(true)
-            .wrap_mode(egui::TextWrapMode::Extend),
-    )
+fn navigation_item(ui: &mut Ui, tab: SettingsTab, selected: bool, compact: bool) -> egui::Response {
+    let height = 36.;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    let visuals = ui.visuals();
+    let accent = visuals.selection.stroke.color;
+    let text = visuals.widgets.noninteractive.fg_stroke.color;
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, 8, accent.gamma_multiply(0.16));
+        let bar = egui::Rect::from_min_size(
+            rect.left_top() + egui::vec2(0., 9.),
+            egui::vec2(3., height - 18.),
+        );
+        painter.rect_filled(bar, 2, accent);
+    } else if response.hovered() {
+        painter.rect_filled(rect, 8, visuals.widgets.hovered.weak_bg_fill);
+    }
+    let color = if selected { accent } else { text };
+    let icon_center = if compact {
+        rect.center()
+    } else {
+        egui::pos2(rect.left() + 22., rect.center().y)
+    };
+    painter.text(
+        icon_center,
+        egui::Align2::CENTER_CENTER,
+        tab.icon(),
+        egui::FontId::proportional(16.),
+        color,
+    );
+    if !compact {
+        let label = egui::WidgetText::from(
+            RichText::new(tab.label())
+                .size(14.)
+                .color(color)
+                .strong_if(selected),
+        )
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            rect.width() - 52.,
+            egui::TextStyle::Button,
+        );
+        ui.painter().galley(
+            egui::pos2(rect.left() + 42., rect.center().y - label.size().y / 2.),
+            label,
+            color,
+        );
+    }
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let response = if compact {
+        response.on_hover_text(tab.label())
+    } else {
+        response
+    };
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            true,
+            selected,
+            tab.label(),
+        )
+    });
+    response
+}
+
+trait StrongIf {
+    fn strong_if(self, strong: bool) -> Self;
+}
+
+impl StrongIf for RichText {
+    fn strong_if(self, strong: bool) -> Self {
+        if strong { self.strong() } else { self }
+    }
 }
 
 fn heading(ui: &mut Ui, label: &str) {
@@ -2296,7 +2545,7 @@ mod layout_tests {
                             events,
                             ..Default::default()
                         },
-                        |ui| workspace.settings_tabs(ui),
+                        |ui| workspace.settings_navigation(ui),
                     )
                     .shapes
                     .into_iter()
