@@ -534,7 +534,8 @@ impl UiProbe {
             });
             let Some(image) = image else { return false };
             let [width, height] = image.size;
-            let [red, green, blue, _] = image.pixels[0].to_array();
+            // The bottom-right corner is window background; the top-left is the sidebar.
+            let [red, green, blue, _] = image.pixels[width * height - 1].to_array();
             let pixels: Vec<_> = image
                 .pixels
                 .iter()
@@ -1675,8 +1676,11 @@ impl Workspace {
         }
     }
 
-    fn save(&mut self, ui: &Ui) {
-        match config::save(&self.profile, &self.settings) {
+    /// Writes the settings; returns whether they were saved.
+    fn save(&mut self, ui: &Ui) -> bool {
+        let saved = config::save(&self.profile, &self.settings);
+        let ok = saved.is_ok();
+        match saved {
             Ok(()) => {
                 #[cfg(windows)]
                 typlo_rust::windows::reload_settings();
@@ -1691,6 +1695,7 @@ impl Workspace {
                 self.status = error.to_string();
             }
         }
+        ok
     }
 
     /// Closes the window, or asks first when settings have unsaved edits.
@@ -1703,10 +1708,18 @@ impl Workspace {
             Outcome::Open => {}
             Outcome::Closed if self.page == Page::Update => self.request_close(ui.ctx()),
             Outcome::Closed => self.updates = None,
-            Outcome::Restarted => {
-                // The new version reopens Settings; keep edits made here.
-                if self.dirty() {
-                    self.save(ui);
+            Outcome::Restarted(version) => {
+                self.updates = None;
+                // Save edits before the new window reads the settings; when
+                // saving fails, stay open so the edits and the error remain.
+                if self.dirty() && !self.save(ui) {
+                    return;
+                }
+                if let Err(error) = typlo_rust::update_view::reopen_settings(&version) {
+                    typlo_rust::runtime_log::write(
+                        "ERROR",
+                        format_args!("Could not reopen settings after the update: {error}"),
+                    );
                 }
                 self.closing = true;
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);

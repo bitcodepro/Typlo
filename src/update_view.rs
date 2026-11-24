@@ -42,14 +42,24 @@ enum Reply {
 }
 
 /// What the window around the dialog should do after this frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Open,
     /// The user closed the dialog.
     Closed,
-    /// The new version runs and its settings window is opening; this window
-    /// should close.
-    Restarted,
+    /// The tray part runs this new version. The window should save its edits
+    /// first, then call [`reopen_settings`] and close.
+    Restarted(String),
+}
+
+/// Opens Settings from the installed `version`, so the restart is visible.
+pub fn reopen_settings(version: &str) -> io::Result<()> {
+    let settings = update::settings_executable(version)?;
+    std::process::Command::new(settings)
+        .arg("--updated")
+        .arg(version)
+        .spawn()
+        .map(drop)
 }
 
 impl UpdateView {
@@ -242,24 +252,7 @@ impl UpdateView {
         match reply {
             Ok(Reply::Available(Some(available))) => self.state = State::Available(available),
             Ok(Reply::Available(None)) => self.state = State::UpToDate,
-            Ok(Reply::Installed(version)) => {
-                // The tray part already runs the new version; reopen this
-                // window from it so the restart is visible.
-                let reopened = update::settings_executable(&version).and_then(|settings| {
-                    std::process::Command::new(settings)
-                        .arg("--updated")
-                        .arg(&version)
-                        .spawn()
-                        .map(drop)
-                });
-                if let Err(error) = reopened {
-                    crate::runtime_log::write(
-                        "ERROR",
-                        format_args!("Could not reopen settings after the update: {error}"),
-                    );
-                }
-                return Some(Outcome::Restarted);
-            }
+            Ok(Reply::Installed(version)) => return Some(Outcome::Restarted(version)),
             Err(error) => self.state = State::Failed(error.to_string()),
         }
         None
