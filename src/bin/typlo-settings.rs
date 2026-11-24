@@ -2028,11 +2028,14 @@ impl eframe::App for Workspace {
                     Margin::symmetric(20, 6)
                 })
                 .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    // Long pages stay readable on wide windows.
-                    if page == Page::Settings {
-                        ui.set_max_width(ui.available_width().min(720.));
-                    }
+                    // Long Settings pages stay readable on wide windows.
+                    let width = if page == Page::Settings {
+                        ui.available_width().min(720.)
+                    } else {
+                        ui.available_width()
+                    };
+                    ui.set_min_width(width);
+                    ui.set_max_width(width);
                     match page {
                         Page::Settings => self.settings_content(ui),
                         Page::Shortcuts => self.shortcuts(ui),
@@ -2095,6 +2098,15 @@ fn navigation_item(ui: &mut Ui, tab: SettingsTab, selected: bool, compact: bool)
         painter.rect_filled(bar, 2, accent);
     } else if response.hovered() {
         painter.rect_filled(rect, 8, visuals.widgets.hovered.weak_bg_fill);
+    }
+    // Keyboard focus (Tab) gets a ring, selected or not.
+    if response.has_focus() {
+        painter.rect_stroke(
+            rect.shrink(1.),
+            8,
+            egui::Stroke::new(2_f32, accent),
+            egui::StrokeKind::Inside,
+        );
     }
     let color = if selected { accent } else { text };
     let icon_center = if compact {
@@ -2618,6 +2630,45 @@ mod layout_tests {
             assert!(workspace.tab == SettingsTab::Text);
             assert_eq!(render(&mut workspace, vec![]), initial);
         }
+    }
+
+    #[test]
+    fn tab_key_focus_on_the_sidebar_is_visible() {
+        let folder = tempfile::tempdir().unwrap();
+        locale::set_language("en");
+        let mut workspace = Workspace::new(folder.path().into(), None, Page::Settings);
+        let context = egui::Context::default();
+        typlo_rust::appearance::configure(&context);
+        let mut render = |events| {
+            context
+                .run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1000., 700.),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| workspace.settings_navigation(ui),
+                )
+                .shapes
+                .into_iter()
+                .filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Rect(rect) if rect.stroke.width >= 2.)
+                })
+                .count()
+        };
+        assert_eq!(render(vec![]), 0, "no focus ring before Tab");
+        let tab = |pressed| egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        render(vec![tab(true), tab(false)]);
+        assert_eq!(render(vec![]), 1, "the focused item shows a ring");
     }
 
     #[test]
