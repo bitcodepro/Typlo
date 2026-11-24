@@ -119,6 +119,21 @@ fn current(root: &Path) -> io::Result<Option<String>> {
     }
 }
 
+/// The settings program of an installed version, to reopen Settings from it
+/// after an update.
+pub fn settings_executable(version: &str) -> io::Result<PathBuf> {
+    let installed = config::profile()
+        .join("install")
+        .join("versions")
+        .join(version)
+        .join(BINARIES[1]);
+    if installed.is_file() {
+        Ok(installed)
+    } else {
+        std::env::current_exe()
+    }
+}
+
 fn executable(root: &Path, version: &str) -> PathBuf {
     root.join("versions").join(version).join(BINARIES[0])
 }

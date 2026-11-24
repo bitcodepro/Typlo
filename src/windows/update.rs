@@ -320,6 +320,20 @@ pub fn launch_installed() -> io::Result<bool> {
     Ok(true)
 }
 
+/// The settings program of an installed version, to reopen Settings from it
+/// after an update.
+pub fn settings_executable(version: &str) -> io::Result<PathBuf> {
+    let installed = installation_root()?
+        .join("versions")
+        .join(version)
+        .join("typlo-settings.exe");
+    if installed.is_file() {
+        Ok(installed)
+    } else {
+        std::env::current_exe()
+    }
+}
+
 pub(crate) fn installation_root() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     installation_root_for(&exe)

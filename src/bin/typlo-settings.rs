@@ -163,6 +163,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let profile = ui_profile(args.next())?;
         return typlo_rust::spelling_view::run(profile);
     }
+    // Started by the update dialog of the previous version.
+    let updated = mode
+        .as_deref()
+        .is_some_and(|arg| arg == "--updated")
+        .then(|| args.next()?.into_string().ok())
+        .flatten();
     let page = match mode.as_deref().and_then(|arg| arg.to_str()) {
         Some("--open-updates") => Page::Update,
         Some("--shortcuts") => Page::Shortcuts,
@@ -191,6 +197,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .then(|| args.next()?.to_str()?.parse::<f32>().ok())
         .flatten();
     let mut workspace = Workspace::new(profile, report, page);
+    if let Some(version) = updated {
+        workspace.status = tr("rust.update.done", "Typlo updated to v{0}").replace("{0}", &version);
+    }
     if let Some(tab) = probe_tab {
         workspace.tab = tab;
     }
@@ -415,7 +424,7 @@ impl Page {
             Self::Shortcuts => [560., 640.],
             Self::Tools => [850., 670.],
             Self::Dictionary => [680., 650.],
-            Self::Update => [510., 380.],
+            Self::Update => [480., 250.],
         }
     }
 }
@@ -448,7 +457,8 @@ struct Workspace {
     #[cfg(windows)]
     diagnostics: Option<SettingsDiagnostics>,
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-    updates: typlo_rust::update_view::UpdateView,
+    /// The update dialog, while it is open.
+    updates: Option<typlo_rust::update_view::UpdateView>,
 }
 
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -635,7 +645,7 @@ impl Workspace {
             #[cfg(windows)]
             diagnostics,
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-            updates: typlo_rust::update_view::UpdateView::new(page == Page::Update),
+            updates: (page == Page::Update).then(|| typlo_rust::update_view::UpdateView::new(true)),
         }
     }
 
@@ -1686,6 +1696,24 @@ impl Workspace {
     /// Closes the window, or asks first when settings have unsaved edits.
     /// A `Close` command on the root viewport closes the app without a new
     /// close request, so buttons must not send it directly.
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    fn update_outcome(&mut self, ui: &Ui, outcome: typlo_rust::update_view::Outcome) {
+        use typlo_rust::update_view::Outcome;
+        match outcome {
+            Outcome::Open => {}
+            Outcome::Closed if self.page == Page::Update => self.request_close(ui.ctx()),
+            Outcome::Closed => self.updates = None,
+            Outcome::Restarted => {
+                // The new version reopens Settings; keep edits made here.
+                if self.dirty() {
+                    self.save(ui);
+                }
+                self.closing = true;
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
     fn request_close(&mut self, ctx: &egui::Context) {
         if self.dirty() && !self.closing {
             self.confirm_close = true;
@@ -1905,6 +1933,20 @@ impl eframe::App for Workspace {
         if self.confirm_close {
             self.unsaved_changes(ui);
         }
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        if page == Page::Settings
+            && let Some(view) = &mut self.updates
+        {
+            let installing = view.is_installing();
+            let modal =
+                egui::Modal::new(egui::Id::new("update-dialog")).show(ui.ctx(), |ui| view.show(ui));
+            let outcome = if modal.should_close() && !installing {
+                typlo_rust::update_view::Outcome::Closed
+            } else {
+                modal.inner
+            };
+            self.update_outcome(ui, outcome);
+        }
         if page != Page::Update {
             egui::Panel::bottom("settings-footer")
                 .show_separator_line(true)
@@ -1919,9 +1961,8 @@ impl eframe::App for Workspace {
                                     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
                                     {
                                         self.updates =
-                                            typlo_rust::update_view::UpdateView::new(true);
+                                            Some(typlo_rust::update_view::UpdateView::new(true));
                                     }
-                                    self.navigate(ui, Page::Update);
                                 }
                                 if page == Page::Settings {
                                     hint(ui, concat!("v", env!("CARGO_PKG_VERSION")));
@@ -2001,12 +2042,12 @@ impl eframe::App for Workspace {
                             self.diagnostics_content(ui);
                             self.backup(ui, true);
                         }
-                        Page::Update => {
-                            heading(ui, Page::Update.title());
+                        Page::Update =>
+                        {
                             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-                            self.updates.show(ui);
-                            if ui.button(tr("update.close", "Close")).clicked() {
-                                self.request_close(ui.ctx());
+                            if let Some(view) = &mut self.updates {
+                                let outcome = view.show(ui);
+                                self.update_outcome(ui, outcome);
                             }
                         }
                     }
