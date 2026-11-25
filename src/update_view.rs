@@ -123,6 +123,19 @@ impl Reopening {
             Ok(None) => {}
         }
         if self.started.elapsed() > REOPEN_TIMEOUT {
+            // Stop the late window before the old one unlocks, so two
+            // windows never edit the same profile. If it cannot be stopped
+            // yet, stay locked and try again on the next poll.
+            if let Err(error) = self.child.kill()
+                && !matches!(self.child.try_wait(), Ok(Some(_)))
+            {
+                crate::runtime_log::write(
+                    "ERROR",
+                    format_args!("Could not stop the late settings window: {error}"),
+                );
+                return ReopenState::Waiting;
+            }
+            let _ = self.child.wait();
             return ReopenState::Failed(format!(
                 "the new window did not open within {} s",
                 REOPEN_TIMEOUT.as_secs()
@@ -460,11 +473,16 @@ mod tests {
         assert_eq!(reopening.poll(), ReopenState::Waiting);
         reopening.started -= REOPEN_TIMEOUT + std::time::Duration::from_secs(1);
         let state = reopening.poll();
+        let stopped = matches!(reopening.child.try_wait(), Ok(Some(_)));
         let _ = reopening.child.kill();
         let _ = reopening.child.wait();
         assert!(
             matches!(&state, ReopenState::Failed(error) if error.contains("did not open")),
             "{state:?}"
+        );
+        assert!(
+            stopped,
+            "the late window is stopped before the old one unlocks"
         );
     }
 }
