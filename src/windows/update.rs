@@ -320,7 +320,7 @@ pub fn launch_installed() -> io::Result<bool> {
     Ok(true)
 }
 
-/// The settings program of an installed version, to reopen Settings from it
+/// The settings program of an installed version, to reopen Settings from it.
 /// after an update.
 pub fn settings_executable(version: &str) -> io::Result<PathBuf> {
     let installed = installation_root()?
@@ -330,7 +330,10 @@ pub fn settings_executable(version: &str) -> io::Result<PathBuf> {
     if installed.is_file() {
         Ok(installed)
     } else {
-        std::env::current_exe()
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} is missing", installed.display()),
+        ))
     }
 }
 

@@ -1715,11 +1715,21 @@ impl Workspace {
                 if self.dirty() && !self.save(ui) {
                     return;
                 }
-                if let Err(error) = typlo_rust::update_view::reopen_settings(&version) {
+                // When the new window cannot start, stay open and say so.
+                if let Err(error) =
+                    typlo_rust::update_view::reopen_settings(&version, &self.profile)
+                {
                     typlo_rust::runtime_log::write(
                         "ERROR",
                         format_args!("Could not reopen settings after the update: {error}"),
                     );
+                    self.status = tr(
+                        "rust.update.reopenFailed",
+                        "Typlo updated to v{0}, but Settings could not reopen: {1}",
+                    )
+                    .replace("{0}", &version)
+                    .replace("{1}", &error.to_string());
+                    return;
                 }
                 self.closing = true;
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2058,12 +2068,18 @@ impl eframe::App for Workspace {
                             self.diagnostics_content(ui);
                             self.backup(ui, true);
                         }
-                        Page::Update =>
-                        {
+                        Page::Update => {
                             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
                             if let Some(view) = &mut self.updates {
                                 let outcome = view.show(ui);
                                 self.update_outcome(ui, outcome);
+                            } else {
+                                // Settings of the new version did not open.
+                                ui.add(egui::Label::new(self.status.as_str()).wrap());
+                                ui.add_space(12.);
+                                if ui.button(tr("update.close", "Close")).clicked() {
+                                    self.request_close(ui.ctx());
+                                }
                             }
                         }
                     }
@@ -2590,6 +2606,27 @@ mod layout_tests {
         workspace.request_close(&context);
         assert!(workspace.confirm_close, "edits ask before closing");
         assert!(!workspace.closing, "edits are not discarded");
+    }
+
+    #[test]
+    fn settings_stay_open_when_the_new_version_cannot_reopen_them() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut workspace = Workspace::new(folder.path().into(), None, Page::Settings);
+        workspace.settings.auto_correct = !workspace.settings.auto_correct;
+        let context = egui::Context::default();
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            workspace.update_outcome(
+                ui,
+                typlo_rust::update_view::Outcome::Restarted("0.0.0-missing".into()),
+            );
+        });
+        assert!(!workspace.closing, "the window stays open");
+        assert!(!workspace.dirty(), "edits were saved before reopening");
+        assert!(
+            workspace.status.contains("0.0.0-missing"),
+            "the error is shown: {}",
+            workspace.status
+        );
     }
 
     #[test]

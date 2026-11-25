@@ -130,7 +130,10 @@ pub fn settings_executable(version: &str) -> io::Result<PathBuf> {
     if installed.is_file() {
         Ok(installed)
     } else {
-        std::env::current_exe()
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} is missing", installed.display()),
+        ))
     }
 }
 

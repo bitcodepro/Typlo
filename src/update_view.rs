@@ -52,12 +52,14 @@ pub enum Outcome {
     Restarted(String),
 }
 
-/// Opens Settings from the installed `version`, so the restart is visible.
-pub fn reopen_settings(version: &str) -> io::Result<()> {
+/// Opens Settings of `profile` from the installed `version`, so the restart
+/// is visible.
+pub fn reopen_settings(version: &str, profile: &std::path::Path) -> io::Result<()> {
     let settings = update::settings_executable(version)?;
     std::process::Command::new(settings)
         .arg("--updated")
         .arg(version)
+        .arg(profile)
         .spawn()
         .map(drop)
 }
