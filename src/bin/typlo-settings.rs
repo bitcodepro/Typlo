@@ -163,6 +163,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let profile = ui_profile(args.next())?;
         return typlo_rust::spelling_view::run(profile);
     }
+    // Started by the update dialog of the previous version.
+    let updated = mode
+        .as_deref()
+        .is_some_and(|arg| arg == "--updated")
+        .then(|| args.next()?.into_string().ok())
+        .flatten();
     let page = match mode.as_deref().and_then(|arg| arg.to_str()) {
         Some("--open-updates") => Page::Update,
         Some("--shortcuts") => Page::Shortcuts,
@@ -174,17 +180,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .then(|| args.next().map(PathBuf::from))
         .flatten();
     let profile = ui_profile(args.next())?;
+    let ready_signal = updated
+        .is_some()
+        .then(|| args.next().map(PathBuf::from))
+        .flatten();
     let report = report.map(|report| UiProbe {
         report,
         frame: args.next().map(PathBuf::from),
         requested: false,
     });
-    let workspace = Workspace::new(profile, report, page);
+    // A probe can also pick the Settings section and window width, to check
+    // each section and the narrow layout.
+    let probe_tab = report
+        .is_some()
+        .then(|| args.next()?.to_str()?.parse::<usize>().ok())
+        .flatten()
+        .and_then(|index| SettingsTab::ALL.get(index).copied());
+    let probe_width = report
+        .is_some()
+        .then(|| args.next()?.to_str()?.parse::<f32>().ok())
+        .flatten();
+    let mut workspace = Workspace::new(profile, report, page);
+    if let Some(version) = updated {
+        workspace.status = tr("rust.update.done", "Typlo updated to v{0}").replace("{0}", &version);
+    }
+    workspace.ready_signal = ready_signal;
+    if let Some(tab) = probe_tab {
+        workspace.tab = tab;
+    }
+    let size = page.size();
+    let size = [probe_width.unwrap_or(size[0]), size[1]];
     let options = eframe::NativeOptions {
         viewport: typlo_rust::appearance::window()
-            .with_inner_size(page.size())
+            .with_inner_size(size)
             .with_min_inner_size(if page == Page::Settings {
-                [560., 500.]
+                [640., 480.]
             } else {
                 [440., 360.]
             }),
@@ -247,14 +277,14 @@ impl SettingsTab {
         Self::General,
         Self::Text,
         Self::Shortcuts,
+        Self::Dictionary,
         Self::Applications,
         Self::Clipboard,
-        #[cfg(windows)]
-        Self::Computers,
         Self::Snippets,
         #[cfg(windows)]
         Self::Capture,
-        Self::Dictionary,
+        #[cfg(windows)]
+        Self::Computers,
         Self::Backup,
         #[cfg(windows)]
         Self::Diagnostics,
@@ -278,6 +308,108 @@ impl SettingsTab {
             Self::Diagnostics => tr("rust.tabs.diagnostics", "Diagnostics"),
         }
     }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::General => "\u{2699}",
+            Self::Text => "\u{270E}",
+            Self::Shortcuts => "\u{2328}",
+            Self::Applications => "\u{25A6}",
+            Self::Clipboard => "\u{1F4CB}",
+            #[cfg(windows)]
+            Self::Computers => "\u{1F5A7}",
+            Self::Snippets => "\u{2702}",
+            #[cfg(windows)]
+            Self::Capture => "\u{1F4F7}",
+            Self::Dictionary => "\u{1F4D6}",
+            Self::Backup => "\u{1F4BE}",
+            #[cfg(windows)]
+            Self::Diagnostics => "\u{1F527}",
+        }
+    }
+
+    /// The sidebar section the tab is listed under.
+    fn group(self) -> NavGroup {
+        match self {
+            Self::General | Self::Text | Self::Shortcuts | Self::Applications => NavGroup::Typing,
+            Self::Dictionary => NavGroup::Typing,
+            Self::Clipboard | Self::Snippets => NavGroup::Clipboard,
+            #[cfg(windows)]
+            Self::Computers | Self::Capture => NavGroup::Clipboard,
+            Self::Backup => NavGroup::Data,
+            #[cfg(windows)]
+            Self::Diagnostics => NavGroup::Data,
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::General => tr(
+                "rust.nav.generalHint",
+                "Language, theme and how Typlo starts with the system.",
+            ),
+            Self::Text => tr(
+                "rust.nav.textHint",
+                "How Typlo fixes the keyboard layout of typed and selected text.",
+            ),
+            Self::Shortcuts => tr(
+                "rust.nav.shortcutsHint",
+                "Key combinations for every Typlo action.",
+            ),
+            Self::Applications => tr(
+                "rust.nav.appsHint",
+                "The keyboard layout Typlo switches to in each application.",
+            ),
+            Self::Clipboard => tr(
+                "rust.nav.clipboardHint",
+                "What clipboard history keeps and how pasting from it works.",
+            ),
+            #[cfg(windows)]
+            Self::Computers => tr(
+                "rust.nav.computersHint",
+                "Share the clipboard with another computer on your network.",
+            ),
+            Self::Snippets => tr(
+                "rust.nav.snippetsHint",
+                "Ready-made text you insert from the snippet menu.",
+            ),
+            #[cfg(windows)]
+            Self::Capture => tr(
+                "rust.nav.captureHint",
+                "Capture an area of the screen, then copy, save or edit it.",
+            ),
+            Self::Dictionary => tr(
+                "rust.nav.dictionaryHint",
+                "Your own words for layout and spelling fixes, and words never to change.",
+            ),
+            Self::Backup => tr(
+                "rust.nav.backupHint",
+                "Export your settings and personal data to a file, or restore them.",
+            ),
+            #[cfg(windows)]
+            Self::Diagnostics => tr(
+                "rust.nav.diagnosticsHint",
+                "Checks and logs that help find out why something does not work.",
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NavGroup {
+    Typing,
+    Clipboard,
+    Data,
+}
+
+impl NavGroup {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Typing => tr("rust.nav.typing", "Typing"),
+            Self::Clipboard => tr("rust.nav.clipboard", "Clipboard and screen"),
+            Self::Data => tr("rust.nav.data", "Data and support"),
+        }
+    }
 }
 
 impl Page {
@@ -293,11 +425,11 @@ impl Page {
 
     fn size(self) -> [f32; 2] {
         match self {
-            Self::Settings => [680., 800.],
+            Self::Settings => [900., 720.],
             Self::Shortcuts => [560., 640.],
             Self::Tools => [850., 670.],
             Self::Dictionary => [680., 650.],
-            Self::Update => [510., 380.],
+            Self::Update => [480., 250.],
         }
     }
 }
@@ -330,7 +462,13 @@ struct Workspace {
     #[cfg(windows)]
     diagnostics: Option<SettingsDiagnostics>,
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-    updates: typlo_rust::update_view::UpdateView,
+    /// The update dialog, while it is open.
+    updates: Option<typlo_rust::update_view::UpdateView>,
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    /// Settings of the new version, until its window is on screen.
+    reopening: Option<typlo_rust::update_view::Reopening>,
+    /// Set when the previous version waits for this window to appear.
+    ready_signal: Option<PathBuf>,
 }
 
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -406,7 +544,8 @@ impl UiProbe {
             });
             let Some(image) = image else { return false };
             let [width, height] = image.size;
-            let [red, green, blue, _] = image.pixels[0].to_array();
+            // The bottom-right corner is window background; the top-left is the sidebar.
+            let [red, green, blue, _] = image.pixels[width * height - 1].to_array();
             let pixels: Vec<_> = image
                 .pixels
                 .iter()
@@ -517,7 +656,10 @@ impl Workspace {
             #[cfg(windows)]
             diagnostics,
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-            updates: typlo_rust::update_view::UpdateView::new(page == Page::Update),
+            updates: (page == Page::Update).then(|| typlo_rust::update_view::UpdateView::new(true)),
+            #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+            reopening: None,
+            ready_signal: None,
         }
     }
 
@@ -605,29 +747,68 @@ impl Workspace {
         );
     }
 
-    fn settings_tabs(&mut self, ui: &mut Ui) {
+    /// Vertical navigation: grouped sections with an icon each. Narrow
+    /// windows keep only the icons, with the name as a tooltip.
+    fn settings_navigation(&mut self, ui: &mut Ui) {
         let previous = self.tab;
-        Frame::new()
-            .inner_margin(Margin::symmetric(20, 8))
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    let widgets = &mut ui.visuals_mut().widgets;
-                    let border_width = widgets.inactive.bg_stroke.width;
-                    for state in [
-                        &mut widgets.inactive,
-                        &mut widgets.hovered,
-                        &mut widgets.active,
-                        &mut widgets.open,
-                    ] {
-                        state.expansion = 0.;
-                        state.bg_stroke.width = border_width;
-                    }
-                    for &tab in SettingsTab::ALL {
-                        if settings_tab_button(ui, tab, self.tab == tab).clicked() {
-                            self.tab = tab;
-                        }
-                    }
-                });
+        let compact = ui.available_width() < 760.;
+        let width = if compact { 64. } else { 232. };
+        let fill = if ui.visuals().dark_mode {
+            typlo_rust::appearance::rgb(0x1a1a1a)
+        } else {
+            typlo_rust::appearance::rgb(0xf0f1f4)
+        };
+        egui::Panel::left("settings-navigation")
+            .exact_size(width)
+            .resizable(false)
+            .show_separator_line(true)
+            .frame(Frame::new().fill(fill))
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("settings-navigation-scroll")
+                    .show(ui, |ui| {
+                        Frame::new()
+                            .inner_margin(Margin::symmetric(if compact { 8 } else { 12 }, 16))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                if !compact {
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(6.);
+                                        ui.label(RichText::new("Typlo").size(20.).strong());
+                                    });
+                                    ui.add_space(10.);
+                                }
+                                let mut group = None;
+                                for &tab in SettingsTab::ALL {
+                                    if group != Some(tab.group()) {
+                                        let first = group.is_none();
+                                        if !first {
+                                            ui.add_space(10.);
+                                        }
+                                        group = Some(tab.group());
+                                        if compact {
+                                            if !first {
+                                                ui.separator();
+                                            }
+                                        } else {
+                                            ui.horizontal(|ui| {
+                                                ui.add_space(6.);
+                                                ui.label(
+                                                    RichText::new(tab.group().label())
+                                                        .size(12.)
+                                                        .color(ui.visuals().weak_text_color()),
+                                                );
+                                            });
+                                            ui.add_space(2.);
+                                        }
+                                    }
+                                    if navigation_item(ui, tab, self.tab == tab, compact).clicked()
+                                    {
+                                        self.tab = tab;
+                                    }
+                                }
+                            });
+                    });
             });
         #[cfg(windows)]
         if self.tab == SettingsTab::Diagnostics && self.tab != previous {
@@ -636,10 +817,19 @@ impl Workspace {
         if self.tab != previous {
             ui.ctx().request_repaint();
         }
-        ui.separator();
     }
 
     fn settings_content(&mut self, ui: &mut Ui) {
+        ui.add_space(10.);
+        ui.label(RichText::new(self.tab.label()).size(24.).strong());
+        ui.add_space(2.);
+        ui.label(
+            RichText::new(self.tab.description())
+                .size(13.)
+                .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(8.);
+        ui.separator();
         match self.tab {
             SettingsTab::General => self.preferences(ui),
             SettingsTab::Text => {
@@ -1499,8 +1689,11 @@ impl Workspace {
         }
     }
 
-    fn save(&mut self, ui: &Ui) {
-        match config::save(&self.profile, &self.settings) {
+    /// Writes the settings; returns whether they were saved.
+    fn save(&mut self, ui: &Ui) -> bool {
+        let saved = config::save(&self.profile, &self.settings);
+        let ok = saved.is_ok();
+        match saved {
             Ok(()) => {
                 #[cfg(windows)]
                 typlo_rust::windows::reload_settings();
@@ -1515,11 +1708,80 @@ impl Workspace {
                 self.status = error.to_string();
             }
         }
+        ok
     }
 
     /// Closes the window, or asks first when settings have unsaved edits.
     /// A `Close` command on the root viewport closes the app without a new
     /// close request, so buttons must not send it directly.
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    fn update_outcome(&mut self, ui: &Ui, outcome: typlo_rust::update_view::Outcome) {
+        use typlo_rust::update_view::Outcome;
+        match outcome {
+            Outcome::Open => {}
+            Outcome::Closed if self.page == Page::Update => self.request_close(ui.ctx()),
+            Outcome::Closed => self.updates = None,
+            Outcome::Restarted(version) => {
+                self.updates = None;
+                // Save edits before the new window reads the settings; when
+                // saving fails, stay open so the edits and the error remain.
+                if self.dirty() && !self.save(ui) {
+                    return;
+                }
+                // This window closes only once the new one is on screen.
+                match typlo_rust::update_view::reopen_settings(&version, &self.profile) {
+                    Ok(reopening) => {
+                        self.status = tr("rust.update.done", "Typlo updated to v{0}")
+                            .replace("{0}", &version);
+                        self.reopening = Some(reopening);
+                        self.poll_reopening(ui.ctx());
+                    }
+                    Err(error) => self.reopen_failed(&version, &error.to_string()),
+                }
+            }
+        }
+    }
+
+    /// Closes this window when the new Settings show their first frame, or
+    /// stays open with the error when they cannot.
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    fn poll_reopening(&mut self, ctx: &egui::Context) {
+        use typlo_rust::update_view::ReopenState;
+        let Some(reopening) = &mut self.reopening else {
+            return;
+        };
+        match reopening.poll() {
+            ReopenState::Waiting => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            ReopenState::Ready => {
+                // Editing is locked while waiting; the normal close path
+                // still asks if anything was changed.
+                self.reopening = None;
+                self.request_close(ctx);
+            }
+            ReopenState::Failed(error) => {
+                let version = reopening.version().to_owned();
+                self.reopening = None;
+                self.reopen_failed(&version, &error);
+            }
+        }
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    fn reopen_failed(&mut self, version: &str, error: &str) {
+        typlo_rust::runtime_log::write(
+            "ERROR",
+            format_args!("Could not reopen settings after the update: {error}"),
+        );
+        self.status = tr(
+            "rust.update.reopenFailed",
+            "Typlo updated to v{0}, but Settings could not reopen: {1}",
+        )
+        .replace("{0}", version)
+        .replace("{1}", error);
+    }
+
     fn request_close(&mut self, ctx: &egui::Context) {
         if self.dirty() && !self.closing {
             self.confirm_close = true;
@@ -1728,6 +1990,25 @@ impl eframe::App for Workspace {
     }
 
     fn ui(&mut self, ui: &mut Ui, _: &mut eframe::Frame) {
+        self.frame(ui);
+    }
+}
+
+impl Workspace {
+    fn frame(&mut self, ui: &mut Ui) {
+        // The previous version closes its window once this one draws.
+        if let Some(path) = self.ready_signal.take() {
+            typlo_rust::update_view::signal_ready(&path);
+        }
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        {
+            self.poll_reopening(ui.ctx());
+            // Settings are saved and the new version is opening them; edits
+            // made here now would be lost when this window closes.
+            if self.reopening.is_some() {
+                ui.disable();
+            }
+        }
         let page = self.page;
         let dirty = self.dirty();
         // Every way of closing (title bar, Cancel, Close on another page) keeps unsaved edits.
@@ -1738,6 +2019,20 @@ impl eframe::App for Workspace {
         }
         if self.confirm_close {
             self.unsaved_changes(ui);
+        }
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        if page == Page::Settings
+            && let Some(view) = &mut self.updates
+        {
+            let installing = view.is_installing();
+            let modal =
+                egui::Modal::new(egui::Id::new("update-dialog")).show(ui.ctx(), |ui| view.show(ui));
+            let outcome = if modal.should_close() && !installing {
+                typlo_rust::update_view::Outcome::Closed
+            } else {
+                modal.inner
+            };
+            self.update_outcome(ui, outcome);
         }
         if page != Page::Update {
             egui::Panel::bottom("settings-footer")
@@ -1753,9 +2048,8 @@ impl eframe::App for Workspace {
                                     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
                                     {
                                         self.updates =
-                                            typlo_rust::update_view::UpdateView::new(true);
+                                            Some(typlo_rust::update_view::UpdateView::new(true));
                                     }
-                                    self.navigate(ui, Page::Update);
                                 }
                                 if page == Page::Settings {
                                     hint(ui, concat!("v", env!("CARGO_PKG_VERSION")));
@@ -1800,7 +2094,7 @@ impl eframe::App for Workspace {
                 });
         }
         if page == Page::Settings {
-            self.settings_tabs(ui);
+            self.settings_navigation(ui);
         }
         let scroll = egui::ScrollArea::vertical();
         let scroll = if page == Page::Settings {
@@ -1810,9 +2104,25 @@ impl eframe::App for Workspace {
         };
         scroll.show(ui, |ui| {
             Frame::new()
-                .inner_margin(Margin::symmetric(20, 6))
+                .inner_margin(if page == Page::Settings {
+                    Margin {
+                        left: 28,
+                        right: 28,
+                        top: 12,
+                        bottom: 16,
+                    }
+                } else {
+                    Margin::symmetric(20, 6)
+                })
                 .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
+                    // Long Settings pages stay readable on wide windows.
+                    let width = if page == Page::Settings {
+                        ui.available_width().min(720.)
+                    } else {
+                        ui.available_width()
+                    };
+                    ui.set_min_width(width);
+                    ui.set_max_width(width);
                     match page {
                         Page::Settings => self.settings_content(ui),
                         Page::Shortcuts => self.shortcuts(ui),
@@ -1823,11 +2133,17 @@ impl eframe::App for Workspace {
                             self.backup(ui, true);
                         }
                         Page::Update => {
-                            heading(ui, Page::Update.title());
                             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-                            self.updates.show(ui);
-                            if ui.button(tr("update.close", "Close")).clicked() {
-                                self.request_close(ui.ctx());
+                            if let Some(view) = &mut self.updates {
+                                let outcome = view.show(ui);
+                                self.update_outcome(ui, outcome);
+                            } else {
+                                // Settings of the new version did not open.
+                                ui.add(egui::Label::new(self.status.as_str()).wrap());
+                                ui.add_space(12.);
+                                if ui.button(tr("update.close", "Close")).clicked() {
+                                    self.request_close(ui.ctx());
+                                }
                             }
                         }
                     }
@@ -1856,13 +2172,92 @@ fn open_diagnostic_logs(profile: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn settings_tab_button(ui: &mut Ui, tab: SettingsTab, selected: bool) -> egui::Response {
-    ui.add(
-        egui::Button::new(tab.label())
-            .selected(selected)
-            .frame(true)
-            .wrap_mode(egui::TextWrapMode::Extend),
-    )
+fn navigation_item(ui: &mut Ui, tab: SettingsTab, selected: bool, compact: bool) -> egui::Response {
+    let height = 36.;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    let visuals = ui.visuals();
+    let accent = visuals.selection.stroke.color;
+    let text = visuals.widgets.noninteractive.fg_stroke.color;
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, 8, accent.gamma_multiply(0.16));
+        let bar = egui::Rect::from_min_size(
+            rect.left_top() + egui::vec2(0., 9.),
+            egui::vec2(3., height - 18.),
+        );
+        painter.rect_filled(bar, 2, accent);
+    } else if response.hovered() {
+        painter.rect_filled(rect, 8, visuals.widgets.hovered.weak_bg_fill);
+    }
+    // Keyboard focus (Tab) gets a ring, selected or not.
+    if response.has_focus() {
+        painter.rect_stroke(
+            rect.shrink(1.),
+            8,
+            egui::Stroke::new(2_f32, accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let color = if selected { accent } else { text };
+    let icon_center = if compact {
+        rect.center()
+    } else {
+        egui::pos2(rect.left() + 22., rect.center().y)
+    };
+    painter.text(
+        icon_center,
+        egui::Align2::CENTER_CENTER,
+        tab.icon(),
+        egui::FontId::proportional(16.),
+        color,
+    );
+    if !compact {
+        let label = egui::WidgetText::from(
+            RichText::new(tab.label())
+                .size(14.)
+                .color(color)
+                .strong_if(selected),
+        )
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            rect.width() - 52.,
+            egui::TextStyle::Button,
+        );
+        ui.painter().galley(
+            egui::pos2(rect.left() + 42., rect.center().y - label.size().y / 2.),
+            label,
+            color,
+        );
+    }
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let response = if compact {
+        response.on_hover_text(tab.label())
+    } else {
+        response
+    };
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            true,
+            selected,
+            tab.label(),
+        )
+    });
+    response
+}
+
+trait StrongIf {
+    fn strong_if(self, strong: bool) -> Self;
+}
+
+impl StrongIf for RichText {
+    fn strong_if(self, strong: bool) -> Self {
+        if strong { self.strong() } else { self }
+    }
 }
 
 fn heading(ui: &mut Ui, label: &str) {
@@ -2278,6 +2673,104 @@ mod layout_tests {
     }
 
     #[test]
+    fn settings_stay_open_when_the_new_version_cannot_reopen_them() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut workspace = Workspace::new(folder.path().into(), None, Page::Settings);
+        workspace.settings.auto_correct = !workspace.settings.auto_correct;
+        let context = egui::Context::default();
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            workspace.update_outcome(
+                ui,
+                typlo_rust::update_view::Outcome::Restarted("0.0.0-missing".into()),
+            );
+        });
+        assert!(!workspace.closing, "the window stays open");
+        assert!(!workspace.dirty(), "edits were saved before reopening");
+        assert!(
+            workspace.status.contains("0.0.0-missing"),
+            "the error is shown: {}",
+            workspace.status
+        );
+    }
+
+    /// A process that keeps running without drawing, standing in for the
+    /// new Settings window.
+    fn silent_child() -> std::process::Child {
+        #[cfg(windows)]
+        let child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn();
+        #[cfg(not(windows))]
+        let child = std::process::Command::new("sleep").arg("30").spawn();
+        child.unwrap()
+    }
+
+    #[test]
+    fn settings_are_locked_while_the_new_version_opens_and_unlock_on_failure() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut workspace = Workspace::new(folder.path().into(), None, Page::Settings);
+        let child = silent_child();
+        let child_id = child.id().to_string();
+        workspace.reopening =
+            Some(typlo_rust::update_view::Reopening::for_tests(child, "9.9.9").unwrap());
+        let context = egui::Context::default();
+        let render = |workspace: &mut Workspace| {
+            let mut enabled = None;
+            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                workspace.frame(ui);
+                enabled = Some(ui.is_enabled());
+            });
+            enabled.unwrap()
+        };
+        assert!(!render(&mut workspace), "editing is locked while waiting");
+        assert!(!workspace.closing);
+
+        // The new window exits without drawing: editing comes back.
+        #[cfg(windows)]
+        let killed = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &child_id])
+            .output();
+        #[cfg(not(windows))]
+        let killed = std::process::Command::new("kill")
+            .args(["-9", &child_id])
+            .output();
+        killed.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while workspace.reopening.is_some() && std::time::Instant::now() < deadline {
+            render(&mut workspace);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(render(&mut workspace), "editing is back after a failure");
+        assert!(workspace.status.contains("9.9.9"), "{}", workspace.status);
+        assert!(!workspace.closing);
+    }
+
+    #[test]
+    fn edits_made_while_waiting_are_not_dropped_on_the_ready_signal() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut workspace = Workspace::new(folder.path().into(), None, Page::Settings);
+        // The ready file is checked first, so a child that already exited
+        // stands in for the new window here.
+        #[cfg(windows)]
+        let child = std::process::Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .spawn();
+        #[cfg(not(windows))]
+        let child = std::process::Command::new("true").spawn();
+        let reopening =
+            typlo_rust::update_view::Reopening::for_tests(child.unwrap(), "9.9.9").unwrap();
+        typlo_rust::update_view::signal_ready(&reopening.ready_file());
+        workspace.reopening = Some(reopening);
+        // An edit that slipped past the lock.
+        workspace.settings.auto_correct = !workspace.settings.auto_correct;
+        workspace.poll_reopening(&egui::Context::default());
+        assert!(workspace.reopening.is_none());
+        assert!(!workspace.closing, "unsaved edits keep the window open");
+        assert!(workspace.confirm_close, "the user is asked about the edits");
+    }
+
+    #[test]
     fn settings_tabs_keep_their_positions_on_hover_and_selection() {
         let folder = tempfile::tempdir().unwrap();
         for language in ["en", "ru", "uk"] {
@@ -2296,7 +2789,7 @@ mod layout_tests {
                             events,
                             ..Default::default()
                         },
-                        |ui| workspace.settings_tabs(ui),
+                        |ui| workspace.settings_navigation(ui),
                     )
                     .shapes
                     .into_iter()
@@ -2328,6 +2821,45 @@ mod layout_tests {
             assert!(workspace.tab == SettingsTab::Text);
             assert_eq!(render(&mut workspace, vec![]), initial);
         }
+    }
+
+    #[test]
+    fn tab_key_focus_on_the_sidebar_is_visible() {
+        let folder = tempfile::tempdir().unwrap();
+        locale::set_language("en");
+        let mut workspace = Workspace::new(folder.path().into(), None, Page::Settings);
+        let context = egui::Context::default();
+        typlo_rust::appearance::configure(&context);
+        let mut render = |events| {
+            context
+                .run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1000., 700.),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| workspace.settings_navigation(ui),
+                )
+                .shapes
+                .into_iter()
+                .filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Rect(rect) if rect.stroke.width >= 2.)
+                })
+                .count()
+        };
+        assert_eq!(render(vec![]), 0, "no focus ring before Tab");
+        let tab = |pressed| egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        render(vec![tab(true), tab(false)]);
+        assert_eq!(render(vec![]), 1, "the focused item shows a ring");
     }
 
     #[test]
