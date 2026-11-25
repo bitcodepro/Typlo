@@ -1755,9 +1755,10 @@ impl Workspace {
                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
             }
             ReopenState::Ready => {
+                // Editing is locked while waiting; the normal close path
+                // still asks if anything was changed.
                 self.reopening = None;
-                self.closing = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.request_close(ctx);
             }
             ReopenState::Failed(error) => {
                 let version = reopening.version().to_owned();
@@ -1989,12 +1990,25 @@ impl eframe::App for Workspace {
     }
 
     fn ui(&mut self, ui: &mut Ui, _: &mut eframe::Frame) {
+        self.frame(ui);
+    }
+}
+
+impl Workspace {
+    fn frame(&mut self, ui: &mut Ui) {
         // The previous version closes its window once this one draws.
         if let Some(path) = self.ready_signal.take() {
             typlo_rust::update_view::signal_ready(&path);
         }
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-        self.poll_reopening(ui.ctx());
+        {
+            self.poll_reopening(ui.ctx());
+            // Settings are saved and the new version is opening them; edits
+            // made here now would be lost when this window closes.
+            if self.reopening.is_some() {
+                ui.disable();
+            }
+        }
         let page = self.page;
         let dirty = self.dirty();
         // Every way of closing (title bar, Cancel, Close on another page) keeps unsaved edits.
@@ -2677,6 +2691,83 @@ mod layout_tests {
             "the error is shown: {}",
             workspace.status
         );
+    }
+
+    /// A process that keeps running without drawing, standing in for the
+    /// new Settings window.
+    fn silent_child() -> std::process::Child {
+        #[cfg(windows)]
+        let child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn();
+        #[cfg(not(windows))]
+        let child = std::process::Command::new("sleep").arg("30").spawn();
+        child.unwrap()
+    }
+
+    #[test]
+    fn settings_are_locked_while_the_new_version_opens_and_unlock_on_failure() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut workspace = Workspace::new(folder.path().into(), None, Page::Settings);
+        let child = silent_child();
+        let child_id = child.id().to_string();
+        workspace.reopening =
+            Some(typlo_rust::update_view::Reopening::for_tests(child, "9.9.9").unwrap());
+        let context = egui::Context::default();
+        let render = |workspace: &mut Workspace| {
+            let mut enabled = None;
+            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                workspace.frame(ui);
+                enabled = Some(ui.is_enabled());
+            });
+            enabled.unwrap()
+        };
+        assert!(!render(&mut workspace), "editing is locked while waiting");
+        assert!(!workspace.closing);
+
+        // The new window exits without drawing: editing comes back.
+        #[cfg(windows)]
+        let killed = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &child_id])
+            .output();
+        #[cfg(not(windows))]
+        let killed = std::process::Command::new("kill")
+            .args(["-9", &child_id])
+            .output();
+        killed.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while workspace.reopening.is_some() && std::time::Instant::now() < deadline {
+            render(&mut workspace);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(render(&mut workspace), "editing is back after a failure");
+        assert!(workspace.status.contains("9.9.9"), "{}", workspace.status);
+        assert!(!workspace.closing);
+    }
+
+    #[test]
+    fn edits_made_while_waiting_are_not_dropped_on_the_ready_signal() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut workspace = Workspace::new(folder.path().into(), None, Page::Settings);
+        // The ready file is checked first, so a child that already exited
+        // stands in for the new window here.
+        #[cfg(windows)]
+        let child = std::process::Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .spawn();
+        #[cfg(not(windows))]
+        let child = std::process::Command::new("true").spawn();
+        let reopening =
+            typlo_rust::update_view::Reopening::for_tests(child.unwrap(), "9.9.9").unwrap();
+        typlo_rust::update_view::signal_ready(&reopening.ready_file());
+        workspace.reopening = Some(reopening);
+        // An edit that slipped past the lock.
+        workspace.settings.auto_correct = !workspace.settings.auto_correct;
+        workspace.poll_reopening(&egui::Context::default());
+        assert!(workspace.reopening.is_none());
+        assert!(!workspace.closing, "unsaved edits keep the window open");
+        assert!(workspace.confirm_close, "the user is asked about the edits");
     }
 
     #[test]

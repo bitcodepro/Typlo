@@ -91,6 +91,22 @@ pub fn reopen_settings(version: &str, profile: &std::path::Path) -> io::Result<R
 }
 
 impl Reopening {
+    /// A wait on an already started `child`, for tests of the window logic.
+    #[doc(hidden)]
+    pub fn for_tests(child: std::process::Child, version: &str) -> io::Result<Self> {
+        Ok(Self {
+            child,
+            ready: tempfile::tempdir()?,
+            version: version.to_owned(),
+            started: std::time::Instant::now(),
+        })
+    }
+
+    /// The file the new window writes after its first frame.
+    pub fn ready_file(&self) -> std::path::PathBuf {
+        self.ready.path().join("ready")
+    }
+
     pub fn version(&self) -> &str {
         &self.version
     }
