@@ -180,6 +180,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .then(|| args.next().map(PathBuf::from))
         .flatten();
     let profile = ui_profile(args.next())?;
+    let ready_signal = updated
+        .is_some()
+        .then(|| args.next().map(PathBuf::from))
+        .flatten();
     let report = report.map(|report| UiProbe {
         report,
         frame: args.next().map(PathBuf::from),
@@ -200,6 +204,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(version) = updated {
         workspace.status = tr("rust.update.done", "Typlo updated to v{0}").replace("{0}", &version);
     }
+    workspace.ready_signal = ready_signal;
     if let Some(tab) = probe_tab {
         workspace.tab = tab;
     }
@@ -459,6 +464,11 @@ struct Workspace {
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     /// The update dialog, while it is open.
     updates: Option<typlo_rust::update_view::UpdateView>,
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    /// Settings of the new version, until its window is on screen.
+    reopening: Option<typlo_rust::update_view::Reopening>,
+    /// Set when the previous version waits for this window to appear.
+    ready_signal: Option<PathBuf>,
 }
 
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -647,6 +657,9 @@ impl Workspace {
             diagnostics,
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
             updates: (page == Page::Update).then(|| typlo_rust::update_view::UpdateView::new(true)),
+            #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+            reopening: None,
+            ready_signal: None,
         }
     }
 
@@ -1715,26 +1728,57 @@ impl Workspace {
                 if self.dirty() && !self.save(ui) {
                     return;
                 }
-                // When the new window cannot start, stay open and say so.
-                if let Err(error) =
-                    typlo_rust::update_view::reopen_settings(&version, &self.profile)
-                {
-                    typlo_rust::runtime_log::write(
-                        "ERROR",
-                        format_args!("Could not reopen settings after the update: {error}"),
-                    );
-                    self.status = tr(
-                        "rust.update.reopenFailed",
-                        "Typlo updated to v{0}, but Settings could not reopen: {1}",
-                    )
-                    .replace("{0}", &version)
-                    .replace("{1}", &error.to_string());
-                    return;
+                // This window closes only once the new one is on screen.
+                match typlo_rust::update_view::reopen_settings(&version, &self.profile) {
+                    Ok(reopening) => {
+                        self.status = tr("rust.update.done", "Typlo updated to v{0}")
+                            .replace("{0}", &version);
+                        self.reopening = Some(reopening);
+                        self.poll_reopening(ui.ctx());
+                    }
+                    Err(error) => self.reopen_failed(&version, &error.to_string()),
                 }
-                self.closing = true;
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+    }
+
+    /// Closes this window when the new Settings show their first frame, or
+    /// stays open with the error when they cannot.
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    fn poll_reopening(&mut self, ctx: &egui::Context) {
+        use typlo_rust::update_view::ReopenState;
+        let Some(reopening) = &mut self.reopening else {
+            return;
+        };
+        match reopening.poll() {
+            ReopenState::Waiting => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            ReopenState::Ready => {
+                self.reopening = None;
+                self.closing = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            ReopenState::Failed(error) => {
+                let version = reopening.version().to_owned();
+                self.reopening = None;
+                self.reopen_failed(&version, &error);
+            }
+        }
+    }
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    fn reopen_failed(&mut self, version: &str, error: &str) {
+        typlo_rust::runtime_log::write(
+            "ERROR",
+            format_args!("Could not reopen settings after the update: {error}"),
+        );
+        self.status = tr(
+            "rust.update.reopenFailed",
+            "Typlo updated to v{0}, but Settings could not reopen: {1}",
+        )
+        .replace("{0}", version)
+        .replace("{1}", error);
     }
 
     fn request_close(&mut self, ctx: &egui::Context) {
@@ -1945,6 +1989,12 @@ impl eframe::App for Workspace {
     }
 
     fn ui(&mut self, ui: &mut Ui, _: &mut eframe::Frame) {
+        // The previous version closes its window once this one draws.
+        if let Some(path) = self.ready_signal.take() {
+            typlo_rust::update_view::signal_ready(&path);
+        }
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        self.poll_reopening(ui.ctx());
         let page = self.page;
         let dirty = self.dirty();
         // Every way of closing (title bar, Cancel, Close on another page) keeps unsaved edits.

@@ -52,16 +52,78 @@ pub enum Outcome {
     Restarted(String),
 }
 
-/// Opens Settings of `profile` from the installed `version`, so the restart
+/// How long the new Settings may take to show its first frame.
+const REOPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Settings of the new version, started but maybe not yet on screen. The old
+/// window stays until the new one reports its first frame.
+pub struct Reopening {
+    child: std::process::Child,
+    ready: tempfile::TempDir,
+    version: String,
+    started: std::time::Instant,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReopenState {
+    Waiting,
+    Ready,
+    Failed(String),
+}
+
+/// Starts Settings of `profile` from the installed `version`, so the restart
 /// is visible.
-pub fn reopen_settings(version: &str, profile: &std::path::Path) -> io::Result<()> {
+pub fn reopen_settings(version: &str, profile: &std::path::Path) -> io::Result<Reopening> {
     let settings = update::settings_executable(version)?;
-    std::process::Command::new(settings)
+    let ready = tempfile::tempdir()?;
+    let child = std::process::Command::new(settings)
         .arg("--updated")
         .arg(version)
         .arg(profile)
-        .spawn()
-        .map(drop)
+        .arg(ready.path().join("ready"))
+        .spawn()?;
+    Ok(Reopening {
+        child,
+        ready,
+        version: version.to_owned(),
+        started: std::time::Instant::now(),
+    })
+}
+
+impl Reopening {
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub fn poll(&mut self) -> ReopenState {
+        if self.ready.path().join("ready").exists() {
+            return ReopenState::Ready;
+        }
+        match self.child.try_wait() {
+            Ok(Some(status)) => {
+                return ReopenState::Failed(format!("the new window exited ({status})"));
+            }
+            Err(error) => return ReopenState::Failed(error.to_string()),
+            Ok(None) => {}
+        }
+        if self.started.elapsed() > REOPEN_TIMEOUT {
+            return ReopenState::Failed(format!(
+                "the new window did not open within {} s",
+                REOPEN_TIMEOUT.as_secs()
+            ));
+        }
+        ReopenState::Waiting
+    }
+}
+
+/// Called by the new Settings after its first frame: the old window may close.
+pub fn signal_ready(path: &std::path::Path) {
+    if let Err(error) = std::fs::write(path, b"ready") {
+        crate::runtime_log::write(
+            "ERROR",
+            format_args!("Could not report that Settings opened: {error}"),
+        );
+    }
 }
 
 impl UpdateView {
@@ -328,4 +390,65 @@ fn primary(label: &str) -> egui::Button<'_> {
 /// Dialog buttons on the right; the first one added is the rightmost.
 fn buttons(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reopening(code: i32) -> Reopening {
+        #[cfg(windows)]
+        let child = std::process::Command::new("cmd")
+            .args(["/C", &format!("exit {code}")])
+            .spawn()
+            .unwrap();
+        #[cfg(not(windows))]
+        let child = std::process::Command::new("sh")
+            .args(["-c", &format!("exit {code}")])
+            .spawn()
+            .unwrap();
+        Reopening {
+            child,
+            ready: tempfile::tempdir().unwrap(),
+            version: "9.9.9".into(),
+            started: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn a_new_window_that_exits_before_drawing_is_a_failure() {
+        let mut reopening = reopening(3);
+        let _ = reopening.child.wait();
+        assert!(matches!(reopening.poll(), ReopenState::Failed(_)));
+    }
+
+    #[test]
+    fn the_first_frame_of_the_new_window_lets_the_old_one_close() {
+        let mut reopening = reopening(0);
+        signal_ready(&reopening.ready.path().join("ready"));
+        assert_eq!(reopening.poll(), ReopenState::Ready);
+    }
+
+    #[test]
+    fn a_new_window_that_never_draws_times_out() {
+        let mut reopening = reopening(0);
+        // A child that keeps running without drawing.
+        #[cfg(windows)]
+        let silent = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn();
+        #[cfg(not(windows))]
+        let silent = std::process::Command::new("sleep").arg("30").spawn();
+        reopening.child = silent.unwrap();
+        assert_eq!(reopening.poll(), ReopenState::Waiting);
+        reopening.started -= REOPEN_TIMEOUT + std::time::Duration::from_secs(1);
+        let state = reopening.poll();
+        let _ = reopening.child.kill();
+        let _ = reopening.child.wait();
+        assert!(
+            matches!(&state, ReopenState::Failed(error) if error.contains("did not open")),
+            "{state:?}"
+        );
+    }
 }
