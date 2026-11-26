@@ -97,7 +97,7 @@ pub fn run_clipboard_images(profile: &Path, origin: usize, selected: Option<i64>
                 .map(|image| (index, image))
         })
     };
-    let Some((position, (image, caption))) = initial else {
+    let Some((position, (image, original))) = initial else {
         crate::locale::load(profile);
         let message = tr(
             "rust.clipboardImages.empty",
@@ -115,19 +115,21 @@ pub fn run_clipboard_images(profile: &Path, origin: usize, selected: Option<i64>
         }
         return Ok(());
     };
+    let caption = original.editable_text();
     let gallery = Gallery {
         store,
         ids,
         position,
+        original,
         annotations: HashMap::new(),
         origin: (origin != 0).then_some(origin),
     };
     run_image_editor(profile, false, image, caption, Some(gallery))
 }
 
-fn load_history_image(store: &History, id: i64) -> io::Result<(RgbaImage, String)> {
+fn load_history_image(store: &History, id: i64) -> io::Result<(RgbaImage, clipio::Clip)> {
     let clip = store.load(id)?.ok_or(io::ErrorKind::NotFound)?;
-    Ok((clip.image()?.into_rgba8(), clip.editable_text()))
+    Ok((clip.image()?.into_rgba8(), clip))
 }
 
 fn run_image_editor(
@@ -205,6 +207,7 @@ struct Gallery {
     store: History,
     ids: Vec<i64>,
     position: usize,
+    original: clipio::Clip,
     annotations: HashMap<i64, (UndoHistory, usize)>,
     origin: Option<usize>,
 }
@@ -237,7 +240,7 @@ impl Editor {
                 break;
             };
             position = next;
-            let Ok((image, caption)) = load_history_image(&gallery.store, id) else {
+            let Ok((image, original)) = load_history_image(&gallery.store, id) else {
                 continue;
             };
             let outgoing = gallery.ids[gallery.position];
@@ -257,7 +260,8 @@ impl Editor {
             gallery.position = position;
             self.texture = texture(context, &image, "clipboard-image");
             self.image = image;
-            self.caption = caption;
+            self.caption = original.editable_text();
+            gallery.original = original;
             self.status.clear();
             return;
         }
@@ -273,15 +277,16 @@ impl Editor {
         self.status = tr("paint.changed", "Changes ready · Copy or save to export.").into();
     }
 
+    fn original_for_copy(&self) -> Option<&clipio::Clip> {
+        self.gallery
+            .as_ref()
+            .filter(|_| self.history[self.index].is_empty())
+            .map(|gallery| &gallery.original)
+    }
+
     fn copy(&self, window: HWND) -> io::Result<()> {
-        if let Some(gallery) = &self.gallery
-            && self.history[self.index].is_empty()
-        {
-            let clip = gallery
-                .store
-                .load(gallery.ids[gallery.position])?
-                .ok_or(io::ErrorKind::NotFound)?;
-            clipio::publish(window, &clip, false)?;
+        if let Some(clip) = self.original_for_copy() {
+            clipio::publish(window, clip, false)?;
             return Ok(());
         }
         clipio::publish_screenshot(&self.rendered(), window)
@@ -758,4 +763,87 @@ fn save_path(owner: HWND) -> io::Result<Option<PathBuf>> {
         .position(|&unit| unit == 0)
         .unwrap_or(path.len());
     Ok(Some(std::ffi::OsString::from_wide(&path[..end]).into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::windows::history::Limits;
+
+    #[test]
+    fn copying_open_image_keeps_original_formats_and_caption_after_history_removal() {
+        let make_clip = |color, caption: &str| {
+            let image = RgbaImage::from_pixel(2, 2, image::Rgba(color));
+            let mut png = io::Cursor::new(Vec::new());
+            image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            let caption: Vec<u8> = caption
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            serde_json::from_value::<clipio::Clip>(serde_json::json!({
+                "kind": "Image",
+                "formats": [["Png", png.into_inner()], ["Text", caption]]
+            }))
+            .unwrap()
+        };
+        let first = make_clip([255, 0, 0, 255], "Red");
+        let second = make_clip([0, 255, 0, 255], "Green\n");
+        let third = make_clip([0, 0, 255, 255], "Blue");
+        let profile = tempfile::tempdir().unwrap();
+        let mut writer = History::open(profile.path()).unwrap();
+        let mut limits = Limits::from_config(&crate::config::Config::default());
+        writer.store(&first, limits).unwrap();
+        writer.store(&second, limits).unwrap();
+
+        let store = History::open(profile.path()).unwrap();
+        let ids = store.image_ids().unwrap();
+        assert_eq!(ids.len(), 2);
+        let (current, next) = (ids[0], ids[1]);
+        let (image, original) = load_history_image(&store, current).unwrap();
+        let context = egui::Context::default();
+        let mut editor = Editor {
+            profile: profile.path().to_owned(),
+            for_save: false,
+            gallery: Some(Gallery {
+                store,
+                ids,
+                position: 0,
+                original,
+                annotations: HashMap::new(),
+                origin: None,
+            }),
+            title: "",
+            texture: texture(&context, &image, "test"),
+            image,
+            caption: "Green\n".into(),
+            history: vec![vec![]],
+            index: 0,
+            draft: None,
+            tool: Tool::Pen,
+            width: 5.,
+            color: [255, 0, 0],
+            status: String::new(),
+        };
+
+        writer.remove(current).unwrap();
+        assert!(writer.load(current).unwrap().is_none());
+        let original = editor.original_for_copy().unwrap();
+        assert_eq!(original.editable_text(), "Green\n");
+        assert_eq!(
+            serde_json::to_value(original).unwrap(),
+            serde_json::to_value(second).unwrap()
+        );
+
+        editor.navigate(&context, 1);
+        limits.max_items = 1;
+        writer.store(&third, limits).unwrap();
+        assert!(writer.load(next).unwrap().is_none());
+        let original = editor.original_for_copy().unwrap();
+        assert_eq!(original.editable_text(), "Red");
+        assert_eq!(
+            serde_json::to_value(original).unwrap(),
+            serde_json::to_value(first).unwrap()
+        );
+    }
 }
