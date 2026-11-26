@@ -17,12 +17,16 @@ use std::{
 use windows_sys::Win32::{
     Foundation::HWND,
     Graphics::Dwm::DwmFlush,
+    System::Threading::{AttachThreadInput, GetCurrentThreadId},
     UI::{
         Controls::Dialogs::{
             CommDlgExtendedError, GetSaveFileNameW, OFN_EXPLORER, OFN_NOCHANGEDIR,
             OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
         },
-        WindowsAndMessaging::{MB_ICONINFORMATION, MessageBoxW, SW_HIDE, SW_SHOW, ShowWindow},
+        WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowThreadProcessId, MB_ICONINFORMATION, MessageBoxW,
+            SW_HIDE, SW_SHOW, SetForegroundWindow, ShowWindow,
+        },
     },
 };
 
@@ -76,7 +80,7 @@ pub fn run_editor(profile: &Path, for_save: bool) -> AppResult {
     run_image_editor(profile, for_save, image, String::new(), None)
 }
 
-pub fn run_clipboard_images(profile: &Path, selected: Option<i64>) -> AppResult {
+pub fn run_clipboard_images(profile: &Path, origin: usize, selected: Option<i64>) -> AppResult {
     let store = History::open(profile)?;
     let ids = store.image_ids()?;
     let initial = if let Some(id) = selected {
@@ -116,6 +120,7 @@ pub fn run_clipboard_images(profile: &Path, selected: Option<i64>) -> AppResult 
         ids,
         position,
         annotations: HashMap::new(),
+        origin: (origin != 0).then_some(origin),
     };
     run_image_editor(profile, false, image, caption, Some(gallery))
 }
@@ -201,6 +206,7 @@ struct Gallery {
     ids: Vec<i64>,
     position: usize,
     annotations: HashMap<i64, (UndoHistory, usize)>,
+    origin: Option<usize>,
 }
 
 struct Editor {
@@ -316,6 +322,13 @@ impl eframe::App for Editor {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         use egui::{Key, Modifiers};
+        if let Some(origin) = self
+            .gallery
+            .as_mut()
+            .and_then(|gallery| gallery.origin.take())
+        {
+            focus_gallery(hwnd(frame), origin as HWND);
+        }
         let context = ui.ctx().clone();
         let key = |modifiers, key| {
             context
@@ -342,12 +355,15 @@ impl eframe::App for Editor {
         let mut redo = false;
         let mut clear = false;
         let mut retake = None;
+        let browsing_history = self.gallery.is_some();
+        let top_margin = if browsing_history { 6 } else { 12 };
         egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(22, 12))
+            .inner_margin(egui::Margin::symmetric(22, top_margin))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(self.title).size(24.).strong());
+                        let title_size = if browsing_history { 18. } else { 24. };
+                        ui.label(egui::RichText::new(self.title).size(title_size).strong());
                         ui.label(
                             egui::RichText::new(format!(
                                 "{} × {} px · PNG / JPEG {}%",
@@ -367,30 +383,32 @@ impl eframe::App for Editor {
                             .button(tr("capture.copy", "Copy"))
                             .on_hover_text("Ctrl+C")
                             .clicked();
+                        if let Some(gallery) = &self.gallery {
+                            ui.separator();
+                            if ui
+                                .add_enabled(
+                                    gallery.position + 1 < gallery.ids.len(),
+                                    egui::Button::new("→"),
+                                )
+                                .on_hover_text(tr("rust.clipboardImages.next", "Next image"))
+                                .clicked()
+                            {
+                                navigate = Some(1);
+                            }
+                            ui.label(format!("{} / {}", gallery.position + 1, gallery.ids.len()));
+                            if ui
+                                .add_enabled(gallery.position > 0, egui::Button::new("←"))
+                                .on_hover_text(tr(
+                                    "rust.clipboardImages.previous",
+                                    "Previous image",
+                                ))
+                                .clicked()
+                            {
+                                navigate = Some(-1);
+                            }
+                        }
                     });
                 });
-                if let Some(gallery) = &self.gallery {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(gallery.position > 0, egui::Button::new("←"))
-                            .on_hover_text(tr("rust.clipboardImages.previous", "Previous image"))
-                            .clicked()
-                        {
-                            navigate = Some(-1);
-                        }
-                        ui.label(format!("{} / {}", gallery.position + 1, gallery.ids.len()));
-                        if ui
-                            .add_enabled(
-                                gallery.position + 1 < gallery.ids.len(),
-                                egui::Button::new("→"),
-                            )
-                            .on_hover_text(tr("rust.clipboardImages.next", "Next image"))
-                            .clicked()
-                        {
-                            navigate = Some(1);
-                        }
-                    });
-                }
                 if !self.caption.is_empty() {
                     ui.add(
                         egui::Label::new(self.caption.lines().next().unwrap_or_default())
@@ -398,11 +416,11 @@ impl eframe::App for Editor {
                     )
                     .on_hover_text(&self.caption);
                 }
-                ui.add_space(8.);
+                ui.add_space(if browsing_history { 4. } else { 8. });
                 egui::Frame::new()
                     .corner_radius(10)
                     .fill(Color32::from_gray(128).gamma_multiply(0.10))
-                    .inner_margin(12_f32)
+                    .inner_margin(if browsing_history { 6_f32 } else { 12_f32 })
                     .show(ui, |ui| {
                         ui.horizontal_wrapped(|ui| {
                             for (tool, symbol, name) in [
@@ -438,17 +456,24 @@ impl eframe::App for Editor {
                                         Color32::GRAY
                                     },
                                 );
+                                let size = if browsing_history { 20. } else { 28. };
                                 let button = egui::Button::new("")
                                     .fill(color)
                                     .stroke(outline)
-                                    .min_size(egui::vec2(28., 28.));
+                                    .min_size(egui::Vec2::splat(size));
                                 if ui.add(button).on_hover_text(name).clicked() {
                                     self.color = [color.r(), color.g(), color.b()];
                                 }
                             }
-                        });
-                        ui.horizontal_wrapped(|ui| {
+                            if browsing_history {
+                                ui.separator();
+                            } else {
+                                ui.end_row();
+                            }
                             ui.label(tr("paint.width", "Width"));
+                            if browsing_history {
+                                ui.spacing_mut().slider_width = 65.;
+                            }
                             ui.add(
                                 egui::Slider::new(&mut self.width, 1.0..=32.0)
                                     .step_by(1.)
@@ -478,10 +503,18 @@ impl eframe::App for Editor {
             .show_separator_line(false)
             .show_inside(ui, |ui| {
                 egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(22, 10))
+                    .inner_margin(egui::Margin::symmetric(
+                        22,
+                        if browsing_history { 4 } else { 10 },
+                    ))
                     .show(ui, |ui| {
-                        ui.label(egui::RichText::new(&self.status).size(12.));
+                        if !browsing_history {
+                            ui.label(egui::RichText::new(&self.status).size(12.));
+                        }
                         ui.horizontal(|ui| {
+                            if browsing_history && !self.status.is_empty() {
+                                ui.label(egui::RichText::new(&self.status).size(12.));
+                            }
                             for (shape, label) in [
                                 (
                                     CaptureShape::Rectangle,
@@ -613,6 +646,24 @@ impl eframe::App for Editor {
                 ));
             }
         }
+    }
+}
+
+fn focus_gallery(viewer: HWND, origin: HWND) {
+    unsafe {
+        if GetForegroundWindow() != origin || SetForegroundWindow(viewer) != 0 {
+            return;
+        }
+        let thread = GetCurrentThreadId();
+        let origin_thread = GetWindowThreadProcessId(origin, std::ptr::null_mut());
+        if origin_thread == 0 || AttachThreadInput(thread, origin_thread, 1) == 0 {
+            return;
+        }
+        // Avoid taking focus if the user switched apps while the viewer was opening.
+        if GetForegroundWindow() == origin {
+            SetForegroundWindow(viewer);
+        }
+        AttachThreadInput(thread, origin_thread, 0);
     }
 }
 

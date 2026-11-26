@@ -152,11 +152,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if mode == "--clipboard-images" {
             let profile = ui_profile(args.next())?;
+            let origin = args
+                .next()
+                .map(|id| id.to_string_lossy().parse())
+                .transpose()?
+                .unwrap_or_default();
             let id = args
                 .next()
                 .map(|id| id.to_string_lossy().parse())
                 .transpose()?;
-            return typlo_rust::capture_view::run_clipboard_images(&profile, id);
+            return typlo_rust::capture_view::run_clipboard_images(&profile, origin, id);
         }
         if mode == "--screenshot-editor" {
             let profile = ui_profile(args.next())?;

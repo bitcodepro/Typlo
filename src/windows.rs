@@ -876,9 +876,15 @@ pub(crate) fn open_clipboard_images(
     profile: &Path,
     id: Option<i64>,
 ) -> io::Result<std::process::Child> {
+    let origin = if id.is_none() {
+        (unsafe { GetForegroundWindow() }) as usize
+    } else {
+        0
+    };
     std::process::Command::new(std::env::current_exe()?.with_file_name("typlo-settings.exe"))
         .arg("--clipboard-images")
         .arg(profile)
+        .arg(origin.to_string())
         .args(id.map(|id| id.to_string()))
         .spawn()
 }
