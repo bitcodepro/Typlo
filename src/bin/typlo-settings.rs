@@ -150,6 +150,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 shape,
             );
         }
+        if mode == "--clipboard-images" {
+            let profile = ui_profile(args.next())?;
+            let origin = args
+                .next()
+                .map(|id| id.to_string_lossy().parse())
+                .transpose()?
+                .unwrap_or_default();
+            let id = args
+                .next()
+                .map(|id| id.to_string_lossy().parse())
+                .transpose()?;
+            return typlo_rust::capture_view::run_clipboard_images(&profile, origin, id);
+        }
         if mode == "--screenshot-editor" {
             let profile = ui_profile(args.next())?;
             let for_save = args.next().is_some_and(|arg| arg == "file");
@@ -1223,12 +1236,21 @@ impl Workspace {
     fn hotkeys(&mut self, ui: &mut Ui) {
         use typlo_rust::hotkeys::Action;
         for (action, shortcut) in self.settings.hotkeys.entries_mut() {
-            if !cfg!(windows) && matches!(action, Action::SnippetMenu | Action::ClearDrawing) {
+            if !cfg!(windows)
+                && matches!(
+                    action,
+                    Action::SnippetMenu | Action::ClearDrawing | Action::ClipboardImages
+                )
+            {
                 continue;
             }
             if matches!(
                 action,
-                Action::CaptureCopy | Action::CaptureFile | Action::CaptureEdit | Action::History
+                Action::CaptureCopy
+                    | Action::CaptureFile
+                    | Action::CaptureEdit
+                    | Action::History
+                    | Action::ClipboardImages
             ) {
                 continue;
             }
@@ -1276,6 +1298,7 @@ impl Workspace {
                     action,
                     typlo_rust::hotkeys::Action::SnippetMenu
                         | typlo_rust::hotkeys::Action::ClearDrawing
+                        | typlo_rust::hotkeys::Action::ClipboardImages
                 )
             {
                 continue;
@@ -1470,6 +1493,18 @@ impl Workspace {
         setting_row(ui, tr("settings.openHistory", "Open history"), |ui| {
             edit_hotkey(ui, "history", &mut self.settings.hotkeys.history)
         });
+        #[cfg(windows)]
+        setting_row(
+            ui,
+            typlo_rust::hotkeys::Action::ClipboardImages.label(),
+            |ui| {
+                edit_hotkey(
+                    ui,
+                    "clipboard-images",
+                    &mut self.settings.hotkeys.clipboard_images,
+                )
+            },
+        );
         setting_row(ui, tr("settings.maxItems", "Maximum items"), |ui| {
             ui.add(egui::DragValue::new(&mut self.settings.history_items).range(1..=10_000))
         });
@@ -2451,7 +2486,11 @@ fn edit_hotkey(ui: &mut Ui, id: impl std::hash::Hash, shortcut: &mut String) -> 
                         value.push_str(label);
                     }
                 }
-                value.push_str(key.symbol_or_name());
+                value.push_str(if key == Key::Quote && mods.shift {
+                    "\""
+                } else {
+                    key.symbol_or_name()
+                });
                 if typlo_rust::hotkeys::Chord::parse(&value).is_some() {
                     *shortcut = value;
                     ui.memory_mut(|memory| memory.surrender_focus(id));

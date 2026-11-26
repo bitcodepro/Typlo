@@ -116,6 +116,7 @@ const LAYOUT_ENTRY_ATTEMPTS: u8 = 3;
 const HOST_CLASS: &str = "TyploRustBackground";
 const SETTINGS_WINDOW: &str = "TyploRustSettingsWindow";
 const SCREENSHOT_EDITOR: &str = "TyploRustScreenshotEditor";
+const CLIPBOARD_IMAGES: &str = "TyploClipboardImages";
 const MAX_TEXT: usize = 60_000;
 const EM_GETTEXTMODE: u32 = WM_USER + 90;
 const TM_PLAINTEXT: usize = 1;
@@ -528,6 +529,7 @@ struct Resident {
     spelling: Option<spell_job::Job>,
     capture_process: Option<std::process::Child>,
     editor_process: Option<std::process::Child>,
+    clipboard_images_process: Option<std::process::Child>,
     history_process: Option<std::process::Child>,
     history_previous_requested: bool,
     last_tray_target: Option<Target>,
@@ -870,6 +872,23 @@ thread_local! {
     static RESIDENT: RefCell<Option<Resident>> = const { RefCell::new(None) };
 }
 
+pub(crate) fn open_clipboard_images(
+    profile: &Path,
+    id: Option<i64>,
+) -> io::Result<std::process::Child> {
+    let origin = if id.is_none() {
+        (unsafe { GetForegroundWindow() }) as usize
+    } else {
+        0
+    };
+    std::process::Command::new(std::env::current_exe()?.with_file_name("typlo-settings.exe"))
+        .arg("--clipboard-images")
+        .arg(profile)
+        .arg(origin.to_string())
+        .args(id.map(|id| id.to_string()))
+        .spawn()
+}
+
 pub fn reload_settings() {
     let window = unsafe { FindWindowW(wide(HOST_CLASS).as_ptr(), std::ptr::null()) };
     if !window.is_null() {
@@ -1077,6 +1096,7 @@ fn run_resident(
             spelling: None,
             capture_process: None,
             editor_process: None,
+            clipboard_images_process: None,
             history_process: None,
             history_previous_requested: false,
             layout_entry: None,
@@ -1535,6 +1555,26 @@ fn dispatch_window(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -
                 }
                 if wparam == Action::History as usize {
                     return resident.open_history();
+                }
+                if wparam == Action::ClipboardImages as usize {
+                    let viewer = marked_window(CLIPBOARD_IMAGES);
+                    if !viewer.is_null() {
+                        unsafe {
+                            if IsIconic(viewer) != 0 {
+                                ShowWindow(viewer, SW_RESTORE);
+                            }
+                            SetForegroundWindow(viewer);
+                        }
+                        return Ok(());
+                    }
+                    if let Some(child) = &mut resident.clipboard_images_process
+                        && child.try_wait()?.is_none()
+                    {
+                        return Ok(());
+                    }
+                    resident.clipboard_images_process =
+                        Some(open_clipboard_images(&resident.profile, None)?);
+                    return Ok(());
                 }
                 if let Some((action, _)) = resident
                     .bindings
@@ -2664,6 +2704,11 @@ fn fit_settings_window(window: HWND) {
 #[cfg(feature = "gui")]
 pub fn mark_screenshot_editor(window: usize) {
     mark_window(window, SCREENSHOT_EDITOR);
+}
+
+#[cfg(feature = "gui")]
+pub(crate) fn mark_clipboard_images(window: usize) {
+    mark_window(window, CLIPBOARD_IMAGES);
 }
 
 #[cfg(feature = "gui")]

@@ -555,12 +555,12 @@ unsafe extern "system" fn mouse_hook(code: i32, message: WPARAM, data: LPARAM) -
 
 unsafe extern "system" fn keyboard_hook(code: i32, message: WPARAM, data: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 && data != 0 {
-        let key = unsafe { (*(data as *const KBDLLHOOKSTRUCT)).vkCode };
-        let bit = match key {
-            key if key == VK_ESCAPE as u32 => 1,
-            key if key == b'R' as u32 => 2,
-            key if key == b'F' as u32 => 4,
-            _ => 0,
+        let key = unsafe { &*(data as *const KBDLLHOOKSTRUCT) };
+        let (bit, value) = match (key.vkCode, key.scanCode) {
+            (vk, _) if vk == u32::from(VK_ESCAPE) => (1, 0),
+            (_, 0x13) => (2, b'R'),
+            (_, 0x21) => (4, b'F'),
+            _ => (0, 0),
         };
         if bit != 0 {
             let mut input = INPUT.get();
@@ -581,7 +581,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, message: WPARAM, data: LPARAM
                 input.keys &= !bit;
                 INPUT.set(input);
                 let event = if bit == 1 { CANCEL } else { SHAPE };
-                unsafe { PostMessageW(input.target as HWND, event, key as usize, 0) };
+                unsafe { PostMessageW(input.target as HWND, event, value as usize, 0) };
                 return 1;
             }
         }

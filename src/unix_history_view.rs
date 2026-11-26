@@ -475,8 +475,11 @@ impl eframe::App for View {
                 let mut scrolled = false;
                 if shown > 0 {
                     use egui::{Key, Modifiers as M};
-                    let key =
-                        |modifiers, key| ui.input_mut(|input| input.consume_key(modifiers, key));
+                    let key = |modifiers, key| {
+                        ui.input_mut(|input| {
+                            crate::appearance::consume_shortcut_key(input, modifiers, key)
+                        })
+                    };
                     if key(M::NONE, Key::ArrowDown) {
                         self.selected = (self.selected + 1).min(shown - 1);
                         scrolled = true;

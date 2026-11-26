@@ -2,12 +2,13 @@ use crate::locale::text as tr;
 use crate::{
     capture::{self, MAX_POINTS, Point, Stroke, Tool},
     config::CaptureShape,
-    windows::{capture_selector, clipio, desktop},
+    windows::{capture_selector, clipio, desktop, history::History},
 };
 use eframe::egui::{self, Color32, Pos2, Rect, TextureHandle, Vec2};
 use image::RgbaImage;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::{
+    collections::HashMap,
     io,
     os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
@@ -16,12 +17,16 @@ use std::{
 use windows_sys::Win32::{
     Foundation::HWND,
     Graphics::Dwm::DwmFlush,
+    System::Threading::{AttachThreadInput, GetCurrentThreadId},
     UI::{
         Controls::Dialogs::{
             CommDlgExtendedError, GetSaveFileNameW, OFN_EXPLORER, OFN_NOCHANGEDIR,
             OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
         },
-        WindowsAndMessaging::{SW_HIDE, SW_SHOW, ShowWindow},
+        WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowThreadProcessId, MB_ICONINFORMATION, MessageBoxW,
+            SW_HIDE, SW_SHOW, SetForegroundWindow, ShowWindow,
+        },
     },
 };
 
@@ -71,8 +76,76 @@ pub fn run_capture(profile: PathBuf, destination: &str, shape: CaptureShape) -> 
 }
 
 pub fn run_editor(profile: &Path, for_save: bool) -> AppResult {
-    let appearance = crate::locale::load(profile);
     let image = capture::load_last(profile)?;
+    run_image_editor(profile, for_save, image, String::new(), None)
+}
+
+pub fn run_clipboard_images(profile: &Path, origin: usize, selected: Option<i64>) -> AppResult {
+    let store = History::open(profile)?;
+    let ids = store.image_ids()?;
+    let initial = if let Some(id) = selected {
+        let position = ids.iter().position(|&entry| entry == id);
+        position.and_then(|index| {
+            load_history_image(&store, id)
+                .ok()
+                .map(|image| (index, image))
+        })
+    } else {
+        ids.iter().enumerate().find_map(|(index, &id)| {
+            load_history_image(&store, id)
+                .ok()
+                .map(|image| (index, image))
+        })
+    };
+    let Some((position, (image, original))) = initial else {
+        crate::locale::load(profile);
+        let message = tr(
+            "rust.clipboardImages.empty",
+            "No viewable image found in clipboard history.",
+        );
+        let message: Vec<_> = message.encode_utf16().chain([0]).collect();
+        let title: Vec<_> = "Typlo".encode_utf16().chain([0]).collect();
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message.as_ptr(),
+                title.as_ptr(),
+                MB_ICONINFORMATION,
+            );
+        }
+        return Ok(());
+    };
+    let caption = original.editable_text();
+    let gallery = Gallery {
+        store,
+        ids,
+        position,
+        original,
+        annotations: HashMap::new(),
+        origin: (origin != 0).then_some(origin),
+    };
+    run_image_editor(profile, false, image, caption, Some(gallery))
+}
+
+fn load_history_image(store: &History, id: i64) -> io::Result<(RgbaImage, clipio::Clip)> {
+    let clip = store.load(id)?.ok_or(io::ErrorKind::NotFound)?;
+    Ok((clip.image()?.into_rgba8(), clip))
+}
+
+fn run_image_editor(
+    profile: &Path,
+    for_save: bool,
+    image: RgbaImage,
+    caption: String,
+    gallery: Option<Gallery>,
+) -> AppResult {
+    let appearance = crate::locale::load(profile);
+    let browsing_history = gallery.is_some();
+    let title = if browsing_history {
+        tr("rust.clipboardImages.title", "Clipboard images")
+    } else {
+        tr("paint.title", "Screenshot editor")
+    };
     let profile = profile.to_owned();
     let options = eframe::NativeOptions {
         viewport: crate::appearance::window()
@@ -83,10 +156,14 @@ pub fn run_editor(profile: &Path, for_save: bool) -> AppResult {
         ..Default::default()
     };
     eframe::run_native(
-        &format!("Typlo — {}", tr("paint.title", "Screenshot editor")),
+        &format!("Typlo — {title}"),
         options,
         Box::new(move |creation| {
-            crate::windows::mark_screenshot_editor(hwnd(creation) as usize);
+            if browsing_history {
+                crate::windows::mark_clipboard_images(hwnd(creation) as usize);
+            } else {
+                crate::windows::mark_screenshot_editor(hwnd(creation) as usize);
+            }
             crate::appearance::configure(&creation.egui_ctx);
             crate::locale::theme(&creation.egui_ctx, appearance.ui_theme);
             crate::locale::fonts(&creation.egui_ctx, &appearance.ui_language);
@@ -94,14 +171,19 @@ pub fn run_editor(profile: &Path, for_save: bool) -> AppResult {
                 texture: texture(&creation.egui_ctx, &image, "latest-screenshot"),
                 profile,
                 for_save,
+                gallery,
+                title,
                 image,
+                caption,
                 history: vec![Vec::new()],
                 index: 0,
                 draft: None,
                 tool: Tool::Pen,
                 width: 5.,
                 color: [239, 68, 68],
-                status: if for_save {
+                status: if browsing_history {
+                    ""
+                } else if for_save {
                     tr(
                         "paint.ready",
                         "Draw on the image, then save as JPEG or copy.",
@@ -119,12 +201,26 @@ pub fn run_editor(profile: &Path, for_save: bool) -> AppResult {
     Ok(())
 }
 
+type UndoHistory = Vec<Vec<Arc<Stroke>>>;
+
+struct Gallery {
+    store: History,
+    ids: Vec<i64>,
+    position: usize,
+    original: clipio::Clip,
+    annotations: HashMap<i64, (UndoHistory, usize)>,
+    origin: Option<usize>,
+}
+
 struct Editor {
     profile: PathBuf,
     for_save: bool,
+    gallery: Option<Gallery>,
+    title: &'static str,
     image: RgbaImage,
+    caption: String,
     texture: TextureHandle,
-    history: Vec<Vec<Arc<Stroke>>>,
+    history: UndoHistory,
     index: usize,
     draft: Option<Stroke>,
     tool: Tool,
@@ -134,6 +230,43 @@ struct Editor {
 }
 
 impl Editor {
+    fn navigate(&mut self, context: &egui::Context, direction: isize) {
+        let Some(gallery) = &mut self.gallery else {
+            return;
+        };
+        let mut position = gallery.position;
+        while let Some(next) = position.checked_add_signed(direction) {
+            let Some(&id) = gallery.ids.get(next) else {
+                break;
+            };
+            position = next;
+            let Ok((image, original)) = load_history_image(&gallery.store, id) else {
+                continue;
+            };
+            let outgoing = gallery.ids[gallery.position];
+            let (history, index) = gallery
+                .annotations
+                .remove(&id)
+                .unwrap_or_else(|| (vec![vec![]], 0));
+            if self.history.len() > 1 {
+                gallery.annotations.insert(
+                    outgoing,
+                    (std::mem::replace(&mut self.history, history), self.index),
+                );
+            } else {
+                self.history = history;
+            }
+            self.index = index;
+            gallery.position = position;
+            self.texture = texture(context, &image, "clipboard-image");
+            self.image = image;
+            self.caption = original.editable_text();
+            gallery.original = original;
+            self.status.clear();
+            return;
+        }
+    }
+
     fn commit(&mut self, strokes: Vec<Arc<Stroke>>) {
         self.history.truncate(self.index + 1);
         self.history.push(strokes);
@@ -142,6 +275,21 @@ impl Editor {
         }
         self.index = self.history.len() - 1;
         self.status = tr("paint.changed", "Changes ready · Copy or save to export.").into();
+    }
+
+    fn original_for_copy(&self) -> Option<&clipio::Clip> {
+        self.gallery
+            .as_ref()
+            .filter(|_| self.history[self.index].is_empty())
+            .map(|gallery| &gallery.original)
+    }
+
+    fn copy(&self, window: HWND) -> io::Result<()> {
+        if let Some(clip) = self.original_for_copy() {
+            clipio::publish(window, clip, false)?;
+            return Ok(());
+        }
+        clipio::publish_screenshot(&self.rendered(), window)
     }
 
     fn rendered(&self) -> RgbaImage {
@@ -179,13 +327,32 @@ impl eframe::App for Editor {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         use egui::{Key, Modifiers};
+        if let Some(origin) = self
+            .gallery
+            .as_mut()
+            .and_then(|gallery| gallery.origin.take())
+        {
+            focus_gallery(hwnd(frame), origin as HWND);
+        }
         let context = ui.ctx().clone();
-        let ctrl = |key| context.input_mut(|input| input.consume_key(Modifiers::CTRL, key));
+        let key = |modifiers, key| {
+            context
+                .input_mut(|input| crate::appearance::consume_shortcut_key(input, modifiers, key))
+        };
+        let ctrl = |button| key(Modifiers::CTRL, button);
         if ui.input(|input| input.key_pressed(Key::Escape)) {
             if self.draft.take().is_none() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
             return;
+        }
+        let mut navigate = None;
+        if self.gallery.is_some() && self.draft.is_none() {
+            if key(Modifiers::NONE, Key::ArrowLeft) {
+                navigate = Some(-1);
+            } else if key(Modifiers::NONE, Key::ArrowRight) {
+                navigate = Some(1);
+            }
         }
         let mut copy_clicked = false;
         let mut save_clicked = false;
@@ -193,16 +360,15 @@ impl eframe::App for Editor {
         let mut redo = false;
         let mut clear = false;
         let mut retake = None;
+        let browsing_history = self.gallery.is_some();
+        let top_margin = if browsing_history { 6 } else { 12 };
         egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(22, 12))
+            .inner_margin(egui::Margin::symmetric(22, top_margin))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(tr("paint.title", "Screenshot editor"))
-                                .size(24.)
-                                .strong(),
-                        );
+                        let title_size = if browsing_history { 18. } else { 24. };
+                        ui.label(egui::RichText::new(self.title).size(title_size).strong());
                         ui.label(
                             egui::RichText::new(format!(
                                 "{} × {} px · PNG / JPEG {}%",
@@ -222,13 +388,44 @@ impl eframe::App for Editor {
                             .button(tr("capture.copy", "Copy"))
                             .on_hover_text("Ctrl+C")
                             .clicked();
+                        if let Some(gallery) = &self.gallery {
+                            ui.separator();
+                            if ui
+                                .add_enabled(
+                                    gallery.position + 1 < gallery.ids.len(),
+                                    egui::Button::new("→"),
+                                )
+                                .on_hover_text(tr("rust.clipboardImages.next", "Next image"))
+                                .clicked()
+                            {
+                                navigate = Some(1);
+                            }
+                            ui.label(format!("{} / {}", gallery.position + 1, gallery.ids.len()));
+                            if ui
+                                .add_enabled(gallery.position > 0, egui::Button::new("←"))
+                                .on_hover_text(tr(
+                                    "rust.clipboardImages.previous",
+                                    "Previous image",
+                                ))
+                                .clicked()
+                            {
+                                navigate = Some(-1);
+                            }
+                        }
                     });
                 });
-                ui.add_space(8.);
+                if !self.caption.is_empty() {
+                    ui.add(
+                        egui::Label::new(self.caption.lines().next().unwrap_or_default())
+                            .truncate(),
+                    )
+                    .on_hover_text(&self.caption);
+                }
+                ui.add_space(if browsing_history { 4. } else { 8. });
                 egui::Frame::new()
                     .corner_radius(10)
                     .fill(Color32::from_gray(128).gamma_multiply(0.10))
-                    .inner_margin(12_f32)
+                    .inner_margin(if browsing_history { 6_f32 } else { 12_f32 })
                     .show(ui, |ui| {
                         ui.horizontal_wrapped(|ui| {
                             for (tool, symbol, name) in [
@@ -264,17 +461,24 @@ impl eframe::App for Editor {
                                         Color32::GRAY
                                     },
                                 );
+                                let size = if browsing_history { 20. } else { 28. };
                                 let button = egui::Button::new("")
                                     .fill(color)
                                     .stroke(outline)
-                                    .min_size(egui::vec2(28., 28.));
+                                    .min_size(egui::Vec2::splat(size));
                                 if ui.add(button).on_hover_text(name).clicked() {
                                     self.color = [color.r(), color.g(), color.b()];
                                 }
                             }
-                        });
-                        ui.horizontal_wrapped(|ui| {
+                            if browsing_history {
+                                ui.separator();
+                            } else {
+                                ui.end_row();
+                            }
                             ui.label(tr("paint.width", "Width"));
+                            if browsing_history {
+                                ui.spacing_mut().slider_width = 65.;
+                            }
                             ui.add(
                                 egui::Slider::new(&mut self.width, 1.0..=32.0)
                                     .step_by(1.)
@@ -304,10 +508,18 @@ impl eframe::App for Editor {
             .show_separator_line(false)
             .show_inside(ui, |ui| {
                 egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(22, 10))
+                    .inner_margin(egui::Margin::symmetric(
+                        22,
+                        if browsing_history { 4 } else { 10 },
+                    ))
                     .show(ui, |ui| {
-                        ui.label(egui::RichText::new(&self.status).size(12.));
+                        if !browsing_history {
+                            ui.label(egui::RichText::new(&self.status).size(12.));
+                        }
                         ui.horizontal(|ui| {
+                            if browsing_history && !self.status.is_empty() {
+                                ui.label(egui::RichText::new(&self.status).size(12.));
+                            }
                             for (shape, label) in [
                                 (
                                     CaptureShape::Rectangle,
@@ -315,10 +527,11 @@ impl eframe::App for Editor {
                                 ),
                                 (CaptureShape::Free, tr("capture.freehand", "Freehand")),
                             ] {
-                                if ui
-                                    .button(label)
-                                    .on_hover_text(tr("paint.retake", "New capture"))
-                                    .clicked()
+                                if self.gallery.is_none()
+                                    && ui
+                                        .button(label)
+                                        .on_hover_text(tr("paint.retake", "New capture"))
+                                        .clicked()
                                 {
                                     retake = Some(shape);
                                 }
@@ -339,8 +552,7 @@ impl eframe::App for Editor {
                     });
             });
         if self.draft.is_none() {
-            let shift_redo =
-                ui.input_mut(|input| input.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Z));
+            let shift_redo = key(Modifiers::CTRL | Modifiers::SHIFT, Key::Z);
             if (redo || shift_redo || ctrl(Key::Y)) && self.index + 1 < self.history.len() {
                 self.index += 1;
             } else if (undo || ctrl(Key::Z)) && self.index > 0 {
@@ -350,7 +562,7 @@ impl eframe::App for Editor {
                 self.commit(Vec::new());
             }
             if copy_clicked || ctrl(Key::C) {
-                self.status = match clipio::publish_screenshot(&self.rendered(), hwnd(frame)) {
+                self.status = match self.copy(hwnd(frame)) {
                     Ok(()) => tr("capture.copied", "Screenshot copied").into(),
                     Err(error) => error.to_string(),
                 };
@@ -371,6 +583,12 @@ impl eframe::App for Editor {
                     Err(error) => self.status = error.to_string(),
                 }
             }
+        }
+        if self.draft.is_none()
+            && let Some(direction) = navigate
+        {
+            self.navigate(&context, direction);
+            context.request_repaint();
         }
         let backdrop = ui.available_rect_before_wrap().shrink2(egui::vec2(22., 0.));
         ui.painter()
@@ -433,6 +651,24 @@ impl eframe::App for Editor {
                 ));
             }
         }
+    }
+}
+
+fn focus_gallery(viewer: HWND, origin: HWND) {
+    unsafe {
+        if GetForegroundWindow() != origin || SetForegroundWindow(viewer) != 0 {
+            return;
+        }
+        let thread = GetCurrentThreadId();
+        let origin_thread = GetWindowThreadProcessId(origin, std::ptr::null_mut());
+        if origin_thread == 0 || AttachThreadInput(thread, origin_thread, 1) == 0 {
+            return;
+        }
+        // Avoid taking focus if the user switched apps while the viewer was opening.
+        if GetForegroundWindow() == origin {
+            SetForegroundWindow(viewer);
+        }
+        AttachThreadInput(thread, origin_thread, 0);
     }
 }
 
@@ -527,4 +763,87 @@ fn save_path(owner: HWND) -> io::Result<Option<PathBuf>> {
         .position(|&unit| unit == 0)
         .unwrap_or(path.len());
     Ok(Some(std::ffi::OsString::from_wide(&path[..end]).into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::windows::history::Limits;
+
+    #[test]
+    fn copying_open_image_keeps_original_formats_and_caption_after_history_removal() {
+        let make_clip = |color, caption: &str| {
+            let image = RgbaImage::from_pixel(2, 2, image::Rgba(color));
+            let mut png = io::Cursor::new(Vec::new());
+            image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            let caption: Vec<u8> = caption
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            serde_json::from_value::<clipio::Clip>(serde_json::json!({
+                "kind": "Image",
+                "formats": [["Png", png.into_inner()], ["Text", caption]]
+            }))
+            .unwrap()
+        };
+        let first = make_clip([255, 0, 0, 255], "Red");
+        let second = make_clip([0, 255, 0, 255], "Green\n");
+        let third = make_clip([0, 0, 255, 255], "Blue");
+        let profile = tempfile::tempdir().unwrap();
+        let mut writer = History::open(profile.path()).unwrap();
+        let mut limits = Limits::from_config(&crate::config::Config::default());
+        writer.store(&first, limits).unwrap();
+        writer.store(&second, limits).unwrap();
+
+        let store = History::open(profile.path()).unwrap();
+        let ids = store.image_ids().unwrap();
+        assert_eq!(ids.len(), 2);
+        let (current, next) = (ids[0], ids[1]);
+        let (image, original) = load_history_image(&store, current).unwrap();
+        let context = egui::Context::default();
+        let mut editor = Editor {
+            profile: profile.path().to_owned(),
+            for_save: false,
+            gallery: Some(Gallery {
+                store,
+                ids,
+                position: 0,
+                original,
+                annotations: HashMap::new(),
+                origin: None,
+            }),
+            title: "",
+            texture: texture(&context, &image, "test"),
+            image,
+            caption: "Green\n".into(),
+            history: vec![vec![]],
+            index: 0,
+            draft: None,
+            tool: Tool::Pen,
+            width: 5.,
+            color: [255, 0, 0],
+            status: String::new(),
+        };
+
+        writer.remove(current).unwrap();
+        assert!(writer.load(current).unwrap().is_none());
+        let original = editor.original_for_copy().unwrap();
+        assert_eq!(original.editable_text(), "Green\n");
+        assert_eq!(
+            serde_json::to_value(original).unwrap(),
+            serde_json::to_value(second).unwrap()
+        );
+
+        editor.navigate(&context, 1);
+        limits.max_items = 1;
+        writer.store(&third, limits).unwrap();
+        assert!(writer.load(next).unwrap().is_none());
+        let original = editor.original_for_copy().unwrap();
+        assert_eq!(original.editable_text(), "Red");
+        assert_eq!(
+            serde_json::to_value(original).unwrap(),
+            serde_json::to_value(first).unwrap()
+        );
+    }
 }

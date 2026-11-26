@@ -581,6 +581,7 @@ pub(super) fn physical_scan(key: u32) -> Option<u32> {
         0xdd => 0x1b,
         0xbc => 0x33,
         0xbe => 0x34,
+        0xde => 0x28,
         _ => return None,
     })
 }
@@ -652,12 +653,11 @@ impl HookState {
             return Some(suppress);
         }
         let (message, value, flag) = match vk {
+            _ if control && key.scanCode == 0x19 => (WM_KEYDOWN, b'P' as usize, 1),
+            _ if control && key.scanCode == 0x2f => (WM_PASTE, 0, 0),
             VK_RETURN | VK_ESCAPE | VK_UP | VK_DOWN | VK_TAB if !control => {
                 (WM_KEYDOWN, vk as usize, 0)
             }
-            0x50 if control => (WM_KEYDOWN, vk as usize, 1),
-            // Ctrl+V pastes into the menu's own field.
-            0x56 if control => (WM_PASTE, 0, 0),
             VK_BACK if !control => (WM_CHAR, 8, 0),
             // Other Ctrl shortcuts on letters, digits and Backspace (cut,
             // undo, select all...) would edit the document under the menu.
@@ -1403,9 +1403,10 @@ mod tests {
         let ctrl_n = Chord::parse("Ctrl+N").unwrap();
         let ctrl_a = Chord::parse("Ctrl+A").unwrap();
         let capture = Chord::parse("Win+Shift+S").unwrap();
+        let images = Chord::parse("Ctrl+Shift+\"").unwrap();
         let bindings = Bindings {
-            chords: vec![ctrl_n, ctrl_a, capture],
-            physical: vec![(3, ctrl_n), (512, ctrl_a), (13, capture)],
+            chords: vec![ctrl_n, ctrl_a, capture, images],
+            physical: vec![(3, ctrl_n), (512, ctrl_a), (13, capture), (25, images)],
             drawing: None,
             switch: None,
         };
@@ -1436,6 +1437,14 @@ mod tests {
             Some((13, capture))
         );
         assert_eq!(matches(b'N'.into(), 0x31, 0, MOD_CONTROL | MOD_SHIFT), None);
+        for vk in [0xde, 0x51, 0xe7] {
+            assert_eq!(
+                matches(vk, 0x28, 0, MOD_CONTROL | MOD_SHIFT),
+                Some((25, images))
+            );
+        }
+        assert_eq!(matches(0xde, 0x03, 0, MOD_CONTROL | MOD_SHIFT), None);
+        assert_eq!(matches(0xde, 0x28, 0, MOD_CONTROL), None);
         assert_eq!(
             matches(b'N'.into(), 0x31, LLKHF_EXTENDED, MOD_CONTROL),
             None

@@ -489,7 +489,6 @@ struct Ocr {
 struct Viewer {
     id: i64,
     text: String,
-    image: Option<egui::TextureHandle>,
 }
 
 struct EntryEdit {
@@ -929,7 +928,9 @@ impl Window {
 
     fn keys(&mut self, ui: &egui::Ui, paste: Option<bool>) -> Option<Choice> {
         use egui::{Key, Modifiers as M};
-        let key = |mods, key| ui.input_mut(|input| input.consume_key(mods, key));
+        let key = |mods, key| {
+            ui.input_mut(|input| crate::appearance::consume_shortcut_key(input, mods, key))
+        };
         let delta = [
             (Key::ArrowDown, 1),
             (Key::ArrowUp, -1),
@@ -1411,9 +1412,6 @@ impl Window {
                 egui::ScrollArea::both()
                     .max_height((ui.available_height() - 49.).max(20.))
                     .show(ui, |ui| {
-                        if let Some(image) = &viewer.image {
-                            ui.image((image.id(), image.size_vec2()));
-                        }
                         if !viewer.text.is_empty() {
                             ui.add(
                                 egui::TextEdit::multiline(&mut viewer.text.as_str())
@@ -1457,16 +1455,19 @@ impl Window {
                 Ok(())
             }
             Choice::View(id) => {
+                if self
+                    .items()
+                    .iter()
+                    .any(|entry| entry.id == id && entry.kind == Kind::Image)
+                {
+                    windows::open_clipboard_images(&self.profile, Some(id))?;
+                    self.close(ui);
+                    return Ok(());
+                }
                 let clip = self.store.load(id)?.ok_or_else(missing)?;
-                let image = if clip.kind == Kind::Image {
-                    Some(texture(ui.ctx(), &clip.image()?.into_rgba8()))
-                } else {
-                    None
-                };
                 self.viewer = Some(Viewer {
                     id,
                     text: clip.searchable_text(),
-                    image,
                 });
                 let ctx = ui.ctx();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(

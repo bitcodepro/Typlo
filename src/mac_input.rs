@@ -207,6 +207,7 @@ fn mac_key(key: u32) -> Option<u16> {
         0xdd => 30,
         0xbc => 43,
         0xbe => 47,
+        0xde => 39,
         _ => return None,
     })
 }

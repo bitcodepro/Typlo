@@ -19,6 +19,7 @@ If Typlo disappears from the notification area, reopen it and select **Typlo too
 | Win+Shift+S | Copy a screenshot of an area to the clipboard |
 | Ctrl+Alt+Shift+F | Capture an area and open the editor to save it as JPEG |
 | Ctrl+Shift+[ | Open the latest screenshot in the editor |
+| Ctrl+Shift+" | Browse clipboard images in the screenshot editor (the physical quote key) |
 | Alt + left mouse drag | Draw on the screen |
 
 While drawing, `1`–`9` select widths from 2 to 40 pixels. The mouse wheel adjusts the width by one pixel per step. Scrolling outside a stroke or pressing `Ctrl+Alt+Shift+X` clears the drawing. **Draw on screen** lets you change or disable the gesture.
@@ -28,6 +29,8 @@ Configure autocorrection after Space, snippets, and layout cycling per app. Chan
 On Windows, letters, top-row digits, and supported punctuation in shortcuts refer to physical US QWERTY positions. For example, an assigned `Ctrl+N` uses the same key after you switch layouts.
 
 Clipboard history opens near the cursor. Its item menu supports viewing, pasting, pinning, and deleting items. You can paste formatted content as plain text and extract text from images. `Ctrl+O` opens the viewer, `Ctrl+T` runs OCR, and `Ctrl+1`–`Ctrl+9` paste items by position.
+
+Choose **View** on an image to open it in the screenshot editor. Use the arrow buttons or Left/Right to browse other images in history.
 
 Select the pencil to edit a text item or add a caption to an image or file selection. Typlo copies and shares the attachment and caption as one entry. When pasting, the destination app chooses which Windows clipboard formats it can use. Update Typlo on both computers to share entries with captions.
 
