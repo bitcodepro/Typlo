@@ -200,6 +200,7 @@ impl Keyboard {
             0xdd => Some(b']'),
             0xbc => Some(b','),
             0xbe => Some(b'.'),
+            0xde => Some(b'\''),
             _ => None,
         };
         if let Some(physical) = physical {

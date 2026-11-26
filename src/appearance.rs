@@ -1,6 +1,56 @@
 use eframe::egui::{self, Color32, FontId, Stroke};
 use std::sync::{Arc, LazyLock};
 
+pub(crate) fn consume_shortcut_key(
+    input: &mut egui::InputState,
+    modifiers: egui::Modifiers,
+    key: egui::Key,
+) -> bool {
+    let count = input.events.len();
+    input.events.retain(|event| {
+        !matches!(event, egui::Event::Key {
+            key: logical,
+            physical_key,
+            modifiers: pressed,
+            pressed: true,
+            ..
+        } if physical_key.unwrap_or(*logical) == key && pressed.matches_exact(modifiers))
+    });
+    count != input.events.len()
+}
+
+#[cfg(test)]
+#[test]
+fn shortcuts_match_physical_keys_with_exact_modifiers() {
+    use egui::{Event, Key, Modifiers};
+    let ctx = egui::Context::default();
+    let input = egui::RawInput {
+        events: vec![Event::Key {
+            key: Key::Q,
+            physical_key: Some(Key::O),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::CTRL | Modifiers::SHIFT,
+        }],
+        ..Default::default()
+    };
+    let _ = ctx.run_ui(input, |ui| {
+        ui.input_mut(|input| {
+            assert!(!consume_shortcut_key(input, Modifiers::CTRL, Key::O));
+            assert!(!consume_shortcut_key(
+                input,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                Key::Q
+            ));
+            assert!(consume_shortcut_key(
+                input,
+                Modifiers::CTRL | Modifiers::SHIFT,
+                Key::O
+            ));
+        });
+    });
+}
+
 pub fn icon() -> Arc<egui::IconData> {
     static ICON: LazyLock<Arc<egui::IconData>> = LazyLock::new(|| {
         let image = image::load_from_memory_with_format(

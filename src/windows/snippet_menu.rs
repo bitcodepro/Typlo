@@ -22,8 +22,7 @@ use windows_sys::Win32::{
     UI::{
         HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext},
         Input::KeyboardAndMouse::{
-            GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_RETURN,
-            VK_UP,
+            ReleaseCapture, SetCapture, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP,
         },
         WindowsAndMessaging::*,
     },
@@ -829,10 +828,7 @@ unsafe extern "system" fn window_proc(
         }
         WM_KEYDOWN if wparam == VK_ESCAPE as usize => close(window, false),
         // The keyboard hook marks Ctrl+P with lparam 1.
-        WM_KEYDOWN
-            if wparam == b'P' as usize
-                && (lparam == 1 || unsafe { GetKeyState(VK_CONTROL as i32) } < 0) =>
-        {
+        WM_KEYDOWN if wparam == b'P' as usize && lparam == 1 => {
             OPEN.with_borrow_mut(|menu| {
                 if let Some(menu) = menu {
                     menu.toggle_pin();

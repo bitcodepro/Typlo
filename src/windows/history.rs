@@ -429,6 +429,21 @@ impl History {
             .map_err(io::Error::other)
     }
 
+    #[cfg(feature = "gui")]
+    pub(crate) fn image_ids(&self) -> io::Result<Vec<i64>> {
+        let mut statement = self
+            .db
+            .prepare_cached(
+                "SELECT id FROM clips WHERE kind = 2 ORDER BY pinned DESC,display_order DESC,id DESC",
+            )
+            .map_err(io::Error::other)?;
+        statement
+            .query_map([], |row| row.get(0))
+            .map_err(io::Error::other)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(io::Error::other)
+    }
+
     pub fn list(&self, offset: usize) -> io::Result<Vec<Entry>> {
         let offset = i64::try_from(offset).map_err(io::Error::other)?;
         let mut statement = self
@@ -1231,6 +1246,31 @@ mod tests {
             history.load(text_id).unwrap().unwrap().text(),
             "updated text"
         );
+    }
+
+    #[test]
+    #[cfg(feature = "gui")]
+    fn image_ids_follow_visible_history_order_and_exclude_text() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut history = History::open(profile.path()).unwrap();
+        let limits = Limits::from_config(&crate::config::Config::default());
+        for color in [[255, 0, 0, 255], [0, 255, 0, 255]] {
+            let image = image::RgbaImage::from_pixel(2, 2, image::Rgba(color));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            let clip = Clip::from_legacy(2, bytes.into_inner(), None).unwrap();
+            history.store(&clip, limits).unwrap();
+        }
+        let images = history.image_ids().unwrap();
+        assert_eq!(images.len(), 2);
+        history
+            .store(&Clip::from_text("between images"), limits)
+            .unwrap();
+        assert_eq!(history.image_ids().unwrap(), images);
+        history.pin(images[1], true).unwrap();
+        assert_eq!(history.image_ids().unwrap(), [images[1], images[0]]);
+        history.remove(images[0]).unwrap();
+        assert_eq!(history.image_ids().unwrap(), [images[1]]);
     }
 
     #[test]

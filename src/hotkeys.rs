@@ -90,6 +90,7 @@ pub enum Action {
     CancelChoice = 22,
     SnippetMenu = 23,
     ClearDrawing = 24,
+    ClipboardImages = 25,
 }
 
 impl Action {
@@ -116,6 +117,7 @@ impl Action {
             Self::CancelChoice => tr("tools.cancel", "Cancel layout choices"),
             Self::Tools => tr("tools.title", "Typlo tools"),
             Self::SnippetMenu => tr("rust.snippet.menu", "Open snippet menu"),
+            Self::ClipboardImages => tr("rust.clipboardImages.open", "Open clipboard images"),
             Self::ClearDrawing => tr("rust.phantom.clear", "Clear screen drawing"),
         }
     }
@@ -138,6 +140,7 @@ pub struct Hotkeys {
     pub capture_file: String,
     pub capture_edit: String,
     pub history: String,
+    pub clipboard_images: String,
     pub add_word: String,
     pub choices: String,
     pub accept_choice: String,
@@ -166,6 +169,11 @@ impl Default for Hotkeys {
             capture_file: "Ctrl+Alt+Shift+F".into(),
             capture_edit: "Ctrl+Shift+[".into(),
             history: "Ctrl+Shift+V".into(),
+            clipboard_images: if cfg!(windows) {
+                "Ctrl+Shift+\"".into()
+            } else {
+                String::new()
+            },
             add_word: "Ctrl+Shift+K".into(),
             choices: "Ctrl+Alt+Shift+L".into(),
             accept_choice: "Ctrl+Alt+Shift+Enter".into(),
@@ -186,7 +194,7 @@ impl Default for Hotkeys {
 }
 
 impl Hotkeys {
-    pub fn entries_mut(&mut self) -> [(Action, &mut String); 21] {
+    pub fn entries_mut(&mut self) -> [(Action, &mut String); 22] {
         [
             (Action::Switch, &mut self.switch),
             (Action::Convert, &mut self.convert),
@@ -202,6 +210,7 @@ impl Hotkeys {
             (Action::CaptureFile, &mut self.capture_file),
             (Action::CaptureEdit, &mut self.capture_edit),
             (Action::History, &mut self.history),
+            (Action::ClipboardImages, &mut self.clipboard_images),
             (Action::AddWord, &mut self.add_word),
             (Action::Choices, &mut self.choices),
             (Action::AcceptChoice, &mut self.accept_choice),
@@ -229,6 +238,7 @@ impl Hotkeys {
             (Action::CaptureFile, &self.capture_file),
             (Action::CaptureEdit, &self.capture_edit),
             (Action::History, &self.history),
+            (Action::ClipboardImages, &self.clipboard_images),
             (Action::AddWord, &self.add_word),
             (Action::Choices, &self.choices),
             (Action::AcceptChoice, &self.accept_choice),
@@ -346,6 +356,7 @@ fn virtual_key(name: &str) -> Option<u32> {
         "]" => 0xdd,
         "," => 0xbc,
         "." => 0xbe,
+        "\"" | "'" | "QUOTE" => 0xde,
         _ => return None,
     })
 }
